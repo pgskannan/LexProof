@@ -160,7 +160,13 @@ EVIDENCE_HASH_FIELDS = (
 
 
 def canonicalize_evidence_item(evidence_item: Dict[str, Any]) -> Dict[str, Any]:
-    """Return the canonical representation used for evidence hashing."""
+    """Return the canonical representation used for evidence hashing.
+
+    Only fields in ``EVIDENCE_HASH_FIELDS`` define the evidence package. In
+    particular, timestamps, the stored hash, and other operational bookkeeping
+    are intentionally excluded so recomputation does not depend on persistence
+    metadata.
+    """
     return {
         field: evidence_item.get(field)
         for field in EVIDENCE_HASH_FIELDS
@@ -201,6 +207,34 @@ def hash_evidence_package(evidence_items: list[Dict[str, Any]]) -> str:
 def hash_evidence_item(evidence_item: Dict[str, Any]) -> str:
     """Compute hash for individual evidence item.
 
+    This function implements the cryptographic evidence hash contract.
+    The hash MUST include all fields that materially define the legal evidence.
+    Modification of any of these fields should invalidate the hash.
+
+    Cryptographically relevant fields (included in hash):
+    - evidence_id: Unique evidence identifier
+    - passport_id: Parent passport identifier (CRITICAL for linking evidence)
+    - evidence_type: Type of evidence (CLAUSE, REDLINE, etc.)
+    - title: Human-readable title
+    - description: Detailed description
+    - content: Evidence content (text, JSON, or base64)
+    - content_type: MIME type of content
+    - risk_impact: Risk impact score (CRITICAL for legal assessment)
+    - compliance_impact: Compliance impact score (CRITICAL for legal assessment)
+    - evidence_status: Validity status
+    - contract_reference: Contract reference (clause, section)
+    - policy_reference: Policy reference
+    - analysis_reference: Reference to AI analysis finding
+    - source: Source of evidence
+    - source_id: Source identifier
+    - metadata: Additional evidence metadata
+
+    Operational metadata fields (excluded from hash):
+    - created_at: Timestamp (can be recomputed)
+    - verified_at: Timestamp (can be recomputed)
+    - hash: Computed hash (can be recomputed)
+    - Any other timestamps or bookkeeping fields
+
     Args:
         evidence_item: Evidence item dictionary
 
@@ -211,14 +245,9 @@ def hash_evidence_item(evidence_item: Dict[str, Any]) -> str:
         >>> hash_evidence_item({"id": "e1", "title": "Clause", "content": "..."})
         'd9e0f1a2...'
     """
-    # Include all relevant fields for reproducibility
-    item_data = {
-        "evidence_id": evidence_item.get("evidence_id", ""),
-        "title": evidence_item.get("title", ""),
-        "content": evidence_item.get("content", ""),
-        "evidence_type": evidence_item.get("evidence_type", ""),
-        "metadata": evidence_item.get("metadata", {}),
-    }
+    # Use canonicalization to ensure all relevant fields are included
+    # This guarantees passport_id, risk_impact, and compliance_impact are hashed
+    item_data = canonicalize_evidence_item(evidence_item)
 
     return compute_sha256_hash(item_data)
 
