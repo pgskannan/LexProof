@@ -1,26 +1,40 @@
-rules_version='2'
+rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownsEvidence(evidenceId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/evidence_records/$(evidenceId)).data.owner_id
+          == request.auth.uid;
+    }
+
     match /evidence_records/{evidenceId} {
-      allow read, create: if request.time < timestamp.date(2026, 9, 22);
-      allow update, delete: if request.time < timestamp.date(2026, 9, 22)
+      allow create: if signedIn()
+        && request.resource.data.owner_id == request.auth.uid;
+      allow read: if signedIn()
+        && resource.data.owner_id == request.auth.uid;
+      allow update: if signedIn()
+        && resource.data.owner_id == request.auth.uid
+        && request.resource.data.owner_id == resource.data.owner_id
+        && !exists(/databases/$(database)/documents/evidence_anchors/$(evidenceId));
+      allow delete: if signedIn()
+        && resource.data.owner_id == request.auth.uid
         && !exists(/databases/$(database)/documents/evidence_anchors/$(evidenceId));
     }
 
     match /evidence_anchors/{evidenceId} {
-      allow read, create: if request.time < timestamp.date(2026, 9, 22);
+      allow create: if ownsEvidence(evidenceId)
+        && request.resource.data.evidence_id == evidenceId;
+      allow read: if ownsEvidence(evidenceId);
       allow update, delete: if false;
     }
 
     match /{document=**} {
-      allow read: if request.time < timestamp.date(2026, 9, 22);
-      allow create: if request.time < timestamp.date(2026, 9, 22)
-        && request.resource.__name__.segments[0] != 'evidence_records'
-        && request.resource.__name__.segments[0] != 'evidence_anchors';
-      allow update, delete: if request.time < timestamp.date(2026, 9, 22)
-        && resource.__name__.segments[0] != 'evidence_records'
-        && resource.__name__.segments[0] != 'evidence_anchors';
+      allow read, write: if false;
     }
   }
 }
