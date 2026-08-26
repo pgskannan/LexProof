@@ -18,6 +18,7 @@ from ..services.ethereum_anchor_service import (
 )
 from ..repositories.firestore import EvidenceAnchorRepository, EvidenceRecordRepository, FirestoreRepository
 from ..config import LexProofSettings, get_settings
+from ..services.auth import get_current_user
 
 router = APIRouter(tags=["evidence-anchor"])
 
@@ -74,6 +75,7 @@ class EvidenceVerificationResult(BaseModel):
 async def anchor_evidence_to_blockchain(
     evidence_id: str,
     request: EvidenceAnchorRequest,
+    user: dict[str, Any] = Depends(get_current_user),
     settings: LexProofSettings = Depends(get_settings),
     repository: FirestoreRepository = Depends(get_evidence_repository),
     evidence_records_repository: FirestoreRepository = Depends(get_evidence_records_repository)
@@ -87,6 +89,7 @@ async def anchor_evidence_to_blockchain(
     Args:
         evidence_id: Evidence record identifier
         request: Evidence anchoring request
+        user: Current authenticated user (from Firebase)
         settings: LexProof settings (injected)
         repository: Firestore repository (injected)
 
@@ -94,11 +97,23 @@ async def anchor_evidence_to_blockchain(
         Evidence anchor response with transaction details
 
     Raises:
-        HTTPException: If validation fails or transaction fails
+        HTTPException: If validation fails, authorization fails, or transaction fails
     """
     try:
         if request.evidence_id != evidence_id:
             raise ValueError("Evidence ID in request must match path parameter")
+
+        # Authorization: Verify the user owns this evidence
+        evidence = evidence_records_repository.get(evidence_id)
+        if not evidence:
+            raise ValueError(f"Evidence record not found for evidence_id: {evidence_id}")
+
+        if evidence.get("owner_id") != str(user["uid"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"User {user['uid']} is not authorized to anchor evidence {evidence_id}"
+            )
+
         # Initialize services
         anchor_service = get_ethereum_anchor_service(
             settings=settings,
@@ -121,6 +136,8 @@ async def anchor_evidence_to_blockchain(
             evidence_hash=result["evidence_hash"],
         )
 
+    except HTTPException:
+        raise
     except ValueError as e:
         if str(e).startswith("Evidence record not found"):
             raise HTTPException(
