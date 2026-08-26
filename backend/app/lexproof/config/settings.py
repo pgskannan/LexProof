@@ -7,8 +7,9 @@ import os
 from functools import lru_cache
 
 from dotenv import load_dotenv
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from .firebase_credentials import has_file_credentials
 
 
 class LexProofSettings(BaseSettings):
@@ -27,9 +28,19 @@ class LexProofSettings(BaseSettings):
     gemini_model: str = "gemini-2.0-flash-001"
     gemini_temperature: float = 0.1
     gemini_max_output_tokens: int = 4096
-    ethereum_rpc_url: str = Field(default="https://sepolia.infura.io/v3/YOUR_INFURA_PROJECT_ID")
-    contract_address: str = Field(default="0x1234567890123456789012345678901234567890")
-    blockchain_private_key: SecretStr = Field(default=SecretStr(""))
+    ethereum_rpc_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("ETHEREUM_RPC_URL", "BLOCKCHAIN_RPC_URL"),
+    )
+    ethereum_chain_id: int = Field(default=11155111, validation_alias="ETHEREUM_CHAIN_ID")
+    contract_address: str = Field(
+        default="",
+        validation_alias=AliasChoices("ETHEREUM_CONTRACT_ADDRESS", "CONTRACT_ADDRESS", "BLOCKCHAIN_CONTRACT_ADDRESS"),
+    )
+    blockchain_private_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices("ETHEREUM_PRIVATE_KEY", "BLOCKCHAIN_PRIVATE_KEY"),
+    )
     firebase_storage_bucket: str = ""
     cors_origins: str = Field(default="http://localhost:3000", validation_alias="LEXPROOF_CORS_ORIGINS")
     integration_tests: bool = False
@@ -39,7 +50,12 @@ class LexProofSettings(BaseSettings):
         return self.google_cloud_project or self.firebase_project_id
 
     def has_firebase_credentials(self) -> bool:
-        return bool(self.firebase_project_id and self.firebase_client_email and self.firebase_private_key.get_secret_value())
+        environment_credentials = bool(
+            self.firebase_project_id
+            and self.firebase_client_email
+            and self.firebase_private_key.get_secret_value()
+        )
+        return environment_credentials or has_file_credentials()
 
     def has_gcp_project(self) -> bool:
         return bool(self.project_id)

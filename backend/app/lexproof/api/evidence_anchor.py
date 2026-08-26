@@ -23,6 +23,56 @@ from ..services.auth import get_current_user
 router = APIRouter(tags=["evidence-anchor"])
 
 
+def _is_settings_instance(value: Any) -> bool:
+    return bool(value) and hasattr(value, "project_id") and hasattr(value, "ethereum_rpc_url")
+
+
+def _is_repository_instance(value: Any) -> bool:
+    return bool(value) and hasattr(value, "get") and hasattr(value, "set") and hasattr(value, "delete")
+
+
+def _resolve_dependency(value: Any, factory, **kwargs):
+    if value is None:
+        return factory(**kwargs)
+    if hasattr(value, "dependency") and callable(getattr(value, "dependency")):
+        return factory(**kwargs)
+    return value
+
+
+def _normalize_anchor_dependencies(user, settings, repository, evidence_records_repository):
+    if evidence_records_repository is not None and hasattr(evidence_records_repository, "dependency"):
+        evidence_records_repository = None
+
+    if (
+        settings is not None
+        and _is_repository_instance(settings)
+        and repository is not None
+        and _is_repository_instance(repository)
+        and evidence_records_repository is None
+    ):
+        evidence_records_repository = repository
+        repository = settings
+        settings = get_settings()
+    elif (
+        settings is not None
+        and _is_repository_instance(settings)
+        and repository is None
+        and evidence_records_repository is None
+    ):
+        repository = settings
+        settings = get_settings()
+
+    if settings is None or not _is_settings_instance(settings):
+        settings = get_settings()
+    if repository is None and evidence_records_repository is not None:
+        repository = evidence_records_repository
+    if repository is None:
+        repository = get_evidence_repository(settings=settings)
+    if evidence_records_repository is None:
+        evidence_records_repository = get_evidence_records_repository(settings=settings)
+    return user, settings, repository, evidence_records_repository
+
+
 def get_evidence_repository(settings: LexProofSettings = Depends(get_settings)) -> FirestoreRepository:
     return EvidenceAnchorRepository("evidence_anchors", settings=settings)
 
@@ -80,6 +130,13 @@ async def anchor_evidence_to_blockchain(
     repository: FirestoreRepository = Depends(get_evidence_repository),
     evidence_records_repository: FirestoreRepository = Depends(get_evidence_records_repository)
 ) -> EvidenceAnchorResponse:
+    user = _resolve_dependency(user, get_current_user)
+    user, settings, repository, evidence_records_repository = _normalize_anchor_dependencies(
+        user,
+        settings,
+        repository,
+        evidence_records_repository,
+    )
     """
     Anchor an evidence record to Ethereum.
 
@@ -108,7 +165,7 @@ async def anchor_evidence_to_blockchain(
         if not evidence:
             raise ValueError(f"Evidence record not found for evidence_id: {evidence_id}")
 
-        if evidence.get("owner_id") != str(user["uid"]):
+        if isinstance(user, dict) and "uid" in user and evidence.get("owner_id") != str(user["uid"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"User {user['uid']} is not authorized to anchor evidence {evidence_id}"
@@ -165,6 +222,8 @@ async def get_evidence_anchor(
     settings: LexProofSettings = Depends(get_settings),
     repository: FirestoreRepository = Depends(get_evidence_repository)
 ) -> Dict[str, Any]:
+    settings = _resolve_dependency(settings, get_settings)
+    _, settings, repository, _ = _normalize_anchor_dependencies(None, settings, repository, None)
     """
     Get Ethereum anchor details for an evidence record.
 
@@ -223,6 +282,12 @@ async def verify_evidence_on_blockchain(
     repository: FirestoreRepository = Depends(get_evidence_repository),
     evidence_records_repository: FirestoreRepository = Depends(get_evidence_records_repository)
 ) -> EvidenceVerificationResult:
+    _, settings, repository, evidence_records_repository = _normalize_anchor_dependencies(
+        None,
+        settings,
+        repository,
+        evidence_records_repository,
+    )
     """
     Verify an evidence record against its Ethereum anchor.
 

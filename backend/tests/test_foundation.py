@@ -1,4 +1,6 @@
 import pytest
+import firebase_admin
+from firebase_admin import credentials
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.lexproof.config import LexProofSettings
@@ -6,9 +8,59 @@ from app.lexproof.repositories.cloud_storage import CloudStorageRepository
 from app.lexproof.repositories.firestore import FirestoreRepository
 from app.lexproof.repositories.secret_manager import SecretManagerRepository
 from app.lexproof.services.firebase import reset_firebase_for_tests
+from app.lexproof.services.firebase import initialize_firebase
 from app.lexproof.services.firebase_auth import FirebaseAuthenticationError, verify_firebase_token
 from app.lexproof.services.health import router as health_router
 from app.lexproof.services.vertex_ai import VertexGeminiProvider, VertexAIError
+from app.lexproof.config import firebase_credentials
+
+
+def test_firebase_credentials_from_environment():
+    settings = LexProofSettings(
+        firebase_project_id="project",
+        firebase_client_email="client@example.com",
+        firebase_private_key="key",
+    )
+    assert settings.has_firebase_credentials() is True
+
+
+def test_firebase_credentials_from_local_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.setattr(firebase_credentials, "local_service_account_path", lambda: tmp_path / "local.json")
+    (tmp_path / "local.json").write_text("test credential", encoding="utf-8")
+    assert LexProofSettings().has_firebase_credentials() is True
+
+
+def test_firebase_credentials_from_application_credentials(monkeypatch, tmp_path):
+    credential_path = tmp_path / "configured.json"
+    credential_path.write_text("test credential", encoding="utf-8")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(credential_path))
+    monkeypatch.setattr(firebase_credentials, "local_service_account_path", lambda: tmp_path / "missing.json")
+    assert LexProofSettings().has_firebase_credentials() is True
+
+
+def test_firebase_credentials_missing(monkeypatch, tmp_path):
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.setattr(firebase_credentials, "local_service_account_path", lambda: tmp_path / "missing.json")
+    assert LexProofSettings().has_firebase_credentials() is False
+
+
+def test_firebase_initialization_uses_local_file(monkeypatch, tmp_path):
+    local_path = tmp_path / "local.json"
+    local_path.write_text("test credential", encoding="utf-8")
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.setattr(firebase_credentials, "local_service_account_path", lambda: local_path)
+    monkeypatch.setattr("app.lexproof.services.firebase.local_service_account_path", lambda: local_path)
+
+    certificate = object()
+    app = object()
+    monkeypatch.setattr(credentials, "Certificate", lambda path: certificate)
+    monkeypatch.setattr(firebase_admin, "initialize_app", lambda credential, options: app)
+    reset_firebase_for_tests()
+
+    assert initialize_firebase(LexProofSettings()) is app
+
+    reset_firebase_for_tests()
 
 
 def test_settings_never_expose_secret_values(settings):

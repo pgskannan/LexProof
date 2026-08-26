@@ -2,8 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title LexProofRegistry
@@ -19,8 +18,6 @@ import "@openzeppelin/contracts/utils/Counters.sol";
  * - Event logging for audit trail
  */
 contract LexProofRegistry is Ownable, ReentrancyGuard {
-    using Counters for Counters.Counter;
-
     mapping(address => bool) public authorizedRegistrars;
     
     // Status constants
@@ -54,12 +51,20 @@ contract LexProofRegistry is Ownable, ReentrancyGuard {
     }
     
     // Counters
-    Counters.Counter private proofCounter;
+    uint256 private proofCounter;
     
     // State variables
     mapping(bytes32 => Proof) public proofs;
     mapping(bytes32 => Transaction) public transactions;
     bytes32[] public proofIds;
+
+    struct EvidenceAnchor {
+        bytes32 evidenceHash;
+        uint256 timestamp;
+        address anchoredBy;
+    }
+
+    mapping(bytes32 => EvidenceAnchor) public evidenceAnchors;
     
     // Events
     event ProofRegistered(
@@ -91,9 +96,55 @@ contract LexProofRegistry is Ownable, ReentrancyGuard {
 
     event RegistrarAuthorizationChanged(address indexed registrar, bool authorized);
 
+    event EvidenceAnchored(
+        string indexed recordId,
+        bytes32 indexed evidenceHash,
+        uint256 timestamp,
+        address indexed anchoredBy
+    );
+
     modifier onlyRegistrar() {
         require(authorizedRegistrars[msg.sender], "Not authorized registrar");
         _;
+    }
+
+    function anchorEvidence(string calldata recordId, bytes32 evidenceHash)
+        external
+        onlyRegistrar
+        nonReentrant
+    {
+        require(bytes(recordId).length > 0, "Record ID cannot be empty");
+        require(evidenceHash != bytes32(0), "Evidence hash cannot be zero");
+        bytes32 recordKey = keccak256(bytes(recordId));
+        require(evidenceAnchors[recordKey].evidenceHash == bytes32(0), "Evidence already anchored");
+
+        evidenceAnchors[recordKey] = EvidenceAnchor({
+            evidenceHash: evidenceHash,
+            timestamp: block.timestamp,
+            anchoredBy: msg.sender
+        });
+
+        emit EvidenceAnchored(recordId, evidenceHash, block.timestamp, msg.sender);
+    }
+
+    function verifyEvidence(string calldata recordId, bytes32 evidenceHash)
+        external
+        view
+        returns (bool)
+    {
+        bytes32 recordKey = keccak256(bytes(recordId));
+        EvidenceAnchor memory anchor = evidenceAnchors[recordKey];
+        return anchor.evidenceHash != bytes32(0) && anchor.evidenceHash == evidenceHash;
+    }
+
+    function getEvidenceAnchor(string calldata recordId)
+        external
+        view
+        returns (bytes32 evidenceHash, uint256 timestamp, address anchoredBy)
+    {
+        EvidenceAnchor memory anchor = evidenceAnchors[keccak256(bytes(recordId))];
+        require(anchor.evidenceHash != bytes32(0), "Evidence anchor does not exist");
+        return (anchor.evidenceHash, anchor.timestamp, anchor.anchoredBy);
     }
     
     /**
@@ -146,7 +197,7 @@ contract LexProofRegistry is Ownable, ReentrancyGuard {
         if (proofs[proofId].contractHash != bytes32(0)) {
             return proofId;
         }
-        proofCounter.increment();
+        proofCounter += 1;
         
         // Create proof entry
         proofs[proofId] = Proof({
@@ -271,13 +322,17 @@ contract LexProofRegistry is Ownable, ReentrancyGuard {
     function getTransaction(bytes32 proofId) 
         external 
         view 
-        returns (bytes32 transactionHash, uint256 blockNumber, uint256 timestamp) 
+        returns (bytes memory transactionHash, uint256 blockNumber, uint256 timestamp)
     {
         require(proofId != bytes32(0), "Proof ID cannot be zero");
         require(transactions[proofId].proofId != bytes32(0), "Transaction does not exist");
         
-        Transaction memory tx = transactions[proofId];
-        return (tx.transactionHash, tx.blockNumber, tx.timestamp);
+        Transaction memory transactionRecord = transactions[proofId];
+        return (
+            transactionRecord.transactionHash,
+            transactionRecord.blockNumber,
+            transactionRecord.timestamp
+        );
     }
     
     /**
@@ -293,7 +348,7 @@ contract LexProofRegistry is Ownable, ReentrancyGuard {
      * @return Number of proofs
      */
     function getProofCount() external view returns (uint256) {
-        return proofCounter.current();
+        return proofCounter;
     }
     
     /**
