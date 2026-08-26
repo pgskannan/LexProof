@@ -556,6 +556,8 @@ export default function LegalPassportPage() {
                           <div className="pt-2 text-xs text-gray-500">
                             ID: <span className="font-mono">{item.evidence_id.slice(0, 8)}...</span>
                           </div>
+
+                          <AnchorProofButton evidenceId={item.evidence_id} />
                         </div>
                       )}
                     </div>
@@ -619,22 +621,6 @@ export default function LegalPassportPage() {
           </div>
         </div>
 
-        {/* Blockchain Proof Registry Section */}
-        {passport && (
-          <div className="mt-8">
-            <AnchorProofButton
-              contractId={passport.contract_id}
-              contractHash={passport.document_hash}
-              policyHash={passport.policy_hash}
-              analysisHash={passport.analysis_hash}
-              evidenceHash={passport.evidence_hash}
-              riskScore={passport.risk_score}
-              complianceScore={passport.compliance_score}
-              policyVersion={passport.policy_version}
-              evidenceCount={legalEvidenceCount}
-            />
-          </div>
-        )}
       </div>
     </div>
   )

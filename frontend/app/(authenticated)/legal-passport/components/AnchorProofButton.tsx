@@ -1,344 +1,288 @@
-'use client';
+'use client'
 
-import React, { useState, useEffect } from 'react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Skeleton } from '@/components/ui/skeleton';
-import { 
-  Anchor, 
-  CheckCircle2, 
-  XCircle, 
-  Clock, 
-  Network, 
-  FileText,
-  Hash
-} from 'lucide-react';
-import { toast } from 'sonner';
+import { useEffect, useState } from 'react'
+import { Anchor, CheckCircle2, Clock, FileText, Hash, Network, XCircle } from 'lucide-react'
+import { Contract, ethers } from 'ethers'
+import { toast } from 'sonner'
+import { apiFetch } from '../../../../lib/api'
+import { hashEvidenceItem } from '../../../../lib/evidenceHash'
 
-interface ProofAnchoringResponse {
-  proof_id: string;
-  transaction_hash: string;
-  block_number: number;
-  status: string;
-  timestamp: string;
-  network: string;
-  contract_address: string;
+const ETHEREUM_SEPOLIA_RPC_URL = process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL ?? 'https://ethereum-sepolia-rpc.publicnode.com'
+const LEXPROOF_CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_LEXPROOF_CONTRACT_ADDRESS ?? '0x0000000000000000000000000000000000000000'
+const ETHEREUM_SEPOLIA_EXPLORER = 'https://sepolia.etherscan.io'
+
+const EVIDENCE_ANCHOR_ABI = [
+  'function getEvidenceAnchor(string) view returns (bytes32 evidenceHash, uint256 timestamp, address anchoredBy)',
+  'event EvidenceAnchored(string indexed recordId, bytes32 indexed evidenceHash, uint256 timestamp, address anchoredBy)',
+]
+
+export interface EthereumAnchorRead {
+  evidenceHash: string | null
+  timestamp: number | null
+  anchoredBy: string | null
+  transactionHash: string | null
+  blockNumber: number | null
 }
 
-interface TransactionDetails {
-  proof_id: string;
-  transaction_hash: string;
-  block_number: number;
-  timestamp: number;
+export function getEvidenceAnchorContract(provider?: ethers.Provider | ethers.Signer): Contract {
+  const targetProvider = provider ?? new ethers.JsonRpcProvider(ETHEREUM_SEPOLIA_RPC_URL)
+  return new ethers.Contract(LEXPROOF_CONTRACT_ADDRESS, EVIDENCE_ANCHOR_ABI, targetProvider)
+}
+
+export async function readEvidenceAnchorFromEthereum(evidenceId: string): Promise<EthereumAnchorRead | null> {
+  try {
+    const contract = getEvidenceAnchorContract()
+    const [onChainHash, timestamp, anchoredBy] = await contract.getEvidenceAnchor(evidenceId)
+    if (!onChainHash || onChainHash === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+      return null
+    }
+
+    const logs = await contract.queryFilter(contract.filters.EvidenceAnchored(evidenceId))
+    const matchingLog = logs.find((log) => {
+      const args = (log as any).args as { evidenceHash?: string } | undefined
+      return args?.evidenceHash && ethers.hexlify(args.evidenceHash).toLowerCase() === ethers.hexlify(onChainHash).toLowerCase()
+    })
+
+    return {
+      evidenceHash: ethers.hexlify(onChainHash),
+      timestamp: Number(timestamp),
+      anchoredBy: anchoredBy ?? null,
+      transactionHash: matchingLog ? matchingLog.transactionHash : null,
+      blockNumber: matchingLog ? Number(matchingLog.blockNumber) : null,
+    }
+  } catch (error) {
+    console.warn('Unable to read Ethereum anchor for evidence', evidenceId, error)
+    return null
+  }
+}
+
+export function getEtherscanTransactionUrl(txHash: string): string {
+  return `${ETHEREUM_SEPOLIA_EXPLORER}/tx/${txHash}`
+}
+
+interface EvidenceAnchor {
+  evidence_id: string
+  blockchain_network: string
+  contract_address: string
+  transaction_hash: string
+  block_number: number
+  anchored_at: string
+  evidence_hash: string
+  anchored_by?: string
+}
+
+interface EvidenceComplianceRecord {
+  evidence_id: string
+  passport_id?: string
+  evidence_type?: string
+  title?: string
+  description?: string | null
+  content?: string
+  content_type?: string | null
+  risk_impact?: number | null
+  compliance_impact?: number | null
+  evidence_status?: string | null
+  contract_reference?: string | null
+  policy_reference?: string | null
+  analysis_reference?: string | null
+  source?: string | null
+  source_id?: string | null
+  metadata?: Record<string, unknown>
+}
+
+interface EvidenceVerification {
+  verified: boolean
+  status: string
+  message: string
+  localHash?: string
+  ethereumHash?: string
+  transactionHash?: string
+  blockNumber?: number
+  anchoredBy?: string
 }
 
 interface AnchorProofButtonProps {
-  contractId: string;
-  contractHash: string;
-  policyHash: string;
-  analysisHash: string;
-  evidenceHash: string;
-  riskScore: number;
-  complianceScore: number;
-  policyVersion: string;
-  evidenceCount: number;
+  evidenceId: string
 }
 
-export default function AnchorProofButton({
-  contractId,
-  contractHash,
-  policyHash,
-  analysisHash,
-  evidenceHash,
-  riskScore,
-  complianceScore,
-  policyVersion,
-  evidenceCount,
-}: AnchorProofButtonProps) {
-  const [isAnchoring, setIsAnchoring] = useState(false);
-  const [anchoredProof, setAnchoredProof] = useState<ProofAnchoringResponse | null>(null);
-  const [transactionDetails, setTransactionDetails] = useState<TransactionDetails | null>(null);
-  const [verificationStatus, setVerificationStatus] = useState<'verifying' | 'verified' | 'failed' | null>(null);
-  const [isMounted, setIsMounted] = useState(false);
+export default function AnchorProofButton({ evidenceId }: AnchorProofButtonProps) {
+  const [isAnchoring, setIsAnchoring] = useState(false)
+  const [anchor, setAnchor] = useState<EvidenceAnchor | null>(null)
+  const [verification, setVerification] = useState<EvidenceVerification | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [record, setRecord] = useState<EvidenceComplianceRecord | null>(null)
 
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
-
-  const handleAnchorProof = async () => {
-    if (!isMounted) return;
-
-    setIsAnchoring(true);
-    setAnchoredProof(null);
-    setTransactionDetails(null);
-    setVerificationStatus(null);
-
+  const loadAnchor = async () => {
     try {
-      const response = await fetch(`/api/passports/${contractId}/anchor`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          contract_id: contractId,
-          contract_hash: contractHash,
-          policy_hash: policyHash,
-          analysis_hash: analysisHash,
-          evidence_hash: evidenceHash,
-          risk_score: riskScore,
-          compliance_score: complianceScore,
-          policy_version: policyVersion,
-          evidence_count: evidenceCount,
-        }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to anchor proof');
+      const statusResponse = await apiFetch(`/api/evidence/${evidenceId}/status`)
+      if (!statusResponse.ok) throw new Error('Unable to load evidence anchor status')
+      const status: { anchored: boolean } = await statusResponse.json()
+      if (status.anchored) {
+        const response = await apiFetch(`/api/evidence/${evidenceId}/anchor`)
+        if (!response.ok) throw new Error('Unable to load evidence anchor')
+        setAnchor(await response.json())
       }
-
-      const data: ProofAnchoringResponse = await response.json();
-      setAnchoredProof(data);
-      setTransactionDetails({
-        proof_id: data.proof_id,
-        transaction_hash: data.transaction_hash,
-        block_number: data.block_number,
-        timestamp: new Date(data.timestamp).getTime(),
-      });
-
-      toast.success('Proof anchored to blockchain successfully!', {
-        description: `Transaction: ${data.transaction_hash.substring(0, 10)}...`,
-      });
-
-      // Start verification in background
-      verifyProofOnChain(data.proof_id, contractHash, policyHash, analysisHash, evidenceHash);
-
     } catch (error) {
-      console.error('Error anchoring proof:', error);
-      toast.error('Failed to anchor proof to blockchain', {
-        description: error instanceof Error ? error.message : 'Unknown error occurred',
-      });
+      console.error('Error loading evidence anchor:', error)
     } finally {
-      setIsAnchoring(false);
+      setLoading(false)
     }
-  };
-
-  const verifyProofOnChain = async (
-    proofId: string,
-    contractHash: string,
-    policyHash: string,
-    analysisHash: string,
-    evidenceHash: string
-  ) => {
-    setVerificationStatus('verifying');
-
-    try {
-      const response = await fetch(
-        `/api/proofs/${proofId}/verify?${new URLSearchParams({
-          contract_hash: contractHash,
-          policy_hash: policyHash,
-          analysis_hash: analysisHash,
-          evidence_hash: evidenceHash,
-        }).toString()}`,
-        {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          }
-        }
-      );
-
-      if (response.ok) {
-        const data = await response.json();
-        setVerificationStatus(data.is_valid ? 'verified' : 'failed');
-        if (data.is_valid) {
-          toast.success('Proof verified on blockchain!');
-        } else {
-          toast.error('Proof verification failed on blockchain');
-        }
-      } else {
-        throw new Error('Verification failed');
-      }
-    } catch (error) {
-      console.error('Error verifying proof:', error);
-      setVerificationStatus('failed');
-      toast.error('Error verifying proof on blockchain');
-    }
-  };
-
-  const fetchTransactionDetails = async (proofId: string) => {
-    try {
-      const response = await fetch(`/api/proofs/${proofId}/transaction`);
-      if (response.ok) {
-        const data = await response.json();
-        setTransactionDetails(data);
-      }
-    } catch (error) {
-      console.error('Error fetching transaction details:', error);
-    }
-  };
-
-  const getStatusBadge = () => {
-    if (verificationStatus === 'verified') {
-      return (
-        <Badge variant="default" className="bg-green-500 hover:bg-green-600">
-          <CheckCircle2 className="w-3 h-3 mr-1" />
-          Verified
-        </Badge>
-      );
-    }
-    if (verificationStatus === 'failed') {
-      return (
-        <Badge variant="destructive">
-          <XCircle className="w-3 h-3 mr-1" />
-          Failed
-        </Badge>
-      );
-    }
-    if (verificationStatus === 'verifying') {
-      return (
-        <Badge variant="secondary" className="animate-pulse">
-          <Clock className="w-3 h-3 mr-1" />
-          Verifying...
-        </Badge>
-      );
-    }
-    if (anchoredProof) {
-      return (
-        <Badge variant="default">
-          <CheckCircle2 className="w-3 h-3 mr-1" />
-          Anchored
-        </Badge>
-      );
-    }
-    return <Badge variant="outline">Not Anchored</Badge>;
-  };
-
-  if (!isMounted) {
-    return null;
   }
 
+  useEffect(() => {
+    void loadAnchor()
+  }, [evidenceId])
+
+  const verifyOnChain = async () => {
+    try {
+      const evidenceResponse = await apiFetch(`/api/evidence/${evidenceId}`)
+      if (!evidenceResponse.ok) throw new Error('Unable to load evidence details for local hash calculation')
+      const evidenceRecord = (await evidenceResponse.json()) as EvidenceComplianceRecord
+      setRecord(evidenceRecord)
+
+      const localHash = await hashEvidenceItem(evidenceRecord as unknown as Record<string, unknown>)
+      const chainAnchor = await readEvidenceAnchorFromEthereum(evidenceId)
+      if (!chainAnchor || !chainAnchor.evidenceHash) {
+        const result: EvidenceVerification = {
+          verified: false,
+          status: 'NOT_FOUND',
+          message: '⚠ No Ethereum Anchor Found',
+          localHash,
+        }
+        setVerification(result)
+        return result
+      }
+
+      const ethereumHash = chainAnchor.evidenceHash
+      const normalizeHash = (value: string) => value.toLowerCase().replace(/^0x/, '')
+      const verified = normalizeHash(localHash) === normalizeHash(ethereumHash)
+      const result: EvidenceVerification = {
+        verified,
+        status: verified ? 'PASS' : 'FAIL',
+        message: verified ? '✓ Cryptographically Verified' : '✕ Evidence Does Not Match Blockchain Anchor',
+        localHash,
+        ethereumHash,
+        transactionHash: chainAnchor.transactionHash ?? undefined,
+        blockNumber: chainAnchor.blockNumber ?? undefined,
+        anchoredBy: chainAnchor.anchoredBy ?? undefined,
+      }
+      setVerification(result)
+      return result
+    } catch (error) {
+      console.error('Error verifying evidence on Ethereum:', error)
+      const result: EvidenceVerification = {
+        verified: false,
+        status: 'FAIL',
+        message: '✕ Evidence Does Not Match Blockchain Anchor',
+      }
+      setVerification(result)
+      return result
+    }
+  }
+
+  const handleAnchor = async () => {
+    setIsAnchoring(true)
+    setVerification(null)
+    try {
+      const response = await apiFetch(`/api/evidence/${evidenceId}/anchor`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ evidence_id: evidenceId }),
+      })
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.detail || 'Failed to anchor evidence')
+      }
+      const result: EvidenceAnchor = await response.json()
+      setAnchor(result)
+      toast.success('Evidence anchored to Ethereum Sepolia')
+      const verificationResult = await verifyOnChain()
+      if (verificationResult.verified) toast.success('Evidence verified on-chain')
+    } catch (error) {
+      console.error('Error anchoring evidence:', error)
+      toast.error('Failed to anchor evidence', {
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
+      })
+    } finally {
+      setIsAnchoring(false)
+    }
+  }
+
+  const handleVerify = async () => {
+    try {
+      const result = await verifyOnChain()
+      if (!result.verified && result.status !== 'NOT_FOUND') {
+        toast.error(result.message)
+      }
+      if (result.status === 'NOT_FOUND') {
+        toast.warning(result.message)
+      }
+    } catch (error) {
+      console.error('Error verifying evidence:', error)
+      toast.error('Evidence verification failed')
+    }
+  }
+
+  const verificationHasTxn = verification && verification.transactionHash
+  const anchoredByValue = verification?.anchoredBy ?? anchor?.anchored_by ?? undefined
+
+  if (loading) return <div className="text-sm text-gray-500">Loading Evidence Anchor...</div>
+
   return (
-    <Card className="w-full">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Anchor className="w-5 h-5 text-blue-500" />
-          Blockchain Proof Registry
-        </CardTitle>
-        <CardDescription>
-          Anchor legal evidence fingerprints to Ethereum Sepolia for immutable verification
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Anchor Button */}
-        {!anchoredProof && (
-          <div className="space-y-2">
-            <Button
-              onClick={handleAnchorProof}
-              disabled={isAnchoring}
-              className="w-full"
-              size="lg"
-            >
-              <Anchor className="w-4 h-4 mr-2" />
-              {isAnchoring ? 'Anchoring...' : 'Anchor Proof to Blockchain'}
-            </Button>
-            <p className="text-sm text-muted-foreground">
-              Only hashes and non-sensitive metadata will be stored on-chain
-            </p>
-          </div>
+    <div className="border-t border-gray-200 pt-4 space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h4 className="font-semibold text-gray-900">Evidence Anchor</h4>
+          <p className="text-xs text-gray-500">Ethereum Sepolia</p>
+        </div>
+        {!anchor ? (
+          <button type="button" onClick={handleAnchor} disabled={isAnchoring} className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60">
+            <Anchor className="h-4 w-4" />
+            {isAnchoring ? 'Anchoring...' : 'Anchor to Ethereum'}
+          </button>
+        ) : (
+          <span className="inline-flex items-center gap-1 rounded-md bg-green-100 px-2 py-1 text-xs font-medium text-green-800">
+            <CheckCircle2 className="h-3 w-3" /> Anchored
+          </span>
         )}
+      </div>
 
-        {/* Anchored Proof Details */}
-        {anchoredProof && (
-          <div className="space-y-4">
-            {/* Status Badge */}
-            <div className="flex justify-between items-center">
-              {getStatusBadge()}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => fetchTransactionDetails(anchoredProof.proof_id)}
-              >
-                View Transaction
-              </Button>
+      {anchor && (
+        <div className="space-y-2 text-sm">
+          <div className="flex items-start gap-2"><Network className="mt-0.5 h-4 w-4 text-gray-500" /><span><strong>Network:</strong> Ethereum Sepolia</span></div>
+          <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 text-gray-500" /><span><strong>Contract:</strong> <span className="break-all font-mono text-xs">{anchor.contract_address}</span></span></div>
+          <div className="flex items-start gap-2"><Hash className="mt-0.5 h-4 w-4 text-gray-500" /><span><strong>Evidence Item Hash:</strong> <span className="break-all font-mono text-xs">{anchor.evidence_hash}</span></span></div>
+          <div className="flex items-start gap-2"><Hash className="mt-0.5 h-4 w-4 text-gray-500" /><span><strong>Transaction:</strong> <span className="break-all font-mono text-xs">{anchor.transaction_hash}</span></span></div>
+          <div><strong>Block:</strong> {anchor.block_number}</div>
+          {anchoredByValue && (
+            <div>
+              <strong>Anchored By:</strong>{' '}
+              <span className="break-all font-mono text-xs">{anchoredByValue}</span>
             </div>
+          )}
+          <div className="flex items-start gap-2"><Clock className="mt-0.5 h-4 w-4 text-gray-500" /><span><strong>Timestamp:</strong> {new Date(anchor.anchored_at).toLocaleString()}</span></div>
+          <a href={getEtherscanTransactionUrl(anchor.transaction_hash)} target="_blank" rel="noreferrer" className="inline-flex items-center text-sm font-medium text-blue-700 hover:text-blue-900">View on Etherscan</a>
+          <button type="button" onClick={handleVerify} className="text-sm font-medium text-blue-700 hover:text-blue-900">Check On-chain Verification</button>
+        </div>
+      )}
 
-            {/* Network and Contract Info */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-sm">
-                <Network className="w-4 h-4 text-muted-foreground" />
-                <span className="font-medium">Network:</span>
-                <span className="text-muted-foreground">{anchoredProof.network}</span>
-              </div>
-              <div className="flex items-center gap-2 text-sm">
-                <FileText className="w-4 h-4 text-muted-foreground" />
-                <span className="font-medium">Contract:</span>
-                <span className="text-muted-foreground font-mono text-xs">
-                  {anchoredProof.contract_address}
-                </span>
-              </div>
+      {verification && (
+        <div className={verification.verified ? 'text-sm text-green-700' : verification.status === 'NOT_FOUND' ? 'text-sm text-yellow-700' : 'text-sm text-red-700'}>
+          <div className="flex items-center gap-2 font-medium">
+            {verification.verified ? <CheckCircle2 className="h-4 w-4" /> : verification.status === 'NOT_FOUND' ? <Clock className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+            {verification.message}
+          </div>
+          {verification.localHash && <div className="mt-1 break-all font-mono text-xs">Local Evidence Item Hash: {verification.localHash}</div>}
+          {verification.ethereumHash && <div className="mt-1 break-all font-mono text-xs">Ethereum Evidence Hash: {verification.ethereumHash}</div>}
+          {verificationHasTxn && verification.transactionHash && (
+            <div className="mt-2">
+              <div className="break-all font-mono text-xs">Tx: {verification.transactionHash}</div>
+              {verification.blockNumber && <div className="break-all font-mono text-xs">Block: {verification.blockNumber}</div>}
+              {verification.anchoredBy && <div className="break-all font-mono text-xs">Anchored By: {verification.anchoredBy}</div>}
             </div>
-
-            {/* Transaction Details */}
-            {transactionDetails && (
-              <div className="space-y-3 pt-4 border-t">
-                <div className="flex items-center gap-2 text-sm">
-                  <Hash className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium">Transaction Hash:</span>
-                  <span className="text-muted-foreground font-mono text-xs">
-                    {transactionDetails.transaction_hash.substring(0, 10)}...
-                    {transactionDetails.transaction_hash.substring(transactionDetails.transaction_hash.length - 10)}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <Hash className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium">Block Number:</span>
-                  <span className="text-muted-foreground font-mono">
-                    {transactionDetails.block_number}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <Clock className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium">Timestamp:</span>
-                  <span className="text-muted-foreground">
-                    {new Date(transactionDetails.timestamp).toLocaleString()}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* Verification Status */}
-            {verificationStatus && (
-              <div className="space-y-2 pt-4 border-t">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="font-medium">Verification Status:</span>
-                  {getStatusBadge()}
-                </div>
-                {verificationStatus === 'verified' && (
-                  <p className="text-sm text-green-600">
-                    ✓ Proof successfully verified on blockchain
-                  </p>
-                )}
-                {verificationStatus === 'failed' && (
-                  <p className="text-sm text-red-600">
-                    ✗ Proof verification failed on blockchain
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Loading Skeleton */}
-        {isAnchoring && (
-          <div className="space-y-3 pt-4">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-3/4" />
-            <Skeleton className="h-4 w-1/2" />
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
