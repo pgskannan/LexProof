@@ -33,12 +33,25 @@ logger = logging.getLogger(__name__)
 class EvidenceService:
     """Service for managing evidence items."""
 
-    def __init__(self, repository: Optional[FirestoreRepository] = None, owner_id: Optional[str] = None, passport_repository: Optional[FirestoreRepository] = None):
+    def __init__(self, repository: Optional[FirestoreRepository] = None, owner_id: Optional[str] = None, passport_repository: Optional[FirestoreRepository] = None, anchor_repository: Optional[FirestoreRepository] = None):
         """Initialize EvidenceService."""
         self.evidence_items: Dict[str, EvidenceItem] = {}
         self.repository = repository
         self.owner_id = owner_id
         self.passport_repository = passport_repository
+        self.anchor_repository = anchor_repository
+
+    def is_evidence_anchored(self, evidence_id: str) -> bool:
+        """Return whether a confirmed anchor exists for the evidence ID."""
+        if self.anchor_repository:
+            return bool(self.anchor_repository.get(evidence_id))
+        if self.repository and hasattr(self.repository, "is_evidence_anchored"):
+            return bool(self.repository.is_evidence_anchored(evidence_id))
+        return False
+
+    def _ensure_evidence_is_mutable(self, evidence_id: str) -> None:
+        if self.is_evidence_anchored(evidence_id):
+            raise ValueError(f"Anchored evidence cannot be modified: {evidence_id}")
 
     def passport_exists(self, passport_id: str) -> bool:
         if self.passport_repository is None:
@@ -121,6 +134,12 @@ class EvidenceService:
         """
         evidence_item = self.evidence_items.get(evidence_id)
 
+        if not evidence_item and self.repository:
+            record = self.repository.get(evidence_id)
+            if record:
+                evidence_item = EvidenceItem.model_validate(record)
+                self.evidence_items[evidence_id] = evidence_item
+
         if evidence_item:
             return EvidenceItemResponse.model_validate(evidence_item)
 
@@ -156,7 +175,9 @@ class EvidenceService:
                     passport = self.passport_repository.get(passport_id)
                     if passport and passport.get("created_at"):
                         record = {**record, "created_at": passport["created_at"]}
-                        self.repository.set(record.get("id") or record.get("evidence_id"), {"created_at": record["created_at"]}, merge=True)
+                        evidence_id = record.get("id") or record.get("evidence_id")
+                        if not self.is_evidence_anchored(evidence_id):
+                            self.repository.set(evidence_id, {"created_at": record["created_at"]}, merge=True)
                 evidence_summaries.append(EvidenceItemSummary.model_validate(record))
 
         # Sort by created_at (newest first)
@@ -183,11 +204,18 @@ class EvidenceService:
         """
         evidence_item = self.evidence_items.get(evidence_id)
 
+        if not evidence_item and self.repository:
+            record = self.repository.get(evidence_id)
+            if record:
+                evidence_item = EvidenceItem.model_validate(record)
+                self.evidence_items[evidence_id] = evidence_item
+
         if not evidence_item:
             logger.warning(f"Evidence item not found: {evidence_id}")
             return None
 
         try:
+            self._ensure_evidence_is_mutable(evidence_id)
             # Update status and verification timestamp
             if update_data.evidence_status:
                 evidence_item.evidence_status = update_data.evidence_status
@@ -197,6 +225,11 @@ class EvidenceService:
 
             # Recompute hash (content may have changed)
             evidence_item.hash = hash_evidence_item(evidence_item.dict())
+            if self.repository:
+                self.repository.set(
+                    evidence_id,
+                    {**evidence_item.model_dump(mode="json"), "id": evidence_id, "owner_id": self.owner_id},
+                )
 
             logger.info(f"Successfully updated evidence item {evidence_id}")
 
@@ -216,7 +249,16 @@ class EvidenceService:
             True if deleted, False if not found
         """
         if evidence_id in self.evidence_items:
+            self._ensure_evidence_is_mutable(evidence_id)
             del self.evidence_items[evidence_id]
+            if self.repository:
+                self.repository.delete(evidence_id)
+            logger.info(f"Successfully deleted evidence item {evidence_id}")
+            return True
+
+        if self.repository and self.repository.get(evidence_id):
+            self._ensure_evidence_is_mutable(evidence_id)
+            self.repository.delete(evidence_id)
             logger.info(f"Successfully deleted evidence item {evidence_id}")
             return True
 
@@ -239,11 +281,18 @@ class EvidenceService:
         """
         evidence_item = self.evidence_items.get(evidence_id)
 
+        if not evidence_item and self.repository:
+            record = self.repository.get(evidence_id)
+            if record:
+                evidence_item = EvidenceItem.model_validate(record)
+                self.evidence_items[evidence_id] = evidence_item
+
         if not evidence_item:
             logger.warning(f"Evidence item not found: {evidence_id}")
             return None
 
         try:
+            self._ensure_evidence_is_mutable(evidence_id)
             # Update verification timestamp
             evidence_item.verified_at = datetime.utcnow()
 
@@ -256,6 +305,11 @@ class EvidenceService:
 
             # Recompute hash
             evidence_item.hash = hash_evidence_item(evidence_item.dict())
+            if self.repository:
+                self.repository.set(
+                    evidence_id,
+                    {**evidence_item.model_dump(mode="json"), "id": evidence_id, "owner_id": self.owner_id},
+                )
 
             logger.info(f"Successfully verified evidence item {evidence_id}")
 

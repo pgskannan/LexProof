@@ -33,3 +33,43 @@ class FirestoreRepository:
     def stream(self) -> Iterable[dict[str, Any]]:
         for snapshot in self._get_client().collection(self.collection).stream():
             yield {"id": snapshot.id, **(snapshot.to_dict() or {})}
+
+
+class EvidenceAnchorRepository(FirestoreRepository):
+    """Create-once persistence for confirmed evidence anchors."""
+
+    def set(self, document_id: str, data: dict[str, Any], merge: bool = False) -> None:
+        if self.get(document_id):
+            raise ValueError(f"Evidence anchor already exists: {document_id}")
+        super().set(document_id, data, merge=False)
+
+    def delete(self, document_id: str) -> None:
+        if self.get(document_id):
+            raise ValueError(f"Evidence anchors cannot be deleted: {document_id}")
+        super().delete(document_id)
+
+
+class EvidenceRecordRepository(FirestoreRepository):
+    """Persistence for evidence records locked by confirmed anchors."""
+
+    def __init__(
+        self,
+        anchor_repository: FirestoreRepository,
+        settings: LexProofSettings | None = None,
+        client: Any = None,
+    ):
+        super().__init__("evidence_records", settings=settings, client=client)
+        self.anchor_repository = anchor_repository
+
+    def is_evidence_anchored(self, evidence_id: str) -> bool:
+        return self.anchor_repository.get(evidence_id) is not None
+
+    def set(self, document_id: str, data: dict[str, Any], merge: bool = False) -> None:
+        if self.is_evidence_anchored(document_id):
+            raise ValueError(f"Anchored evidence cannot be modified: {document_id}")
+        super().set(document_id, data, merge=merge)
+
+    def delete(self, document_id: str) -> None:
+        if self.is_evidence_anchored(document_id):
+            raise ValueError(f"Anchored evidence cannot be deleted: {document_id}")
+        super().delete(document_id)

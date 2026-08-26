@@ -22,7 +22,7 @@ from ..models import (
     EvidenceItemSummary,
     PassportStatus,
 )
-from ....repositories.firestore import FirestoreRepository
+from ....repositories.firestore import EvidenceAnchorRepository, EvidenceRecordRepository, FirestoreRepository
 from ....services.auth import get_current_user
 from ..integrity import verify_passport_integrity
 
@@ -35,9 +35,11 @@ contract_router = APIRouter(prefix="/contracts", tags=["Legal Passports"])
 # ─────────────────────────────────────────────────────────────────────────────────
 
 _passport_service: Optional[PassportService] = None
+_evidence_anchor_repository = EvidenceAnchorRepository("evidence_anchors")
 _evidence_service = EvidenceService(
-    FirestoreRepository("evidence_records"),
+    EvidenceRecordRepository(_evidence_anchor_repository),
     passport_repository=FirestoreRepository("legal_passports"),
+    anchor_repository=_evidence_anchor_repository,
 )
 
 
@@ -184,6 +186,7 @@ async def get_evidence_service(user: Dict[str, Any] = Depends(get_current_user))
         _evidence_service.repository,
         owner_id=str(user["uid"]),
         passport_repository=_evidence_service.passport_repository,
+        anchor_repository=_evidence_service.anchor_repository,
     )
 
 
