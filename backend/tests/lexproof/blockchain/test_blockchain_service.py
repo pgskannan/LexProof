@@ -8,6 +8,7 @@ from unittest.mock import Mock, MagicMock, patch
 from datetime import datetime
 
 from app.lexproof.services.blockchain import BlockchainService, TransactionStatus, create_blockchain_service
+from web3.exceptions import TimeExhausted, TransactionNotFound
 
 
 def configure_contract_mock(contract_mock):
@@ -88,6 +89,86 @@ class TestBlockchainService:
     def test_initialization(self, blockchain_service):
         """Test BlockchainService initialization"""
         assert blockchain_service.rpc_url == "https://sepolia.infura.io/v3/test"
+
+    def test_wait_for_receipt_success(self, blockchain_service):
+        receipt = {"status": 1, "blockNumber": 12}
+        blockchain_service.w3.eth.wait_for_transaction_receipt.return_value = receipt
+
+        assert blockchain_service._wait_for_transaction_receipt(b"\x01" * 32) == receipt
+
+    def test_wait_for_receipt_reverted(self, blockchain_service):
+        blockchain_service.w3.eth.wait_for_transaction_receipt.return_value = {
+            "status": 0,
+            "blockNumber": 12,
+        }
+
+        receipt = blockchain_service._wait_for_transaction_receipt(b"\x01" * 32)
+        assert receipt["status"] == 0
+
+    def test_anchor_evidence_reverted_receipt_raises(self, blockchain_service):
+        tx_hash = b"\x01" * 32
+        function = blockchain_service.contract.functions.anchorEvidence.return_value
+        function.estimate_gas.return_value = 21000
+        function.build_transaction.return_value = {"gas": 21000, "gasPrice": 1}
+        blockchain_service.w3.eth.account.sign_transaction.return_value.raw_transaction = b"signed"
+        blockchain_service.w3.eth.send_raw_transaction.return_value = tx_hash
+        blockchain_service.w3.eth.wait_for_transaction_receipt.return_value = {
+            "status": 0,
+            "blockNumber": 12,
+        }
+
+        with pytest.raises(ValueError, match="reverted"):
+            blockchain_service.anchor_evidence("evidence-1", b"\x01" * 32)
+        blockchain_service.w3.eth.send_raw_transaction.assert_called_once()
+
+    def test_anchor_evidence_timeout_recovery_sends_once(self, blockchain_service):
+        tx_hash = b"\x01" * 32
+        function = blockchain_service.contract.functions.anchorEvidence.return_value
+        function.estimate_gas.return_value = 21000
+        function.build_transaction.return_value = {"gas": 21000, "gasPrice": 1}
+        blockchain_service.w3.eth.account.sign_transaction.return_value.raw_transaction = b"signed"
+        blockchain_service.w3.eth.send_raw_transaction.return_value = tx_hash
+        blockchain_service.w3.eth.wait_for_transaction_receipt.side_effect = TimeExhausted()
+        blockchain_service.w3.eth.get_transaction_receipt.return_value = {
+            "status": 1,
+            "blockNumber": 12,
+        }
+        blockchain_service.w3.eth.get_block.return_value = {"timestamp": 1700000000}
+
+        result = blockchain_service.anchor_evidence("evidence-1", b"\x01" * 32)
+
+        assert result == (tx_hash.hex(), 12, 1700000000)
+        blockchain_service.w3.eth.send_raw_transaction.assert_called_once()
+
+    def test_wait_timeout_recovers_mined_receipt(self, blockchain_service):
+        tx_hash = b"\x01" * 32
+        receipt = {"status": 1, "blockNumber": 12}
+        blockchain_service.w3.eth.wait_for_transaction_receipt.side_effect = TimeExhausted()
+        blockchain_service.w3.eth.get_transaction_receipt.return_value = receipt
+
+        assert blockchain_service._wait_for_transaction_receipt(tx_hash) == receipt
+        blockchain_service.w3.eth.get_transaction_receipt.assert_called_once_with(tx_hash)
+
+    def test_wait_timeout_reports_pending_transaction(self, blockchain_service):
+        tx_hash = b"\x01" * 32
+        blockchain_service.w3.eth.wait_for_transaction_receipt.side_effect = TimeExhausted()
+        blockchain_service.w3.eth.get_transaction_receipt.side_effect = TransactionNotFound("not found")
+        blockchain_service.w3.eth.get_transaction.return_value = {
+            "blockNumber": None,
+            "blockHash": None,
+        }
+
+        with pytest.raises(RuntimeError, match="Transaction pending"):
+            blockchain_service._wait_for_transaction_receipt(tx_hash)
+
+    def test_wait_timeout_reports_unavailable_transaction(self, blockchain_service):
+        tx_hash = b"\x01" * 32
+        blockchain_service.w3.eth.wait_for_transaction_receipt.side_effect = TimeExhausted()
+        blockchain_service.w3.eth.get_transaction_receipt.side_effect = TransactionNotFound("not found")
+        blockchain_service.w3.eth.get_transaction.side_effect = TransactionNotFound("not found")
+
+        with pytest.raises(RuntimeError, match="confirmation unavailable"):
+            blockchain_service._wait_for_transaction_receipt(tx_hash)
         assert blockchain_service.contract_address == "0x1234567890123456789012345678901234567890"
         assert blockchain_service.chain_id == 11155111
         assert blockchain_service.contract == blockchain_service.contract
@@ -106,6 +187,39 @@ class TestBlockchainService:
         """Test getting current block number"""
         block_number = blockchain_service.get_current_block_number()
         assert block_number == 5000000
+
+    def test_get_anchor_transaction_hash_returns_matching_event_hash(self, blockchain_service):
+        class LogLike:
+            def __init__(self, evidence_hash, tx_hash):
+                self.args = {"evidenceHash": evidence_hash}
+                self._data = {"transactionHash": tx_hash}
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+        tx_hash = b"\xCC" * 32
+        evidence_hash = b"\xAA" * 32
+        blockchain_service.contract.events.EvidenceAnchored.return_value.get_logs.return_value = [
+            LogLike(evidence_hash, tx_hash)
+        ]
+
+        assert blockchain_service.get_anchor_transaction_hash("evidence-1", "0x" + "aa" * 32) == "0x" + "cc" * 32
+
+    def test_get_anchor_transaction_hash_raises_on_unmatched_event_hash(self, blockchain_service):
+        class LogLike:
+            def __init__(self, evidence_hash, tx_hash):
+                self.args = {"evidenceHash": evidence_hash}
+                self._data = {"transactionHash": tx_hash}
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+        blockchain_service.contract.events.EvidenceAnchored.return_value.get_logs.return_value = [
+            LogLike(b"\x11" * 32, b"\x22" * 32)
+        ]
+
+        with pytest.raises(RuntimeError, match="No EvidenceAnchored transaction found"):
+            blockchain_service.get_anchor_transaction_hash("evidence-1", "0x" + "aa" * 32)
 
     def test_create_blockchain_service_factory(self, tmp_path):
         """Test factory function to create BlockchainService"""

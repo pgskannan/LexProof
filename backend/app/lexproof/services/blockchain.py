@@ -6,6 +6,7 @@ Handles Ethereum Sepolia interactions for proof anchoring
 from typing import Optional, Tuple, Dict, Any
 from enum import Enum
 import json
+import logging
 import requests
 import sys
 
@@ -13,8 +14,10 @@ import sys
 from web3 import Web3
 from web3 import eth
 from web3.contract import Contract
-from web3.exceptions import ContractLogicError, TransactionNotFound
+from web3.exceptions import ContractLogicError, TransactionNotFound, TimeExhausted
 from web3.types import TxReceipt, TxData
+
+logger = logging.getLogger(__name__)
 
 # Older tests patch ``web3.eth.contract`` even though current web3.py creates
 # contracts through the Web3 instance. Keep that patch point available.
@@ -157,9 +160,40 @@ class BlockchainService:
                     "inputs": [{"internalType": "bytes32", "name": "proofId", "type": "bytes32"}],
                     "name": "getTransaction",
                     "outputs": [
-                        {"internalType": "bytes32", "name": "txHash", "type": "bytes32"},
+                        {"internalType": "bytes", "name": "txHash", "type": "bytes"},
                         {"internalType": "uint256", "name": "blockNumber", "type": "uint256"},
                         {"internalType": "uint256", "name": "timestamp", "type": "uint256"},
+                    ],
+                    "stateMutability": "view",
+                    "type": "function",
+                },
+                {
+                    "inputs": [
+                        {"internalType": "string", "name": "recordId", "type": "string"},
+                        {"internalType": "bytes32", "name": "evidenceHash", "type": "bytes32"},
+                    ],
+                    "name": "anchorEvidence",
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                    "type": "function",
+                },
+                {
+                    "inputs": [
+                        {"internalType": "string", "name": "recordId", "type": "string"},
+                        {"internalType": "bytes32", "name": "evidenceHash", "type": "bytes32"},
+                    ],
+                    "name": "verifyEvidence",
+                    "outputs": [{"internalType": "bool", "name": "", "type": "bool"}],
+                    "stateMutability": "view",
+                    "type": "function",
+                },
+                {
+                    "inputs": [{"internalType": "string", "name": "recordId", "type": "string"}],
+                    "name": "getEvidenceAnchor",
+                    "outputs": [
+                        {"internalType": "bytes32", "name": "evidenceHash", "type": "bytes32"},
+                        {"internalType": "uint256", "name": "timestamp", "type": "uint256"},
+                        {"internalType": "address", "name": "anchoredBy", "type": "address"},
                     ],
                     "stateMutability": "view",
                     "type": "function",
@@ -309,6 +343,44 @@ class BlockchainService:
         
         return tx_hash.hex(), receipt['blockNumber']
 
+    def anchor_evidence(self, record_id: str, evidence_hash: bytes) -> Tuple[str, int, int]:
+        """Anchor an existing LexProof evidence hash using the registry contract."""
+        self._ensure_sepolia()
+        if not record_id or len(record_id) > 256:
+            raise ValueError("Record ID must be between 1 and 256 characters")
+        if len(evidence_hash) != 32 or evidence_hash == b'\x00' * 32:
+            raise ValueError("Evidence hash must be a non-zero bytes32 value")
+
+        account = self.w3.eth.account.from_key(self.private_key)
+        function = self.contract.functions.anchorEvidence(record_id, evidence_hash)
+        transaction = function.build_transaction({
+            "from": account.address,
+            "nonce": self.w3.eth.get_transaction_count(account.address),
+            "chainId": self.chain_id,
+            "gas": function.estimate_gas({"from": account.address}),
+            "gasPrice": self.w3.eth.gas_price,
+        })
+        signed = self.w3.eth.account.sign_transaction(transaction, self.private_key)
+        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = self._wait_for_transaction_receipt(tx_hash)
+        if receipt["status"] == 0:
+            raise ValueError(f"Evidence anchor transaction reverted: {tx_hash.hex()}")
+        block = self.w3.eth.get_block(receipt["blockNumber"])
+        return tx_hash.hex(), receipt["blockNumber"], int(block["timestamp"])
+
+    def get_evidence_anchor(self, record_id: str) -> Dict[str, Any]:
+        """Read an evidence anchor from the registry contract."""
+        evidence_hash, timestamp, anchored_by = self.contract.functions.getEvidenceAnchor(record_id).call()
+        return {
+            "evidence_hash": evidence_hash.hex(),
+            "anchored_at": int(timestamp),
+            "anchored_by": anchored_by,
+        }
+
+    def verify_evidence(self, record_id: str, evidence_hash: bytes) -> bool:
+        """Compare an evidence hash with its on-chain anchor."""
+        return bool(self.contract.functions.verifyEvidence(record_id, evidence_hash).call())
+
     @staticmethod
     def proof_id_for_hashes(
         contract_hash: bytes,
@@ -431,10 +503,62 @@ class BlockchainService:
             Transaction receipt
         """
         try:
-            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
-            return receipt
-        except Exception as e:
-            raise TimeoutError(f"Transaction {tx_hash.hex()} not confirmed within {timeout} seconds")
+            return self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
+        except (TimeExhausted, TimeoutError):
+            logger.warning("Transaction confirmation timed out; checking receipt")
+            try:
+                receipt = self.w3.eth.get_transaction_receipt(tx_hash)
+            except TransactionNotFound:
+                receipt = None
+            if receipt is not None:
+                if receipt["status"] != 1:
+                    raise ValueError(f"Transaction reverted after confirmation timeout: {tx_hash.hex()}")
+                logger.info("Transaction mined successfully after confirmation timeout")
+                return receipt
+
+            try:
+                transaction = self.w3.eth.get_transaction(tx_hash)
+            except TransactionNotFound as exc:
+                raise RuntimeError(
+                    f"Transaction confirmation unavailable: {tx_hash.hex()}"
+                ) from exc
+            if transaction.get("blockNumber") is None and transaction.get("blockHash") is None:
+                logger.warning("Transaction remains pending")
+                raise RuntimeError(f"Transaction pending: {tx_hash.hex()}")
+            raise RuntimeError(f"Transaction confirmation unavailable: {tx_hash.hex()}")
+        except Exception as exc:
+            raise ValueError(f"Error waiting for transaction receipt: {exc}") from exc
+
+    def get_anchor_transaction_hash(self, record_id: str, evidence_hash: Optional[str] = None) -> str:
+        """Resolve the transaction hash for an EvidenceAnchored event for a record."""
+        event = getattr(self.contract.events, "EvidenceAnchored", None)
+        if event is None:
+            raise RuntimeError("EvidenceAnchored event is unavailable from the contract ABI")
+
+        logs = event().get_logs(fromBlock=0, argument_filters={"recordId": record_id})
+
+        for log in logs:
+            args = getattr(log, "args", {}) or {}
+            log_hash = args.get("evidenceHash")
+            if log_hash is None:
+                continue
+            if evidence_hash is not None and Web3.to_hex(log_hash).lower() != evidence_hash.lower():
+                continue
+            return Web3.to_hex(log["transactionHash"]).lower()
+
+        raise RuntimeError(f"No EvidenceAnchored transaction found for record_id={record_id}")
+
+    def recover_confirmed_transaction(self, transaction_hash: str) -> Tuple[str, int, int]:
+        """Read a confirmed transaction receipt without submitting a transaction."""
+        tx_hash = Web3.to_bytes(hexstr=transaction_hash)
+        try:
+            receipt = self.w3.eth.get_transaction_receipt(tx_hash)
+        except TransactionNotFound as exc:
+            raise RuntimeError(f"Transaction confirmation unavailable: {transaction_hash}") from exc
+        if receipt["status"] != 1:
+            raise ValueError(f"Transaction reverted: {transaction_hash}")
+        block = self.w3.eth.get_block(receipt["blockNumber"])
+        return transaction_hash.lower(), receipt["blockNumber"], int(block["timestamp"])
     
     def get_current_block_number(self) -> int:
         """
@@ -518,8 +642,18 @@ def create_blockchain_service(
     load_dotenv()
 
     resolved_rpc = rpc_url or os.getenv('BLOCKCHAIN_RPC_URL') or os.getenv('ETHEREUM_RPC_URL')
-    resolved_contract = contract_address or os.getenv('CONTRACT_ADDRESS') or os.getenv('BLOCKCHAIN_CONTRACT_ADDRESS')
-    resolved_key = private_key or os.getenv('BLOCKCHAIN_PRIVATE_KEY') or os.getenv('PRIVATE_KEY')
+    resolved_contract = (
+        contract_address
+        or os.getenv('CONTRACT_ADDRESS')
+        or os.getenv('ETHEREUM_CONTRACT_ADDRESS')
+        or os.getenv('BLOCKCHAIN_CONTRACT_ADDRESS')
+    )
+    resolved_key = (
+        private_key
+        or os.getenv('BLOCKCHAIN_PRIVATE_KEY')
+        or os.getenv('ETHEREUM_PRIVATE_KEY')
+        or os.getenv('PRIVATE_KEY')
+    )
 
     return BlockchainService(
         rpc_url=resolved_rpc,

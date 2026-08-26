@@ -98,10 +98,10 @@ class EthereumAnchorService:
         # Check Ethereum for existing anchor (recovery path for distributed failures)
         on_chain = self.blockchain.get_evidence_anchor(evidence_id)
         if on_chain and on_chain.get("evidence_hash", "").lower().removeprefix("0x") == evidence_hash.lower():
-            # Ethereum has the anchor, recover and persist metadata
-            tx_hash, block_number, anchored_timestamp = self.blockchain.recover_confirmed_transaction(
-                on_chain["evidence_hash"]  # Use the on-chain hash as the transaction hash for recovery
-            )
+            # Ethereum has the anchor, recover and persist metadata using the event log's
+            # actual transaction hash rather than the evidence hash itself.
+            tx_hash_value = self.blockchain.get_anchor_transaction_hash(evidence_id, on_chain["evidence_hash"])
+            tx_hash, block_number, anchored_timestamp = self.blockchain.recover_confirmed_transaction(tx_hash_value)
             blockchain_proof = {
                 "evidence_id": evidence_id,
                 "passport_id": passport_id,
@@ -295,5 +295,3 @@ def get_ethereum_anchor_service(
             _ethereum_anchor_service.evidence_repository = evidence_repository
 
     return _ethereum_anchor_service
-
-

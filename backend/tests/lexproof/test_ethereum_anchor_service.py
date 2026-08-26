@@ -22,13 +22,35 @@ class MemoryRepository:
         self.data.pop(document_id, None)
 
 
+class FakeEventLog:
+    def __init__(self, transaction_hash):
+        self.transactionHash = bytes.fromhex(transaction_hash[2:])
+
+    def get_logs(self, fromBlock=0, argument_filters=None):
+        return [self]
+
+
 class FakeBlockchain:
     contract_address = "0x0000000000000000000000000000000000000001"
 
-    def __init__(self, on_chain_hash):
+    def __init__(self, on_chain_hash=None):
         self.on_chain_hash = on_chain_hash
+        self.anchor_evidence_calls = 0
+        self.contract = type("ContractStub", (), {
+            "events": {
+                "EvidenceAnchored": lambda *args, **kwargs: type("EventStub", (), {
+                    "get_logs": lambda self, fromBlock=0, argument_filters=None: [FakeEventLog("0x" + "c" * 64)]
+                })()
+            }
+        })()
+
+    def get_anchor_transaction_hash(self, record_id, evidence_hash=None):
+        if evidence_hash is None:
+            return "0x" + "c" * 64
+        return "0x" + "c" * 64
 
     def anchor_evidence(self, record_id, evidence_hash):
+        self.anchor_evidence_calls += 1
         self.on_chain_hash = evidence_hash.hex()
         return "0x" + "a" * 64, 123, 1700000000
 
@@ -147,6 +169,23 @@ def test_recover_rejects_existing_anchor_with_different_hash(evidence_hash):
 
     with pytest.raises(ValueError, match="different Ethereum anchor"):
         service.recover_anchor_from_transaction("evidence-1", "0x" + "b" * 64)
+
+
+def test_recovery_uses_event_transaction_hash_without_resubmitting_anchor():
+    evidence = evidence_record()
+    repository = MemoryRepository()
+    computed_hash = hash_evidence_item(evidence)
+    blockchain = FakeBlockchain(computed_hash)
+    service = make_service(repository, blockchain)
+    service.evidence_repository.set("evidence-1", evidence)
+
+    result = __import__("asyncio").run(service.anchor_evidence("evidence-1"))
+
+    assert result["evidence_id"] == "evidence-1"
+    assert result["transaction_hash"] == "0x" + "c" * 64
+    assert result["evidence_hash"] == computed_hash
+    assert repository.get("evidence-1")["transaction_hash"] == "0x" + "c" * 64
+    assert blockchain.anchor_evidence_calls == 0
 
 
 def test_matching_hash_is_verified(evidence_hash):
@@ -304,7 +343,7 @@ def test_anchor_evidence_recover_from_ethereum_when_firestore_missing(evidence_h
     # First anchor succeeds on Ethereum
     result = __import__("asyncio").run(service.anchor_evidence("evidence-1"))
     assert result["evidence_hash"] == computed_hash
-    assert result["transaction_hash"] == blockchain.on_chain_hash
+    assert result["transaction_hash"] == "0x" + "c" * 64
     
     # Simulate Firestore persistence failure by clearing repository
     repository.data = {}
@@ -348,10 +387,10 @@ def test_anchor_evidence_recover_same_hash_from_ethereum(evidence_hash):
     # Verify recovery succeeded without new transaction
     assert result["evidence_id"] == "evidence-1"
     assert result["evidence_hash"] == computed_hash
-    assert result["transaction_hash"] == blockchain.on_chain_hash
-    
+    assert result["transaction_hash"] == "0x" + "c" * 64
+
     # Verify no new transaction was submitted
-    assert repository.get("evidence-1")["transaction_hash"] == blockchain.on_chain_hash
+    assert repository.get("evidence-1")["transaction_hash"] == "0x" + "c" * 64
 
 
 def test_anchor_evidence_rejects_conflicting_hash_from_ethereum(evidence_hash):
@@ -393,7 +432,7 @@ def test_anchor_evidence_normal_new_anchor_when_no_ethereum_anchor(evidence_hash
     computed_hash = hash_evidence_item(evidence)
     
     # Create service with blockchain that has no anchor yet
-    blockchain = FakeBlockchain(computed_hash)  # Set initial hash
+    blockchain = FakeBlockchain(None)
     service = make_service(repository, blockchain)
     service.evidence_repository.set("evidence-1", evidence)
     
@@ -402,7 +441,7 @@ def test_anchor_evidence_normal_new_anchor_when_no_ethereum_anchor(evidence_hash
     
     # Verify new transaction was submitted
     assert result["evidence_hash"] == computed_hash
-    assert result["transaction_hash"] == blockchain.on_chain_hash
+    assert result["transaction_hash"] == "0x" + "a" * 64
     
     # Verify metadata was persisted
     assert repository.get("evidence-1") is not None
