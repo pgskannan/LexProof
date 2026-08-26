@@ -31,24 +31,39 @@ export function getEvidenceAnchorContract(provider?: ethers.Provider | ethers.Si
 
 export async function readEvidenceAnchorFromEthereum(evidenceId: string): Promise<EthereumAnchorRead | null> {
   try {
-    const contract = getEvidenceAnchorContract()
+    const provider = new ethers.JsonRpcProvider(ETHEREUM_SEPOLIA_RPC_URL)
+    const contract = getEvidenceAnchorContract(provider)
     const [onChainHash, timestamp, anchoredBy] = await contract.getEvidenceAnchor(evidenceId)
     if (!onChainHash || onChainHash === '0x0000000000000000000000000000000000000000000000000000000000000000') {
       return null
     }
 
-    const logs = await contract.queryFilter(contract.filters.EvidenceAnchored(evidenceId))
-    const matchingLog = logs.find((log) => {
-      const args = (log as any).args as { evidenceHash?: string } | undefined
-      return args?.evidenceHash && ethers.hexlify(args.evidenceHash).toLowerCase() === ethers.hexlify(onChainHash).toLowerCase()
-    })
+    // The transaction hash/block number are a display-only nicety (Etherscan link, block).
+    // Public RPC providers cap eth_getLogs to a bounded block range (e.g. 50k blocks), so
+    // this lookup is scoped to recent history and allowed to fail independently: a failure
+    // here must never turn a genuinely verified on-chain hash into a false "not found".
+    let matchingLog: { transactionHash: string; blockNumber: number } | null = null
+    try {
+      const latestBlock = await provider.getBlockNumber()
+      const fromBlock = Math.max(latestBlock - 45000, 0)
+      const logs = await contract.queryFilter(contract.filters.EvidenceAnchored(evidenceId), fromBlock, latestBlock)
+      const found = logs.find((log) => {
+        const args = (log as any).args as { evidenceHash?: string } | undefined
+        return args?.evidenceHash && ethers.hexlify(args.evidenceHash).toLowerCase() === ethers.hexlify(onChainHash).toLowerCase()
+      })
+      if (found) {
+        matchingLog = { transactionHash: found.transactionHash, blockNumber: Number(found.blockNumber) }
+      }
+    } catch (logError) {
+      console.warn('Unable to fetch anchoring transaction log for evidence', evidenceId, logError)
+    }
 
     return {
       evidenceHash: ethers.hexlify(onChainHash),
       timestamp: Number(timestamp),
       anchoredBy: anchoredBy ?? null,
       transactionHash: matchingLog ? matchingLog.transactionHash : null,
-      blockNumber: matchingLog ? Number(matchingLog.blockNumber) : null,
+      blockNumber: matchingLog ? matchingLog.blockNumber : null,
     }
   } catch (error) {
     console.warn('Unable to read Ethereum anchor for evidence', evidenceId, error)
@@ -135,7 +150,7 @@ export default function AnchorProofButton({ evidenceId }: AnchorProofButtonProps
 
   const verifyOnChain = async () => {
     try {
-      const evidenceResponse = await apiFetch(`/api/evidence/${evidenceId}`)
+      const evidenceResponse = await apiFetch(`/api/passports/evidence/${evidenceId}`)
       if (!evidenceResponse.ok) throw new Error('Unable to load evidence details for local hash calculation')
       const evidenceRecord = (await evidenceResponse.json()) as EvidenceComplianceRecord
       setRecord(evidenceRecord)

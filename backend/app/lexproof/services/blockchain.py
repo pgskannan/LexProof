@@ -368,9 +368,21 @@ class BlockchainService:
         block = self.w3.eth.get_block(receipt["blockNumber"])
         return tx_hash.hex(), receipt["blockNumber"], int(block["timestamp"])
 
-    def get_evidence_anchor(self, record_id: str) -> Dict[str, Any]:
-        """Read an evidence anchor from the registry contract."""
-        evidence_hash, timestamp, anchored_by = self.contract.functions.getEvidenceAnchor(record_id).call()
+    def get_evidence_anchor(self, record_id: str) -> Optional[Dict[str, Any]]:
+        """Read an evidence anchor from the registry contract.
+
+        Returns None when no anchor exists yet for this record_id. The contract's
+        getEvidenceAnchor() reverts with "Evidence anchor does not exist" in that
+        case (this is the expected, common path for a not-yet-anchored evidence
+        item) rather than returning a zero value, so that revert must be caught
+        here instead of propagating as an unexpected error to callers.
+        """
+        try:
+            evidence_hash, timestamp, anchored_by = self.contract.functions.getEvidenceAnchor(record_id).call()
+        except ContractLogicError as e:
+            if "Evidence anchor does not exist" in str(e):
+                return None
+            raise
         return {
             "evidence_hash": evidence_hash.hex(),
             "anchored_at": int(timestamp),
