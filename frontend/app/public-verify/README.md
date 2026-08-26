@@ -1,165 +1,74 @@
-# Public Verification Portal
+# Public Evidence Verification
 
-## Quick Start
+## Endpoint
 
-1. **Start the backend server**:
-   ```bash
-   cd backend
-   python -m app.lexproof.main
-   ```
+Public verification is exposed at:
 
-2. **Start the frontend server**:
-   ```bash
-   cd frontend
-   npm run dev
-   ```
-
-3. **Open verification portal**:
-   ```
-   http://localhost:3000/public-verify
-   ```
-
-## Verification Modes
-
-### Mode A: Verify Registered Contract
-
-- **Purpose**: View verification details for an already-anchored proof
-- **Steps**:
-  1. Select "Verify Registered Contract" mode
-  2. Enter Proof ID (e.g., `0x1a2b3c4d5e6f...`)
-  3. Click "Verify Contract"
-  4. View verification result
-
-### Mode B: Upload Document & Verify
-
-- **Purpose**: Upload a document and verify its hash against registered hash
-- **Steps**:
-  1. Select "Upload Document & Verify" mode
-  2. Paste contract document content
-  3. Click "Upload & Verify"
-  4. System calculates SHA-256 hash and compares
-  5. View VERIFIED or VERIFICATION FAILED result
-
-## Example Proof ID
-
-You can use any valid Proof ID from your blockchain transactions. For testing, you can:
-
-1. Create a legal passport in the authenticated portal
-2. Anchor it to blockchain
-3. Use the returned Proof ID in the verification portal
-
-## Verification Algorithm
-
-```
-uploaded_document
-    ↓
-SHA-256 hash calculation
-    ↓
-Compare with registered document hash
-    ↓
-Query blockchain for proof details
-    ↓
-Verify matching hashes
-    ↓
-VERIFIED / VERIFICATION FAILED
+```http
+GET /api/verify/{evidence_id}
 ```
 
-## Displayed Information
+This is the live evidence-anchor verification endpoint. It does not use a legacy proof ID and it does not accept document content in the request body or query string.
 
-1. Proof ID
-2. Contract Identifier
-3. Contract Version
-4. Document Hash
-5. Policy Hash
-6. Analysis Hash
-7. Evidence Hash
-8. Blockchain Network (Ethereum Sepolia)
-9. Transaction Hash
-10. Block Number
-11. Anchoring Timestamp
-12. Verification Status (VERIFIED / FAILED)
-13. Timestamp
+## Verification flow
 
-## Security
+The route follows this real verification sequence:
 
-- ✅ No authentication required
-- ✅ No private contract contents exposed
-- ✅ Only hashes and metadata shown
-- ✅ Strict hash comparison (1-byte difference → fail)
-- ✅ HTTPS encryption required
+1. Accept an `evidence_id` in the URL.
+2. Fetch the evidence record from Firestore.
+3. Recompute the evidence hash with `hash_evidence_item()` using the same canonical hashing logic used during anchoring.
+4. Fetch the anchor metadata and on-chain hash from Ethereum via `EthereumAnchorService.verify_evidence()`.
+5. Compare the recomputed hash with the hash stored on-chain.
+6. Return one of four statuses:
+   - `VERIFIED`
+   - `TAMPERED`
+   - `EVIDENCE_NOT_FOUND`
+   - `ANCHOR_NOT_FOUND`
 
-## Testing
+## Response contract
 
-Run the automated tests:
-
-```bash
-cd backend
-pytest tests/test_public_verification.py -v
-```
-
-## API Endpoint
-
-```
-GET /verify/{proofId}?document_content={optional_document_content}
-```
-
-**Parameters**:
-- `proofId` (required): Proof ID in hex format
-- `document_content` (optional): Document content for hash comparison
-
-**Response**:
 ```json
 {
-  "proof_id": "0x1234...",
-  "contract_identifier": "CONTRACT-001",
-  "contract_version": "1.0",
-  "document_hash": "a1b2c3...",
-  "policy_hash": "d4e5f6...",
-  "analysis_hash": "g7h8i9...",
-  "evidence_hash": "j0k1l2...",
+  "evidence_id": "evd_123",
+  "verified": true,
+  "status": "VERIFIED",
+  "evidence_hash_on_chain": "0xabc123...",
+  "computed_hash": "def456...",
   "blockchain_network": "ethereum-sepolia",
-  "transaction_hash": "0xabcd...",
+  "contract_address": "0x1111111111111111111111111111111111111111",
+  "transaction_hash": "0x987654...",
   "block_number": 12345678,
-  "anchoring_timestamp": 1695556800,
-  "verification_status": "VERIFIED",
-  "is_verified": true,
-  "timestamp": "2024-09-23T10:30:00"
+  "anchored_at": "2025-01-15T12:34:56+00:00",
+  "timestamp": "2025-01-15T12:35:00.123456"
 }
 ```
 
-## Troubleshooting
+### Status meanings
 
-### Verification Fails
+- `VERIFIED`: Evidence exists, an anchor exists, and the recomputed hash matches the on-chain hash.
+- `TAMPERED`: Evidence exists and is anchored, but the current evidence has changed since it was anchored.
+- `EVIDENCE_NOT_FOUND`: No evidence record exists in Firestore for the supplied `evidence_id`.
+- `ANCHOR_NOT_FOUND`: The evidence exists, but no Ethereum anchor was found for it.
 
-1. Check that the Proof ID is correct
-2. Verify the document content matches exactly (case-sensitive)
-3. Check that blockchain service is running
-4. Verify Proof ID is not malformed
+## HTTP behavior
 
-### 404 Not Found
+- An empty or blank `evidence_id` in the URL returns HTTP 404.
+- `EVIDENCE_NOT_FOUND` and `ANCHOR_NOT_FOUND` return HTTP 200 with `verified: false`.
+- The endpoint never returns raw evidence content, titles, or score values.
 
-1. Check that Proof ID is valid (64 hex characters)
-2. Verify Proof ID was properly anchored to blockchain
-3. Check that blockchain service is connected
+## Security expectations
 
-### Verification Status Red
+- No authentication is required for public verification.
+- Only hashes and blockchain metadata are returned.
+- No `document_content`, `title`, `content`, or score fields are exposed.
+- Any mutation after anchoring is detected by hash mismatch.
 
-1. Document content differs from registered hash
-2. Even one byte difference causes failure
-3. Ensure exact match for verification success
+## Example
 
-## Visual Indicators
+```bash
+curl http://localhost:8000/api/verify/evd_123
+```
 
-- **GREEN VERIFIED**: Large, bold text indicating successful verification
-- **RED VERIFICATION FAILED**: Large, bold text indicating failed verification
+## Old routes
 
-## Copy Hashes
-
-Click the "Copy" button next to any hash to copy it to clipboard.
-
-## Support
-
-For issues or questions, refer to:
-- [Public Verification Portal Documentation](../docs/PUBLIC_VERIFICATION_PORTAL.md)
-- [Blockchain Architecture](../docs/BLOCKCHAIN_ARCHITECTURE.md)
-- [LexProof Architecture](../docs/LEXPROOF_ARCHITECTURE.md)
+The legacy route `/verify/{proof_id}` no longer exists. The public verifier now uses the evidence-based endpoint only.

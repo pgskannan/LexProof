@@ -11,8 +11,10 @@ import os
 import hashlib
 
 from ..services.blockchain import BlockchainService, TransactionStatus, create_blockchain_service
-from ..repositories.firestore import FirestoreRepository
+from ..services.ethereum_anchor_service import get_ethereum_anchor_service
+from ..repositories.firestore import EvidenceAnchorRepository, EvidenceRecordRepository, FirestoreRepository
 from ..services.version_comparison import VersionComparisonEngine
+from ..config import get_settings
 
 router = APIRouter(tags=["blockchain"])
 public_verify_router = APIRouter(tags=["public-verification"], prefix="/verify")
@@ -189,21 +191,23 @@ class VerificationRequest(BaseModel):
     passport_id: Optional[str] = Field(None, description="Passport ID (optional for blockchain verification)")
 
 
-class VerificationResult(BaseModel):
-    """Response model for public verification"""
-    proof_id: str
-    contract_identifier: str
-    contract_version: str
-    document_hash: str
-    policy_hash: str
-    analysis_hash: str
-    evidence_hash: str
-    blockchain_network: str
-    transaction_hash: Optional[str]
-    block_number: Optional[int]
-    anchoring_timestamp: Optional[int]
-    verification_status: str
-    is_verified: bool
+class EvidencePublicVerificationResult(BaseModel):
+    """Response model for public evidence verification.
+
+    Recomputes the evidence hash from the stored evidence record and compares
+    it against the hash anchored on Ethereum. Never exposes evidence content,
+    title, or any other private contract data - hashes and chain metadata only.
+    """
+    evidence_id: str
+    verified: bool
+    status: str
+    evidence_hash_on_chain: Optional[str] = None
+    computed_hash: Optional[str] = None
+    blockchain_network: Optional[str] = None
+    contract_address: Optional[str] = None
+    transaction_hash: Optional[str] = None
+    block_number: Optional[int] = None
+    anchored_at: Optional[str] = None
     timestamp: datetime
 
 
@@ -457,92 +461,68 @@ async def check_blockchain_health() -> dict:
 
 
 @public_verify_router.get(
-    "/{proof_id}",
-    response_model=VerificationResult,
-    summary="Public verification portal"
+    "/{evidence_id}",
+    response_model=EvidencePublicVerificationResult,
+    summary="Public evidence verification portal"
 )
-async def public_verify(
-    proof_id: str,
-    document_content: Optional[str] = None
-) -> VerificationResult:
+async def public_verify_evidence(evidence_id: str) -> EvidencePublicVerificationResult:
     """
-    Public verification portal - no authentication required
-    
-    SECURITY: Never exposes private contract contents. Only shows hashes and metadata.
-    
+    Public verification portal - no authentication required.
+
+    Recomputes the evidence hash from the evidence record stored in Firestore
+    (the exact same canonicalization used when the evidence was anchored) and
+    compares it against the hash anchored on Ethereum. This is real
+    cryptographic + on-chain verification, not a database lookup: if the
+    stored evidence has been altered since anchoring, the recomputed hash
+    will not match the on-chain hash and status will be TAMPERED.
+
+    SECURITY: Never exposes evidence content, title, or any other private
+    contract data. Only hashes and chain metadata are returned.
+
     Args:
-        proof_id: Proof ID to verify
-        document_content: Optional document content for hash comparison (for mode B)
-    
+        evidence_id: Evidence record identifier to verify
+
     Returns:
-        Verification result with 11 fields of information
+        Verification result: VERIFIED, TAMPERED, EVIDENCE_NOT_FOUND, or ANCHOR_NOT_FOUND
     """
-    try:
-        normalized_proof_id = proof_id.removeprefix("0x")
-        if len(normalized_proof_id) != 64:
-            raise ValueError("Proof ID must be a 32-byte hexadecimal value")
-        proof_id_bytes = bytes.fromhex(normalized_proof_id)
-
-        # Initialize blockchain service
-        try:
-            blockchain = create_blockchain_service()
-        except Exception:
-            raise ValueError("Proof not found")
-
-        # Get proof details from blockchain
-        proof_details = blockchain.get_proof(proof_id_bytes)
-        
-        # Extract hashes
-        contract_hash_hex = proof_details.get('contract_hash', '')
-        policy_hash_hex = proof_details.get('policy_hash', '')
-        analysis_hash_hex = proof_details.get('analysis_hash', '')
-        evidence_hash_hex = proof_details.get('evidence_hash', '')
-        
-        # Get transaction details
-        transaction = transaction_store.get_transaction(proof_id)
-        
-        # Determine verification status
-        is_verified = False
-        
-        if document_content:
-            # Mode B: Upload and verify
-            # Calculate hash of uploaded document
-            uploaded_hash = hashlib.sha256(document_content.encode('utf-8')).hexdigest()
-            
-            # Compare hashes (strict: even one byte difference → fail)
-            if uploaded_hash == contract_hash_hex:
-                is_verified = True
-        else:
-            # Mode A: Verify registered contract
-            # Just show the registered contract hash
-            is_verified = True
-        
-        return VerificationResult(
-            proof_id=proof_id,
-            contract_identifier=proof_details.get('contract_id', 'Unknown'),
-            contract_version=proof_details.get('policy_version', 'Unknown'),
-            document_hash=contract_hash_hex,
-            policy_hash=policy_hash_hex,
-            analysis_hash=analysis_hash_hex,
-            evidence_hash=evidence_hash_hex,
-            blockchain_network="ethereum-sepolia",
-            transaction_hash=transaction["transaction_hash"] if transaction else None,
-            block_number=transaction["block_number"] if transaction else None,
-            anchoring_timestamp=transaction["timestamp"].timestamp() if transaction else None,
-            verification_status="VERIFIED" if is_verified else "VERIFICATION FAILED",
-            is_verified=is_verified,
-            timestamp=datetime.now()
-        )
-        
-    except ValueError as e:
+    if not evidence_id or not evidence_id.strip():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
+            detail="Evidence ID is required"
         )
+
+    try:
+        settings = get_settings()
+        anchor_repository = EvidenceAnchorRepository("evidence_anchors", settings=settings)
+        evidence_records_repository = EvidenceRecordRepository(anchor_repository, settings=settings)
+        anchor_service = get_ethereum_anchor_service(
+            settings=settings,
+            repository=anchor_repository,
+            evidence_repository=evidence_records_repository,
+        )
+
+        result = anchor_service.verify_evidence(evidence_id)
+
+        return EvidencePublicVerificationResult(
+            evidence_id=evidence_id,
+            verified=result.get("verified", False),
+            status=result.get("status", "UNKNOWN"),
+            evidence_hash_on_chain=result.get("evidence_hash_on_chain"),
+            computed_hash=result.get("computed_hash"),
+            blockchain_network=result.get("blockchain_network"),
+            contract_address=result.get("contract_address"),
+            transaction_hash=result.get("transaction_hash"),
+            block_number=result.get("block_number"),
+            anchored_at=result.get("anchored_at"),
+            timestamp=datetime.now(),
+        )
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error in verification: {str(e)}"
+            detail=f"Error verifying evidence: {str(e)}"
         )
 
 

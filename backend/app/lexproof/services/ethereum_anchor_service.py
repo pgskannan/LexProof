@@ -162,6 +162,13 @@ class EthereumAnchorService:
                 "verified": False,
                 "status": "EVIDENCE_NOT_FOUND",
                 "message": "Evidence record not found",
+                "evidence_hash_on_chain": None,
+                "computed_hash": None,
+                "blockchain_network": None,
+                "contract_address": None,
+                "transaction_hash": None,
+                "block_number": None,
+                "anchored_at": None,
             }
         computed_hash = hash_evidence_item(evidence)
         blockchain_proof = self.repository.get(evidence_id)
@@ -170,6 +177,13 @@ class EthereumAnchorService:
                 "verified": False,
                 "status": "ANCHOR_NOT_FOUND",
                 "message": "No Ethereum anchor found for this evidence record",
+                "evidence_hash_on_chain": None,
+                "computed_hash": computed_hash,
+                "blockchain_network": None,
+                "contract_address": None,
+                "transaction_hash": None,
+                "block_number": None,
+                "anchored_at": None,
             }
 
         on_chain = self.blockchain.get_evidence_anchor(evidence_id)

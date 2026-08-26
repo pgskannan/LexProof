@@ -3,57 +3,81 @@
 import { useState } from 'react';
 import { apiFetch } from '../../lib/api';
 
-interface VerificationResult {
-  proof_id: string;
-  contract_identifier: string;
-  contract_version: string;
-  document_hash: string;
-  policy_hash: string;
-  analysis_hash: string;
-  evidence_hash: string;
-  blockchain_network: string;
+interface EvidenceVerificationResult {
+  evidence_id: string;
+  verified: boolean;
+  status: string;
+  evidence_hash_on_chain: string | null;
+  computed_hash: string | null;
+  blockchain_network: string | null;
+  contract_address: string | null;
   transaction_hash: string | null;
   block_number: number | null;
-  anchoring_timestamp: number | null;
-  verification_status: string;
-  is_verified: boolean;
+  anchored_at: string | null;
   timestamp: string;
 }
 
-interface VerificationForm {
-  documentContent: string;
+const STATUS_COPY: Record<string, { label: string; tone: 'green' | 'red' | 'amber' }> = {
+  VERIFIED: { label: 'VERIFIED', tone: 'green' },
+  TAMPERED: { label: 'TAMPERED', tone: 'red' },
+  EVIDENCE_NOT_FOUND: { label: 'EVIDENCE NOT FOUND', tone: 'amber' },
+  ANCHOR_NOT_FOUND: { label: 'NOT YET ANCHORED', tone: 'amber' },
+};
+
+const TONE_CLASSES: Record<'green' | 'red' | 'amber', { box: string; text: string; sub: string }> = {
+  green: {
+    box: 'bg-green-50 border-2 border-green-500',
+    text: 'text-green-600',
+    sub: 'text-green-700',
+  },
+  red: {
+    box: 'bg-red-50 border-2 border-red-500',
+    text: 'text-red-600',
+    sub: 'text-red-700',
+  },
+  amber: {
+    box: 'bg-amber-50 border-2 border-amber-500',
+    text: 'text-amber-600',
+    sub: 'text-amber-700',
+  },
+};
+
+function sepoliaTxUrl(txHash: string): string {
+  return `https://sepolia.etherscan.io/tx/${txHash}`;
+}
+
+function sepoliaAddressUrl(address: string): string {
+  return `https://sepolia.etherscan.io/address/${address}`;
 }
 
 export default function PublicVerifyPage() {
-  const [proofId, setProofId] = useState('');
-  const [documentContent, setDocumentContent] = useState('');
-  const [verificationResult, setVerificationResult] = useState<VerificationResult | null>(null);
+  const [evidenceId, setEvidenceId] = useState('');
+  const [result, setResult] = useState<EvidenceVerificationResult | null>(null);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [mode, setMode] = useState<'verify' | 'upload'>('verify');
 
   const handleVerify = async () => {
-    if (!proofId.trim()) {
-      setError('Please enter a proof ID');
+    if (!evidenceId.trim()) {
+      setError('Please enter an evidence ID');
       return;
     }
 
     setIsLoading(true);
     setError('');
+    setResult(null);
 
     try {
-      const response = await apiFetch(`/api/verify/${proofId}${documentContent ? `?document_content=${encodeURIComponent(documentContent)}` : ''}`);
-      
+      const response = await apiFetch(`/api/verify/${encodeURIComponent(evidenceId.trim())}`);
+
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || 'Verification failed');
       }
 
-      const result: VerificationResult = await response.json();
-      setVerificationResult(result);
+      const data: EvidenceVerificationResult = await response.json();
+      setResult(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred during verification');
-      setVerificationResult(null);
     } finally {
       setIsLoading(false);
     }
@@ -64,10 +88,14 @@ export default function PublicVerifyPage() {
     alert('Copied to clipboard!');
   };
 
-  const formatDate = (timestamp: number | null) => {
-    if (!timestamp) return 'N/A';
-    return new Date(timestamp * 1000).toLocaleString();
+  const formatDate = (value: string | null) => {
+    if (!value) return 'N/A';
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
   };
+
+  const statusInfo = result ? STATUS_COPY[result.status] ?? { label: result.status, tone: 'amber' as const } : null;
+  const toneClasses = statusInfo ? TONE_CLASSES[statusInfo.tone] : null;
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4">
@@ -75,78 +103,40 @@ export default function PublicVerifyPage() {
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-gray-900 mb-2">LexProof Verification Portal</h1>
-          <p className="text-gray-600">Public verification of legal document proofs on blockchain</p>
-        </div>
-
-        {/* Mode Selection */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4">Verification Mode</h2>
-          <div className="flex gap-4">
-            <button
-              onClick={() => setMode('verify')}
-              className={`flex-1 py-3 px-6 rounded-lg font-medium transition-colors ${
-                mode === 'verify'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              Verify Registered Contract
-            </button>
-            <button
-              onClick={() => setMode('upload')}
-              className={`flex-1 py-3 px-6 rounded-lg font-medium transition-colors ${
-                mode === 'upload'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              Upload Document & Verify
-            </button>
-          </div>
+          <p className="text-gray-600">
+            Public, cryptographic verification of legal evidence anchored on Ethereum Sepolia
+          </p>
         </div>
 
         {/* Verification Form */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4">
-            {mode === 'verify' ? 'Verify Registered Contract' : 'Upload Document for Verification'}
-          </h2>
+          <h2 className="text-xl font-semibold mb-4">Verify Evidence</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Enter an Evidence ID to recompute its hash from the stored evidence record and compare it
+            against the hash anchored on Ethereum. If the stored evidence has changed since it was
+            anchored, verification will fail.
+          </p>
 
           <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Proof ID
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Evidence ID</label>
             <input
               type="text"
-              value={proofId}
-              onChange={(e) => setProofId(e.target.value)}
-              placeholder="Enter proof ID (e.g., 0x1234...)"
+              value={evidenceId}
+              onChange={(e) => setEvidenceId(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleVerify();
+              }}
+              placeholder="Enter evidence ID"
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
 
-          {mode === 'upload' && (
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Contract Document Content
-              </label>
-              <textarea
-                value={documentContent}
-                onChange={(e) => setDocumentContent(e.target.value)}
-                placeholder="Paste the contract document content here..."
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent h-32"
-              />
-              <p className="text-sm text-gray-500 mt-2">
-                The system will calculate the SHA-256 hash of your document and compare it with the registered hash.
-              </p>
-            </div>
-          )}
-
           <button
             onClick={handleVerify}
-            disabled={isLoading || !proofId.trim() || (mode === 'upload' && !documentContent.trim())}
+            disabled={isLoading || !evidenceId.trim()}
             className="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-medium hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
           >
-            {isLoading ? 'Verifying...' : mode === 'verify' ? 'Verify Contract' : 'Upload & Verify'}
+            {isLoading ? 'Verifying...' : 'Verify Evidence'}
           </button>
         </div>
 
@@ -158,23 +148,17 @@ export default function PublicVerifyPage() {
         )}
 
         {/* Verification Result */}
-        {verificationResult && (
+        {result && statusInfo && toneClasses && (
           <div className="bg-white rounded-lg shadow-md p-6">
             {/* Verification Status */}
-            <div className={`text-center py-8 px-4 rounded-lg mb-6 ${
-              verificationResult.is_verified
-                ? 'bg-green-50 border-2 border-green-500'
-                : 'bg-red-50 border-2 border-red-500'
-            }`}>
-              <div className={`text-6xl font-bold mb-2 ${
-                verificationResult.is_verified ? 'text-green-600' : 'text-red-600'
-              }`}>
-                {verificationResult.is_verified ? 'VERIFIED' : 'VERIFICATION FAILED'}
-              </div>
-              <p className={`text-lg font-medium ${
-                verificationResult.is_verified ? 'text-green-700' : 'text-red-700'
-              }`}>
-                {verificationResult.verification_status}
+            <div className={`text-center py-8 px-4 rounded-lg mb-6 ${toneClasses.box}`}>
+              <div className={`text-5xl font-bold mb-2 ${toneClasses.text}`}>{statusInfo.label}</div>
+              <p className={`text-lg font-medium ${toneClasses.sub}`}>
+                {result.verified
+                  ? 'Recomputed hash matches the hash anchored on Ethereum.'
+                  : result.status === 'TAMPERED'
+                  ? 'Recomputed hash does NOT match the on-chain hash. This evidence has been altered since it was anchored.'
+                  : 'No matching evidence and/or Ethereum anchor was found for this ID.'}
               </p>
             </div>
 
@@ -182,109 +166,105 @@ export default function PublicVerifyPage() {
             <div className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="bg-gray-50 p-4 rounded-lg">
-                  <h3 className="text-sm font-medium text-gray-500 mb-1">Proof ID</h3>
-                  <p className="font-mono text-sm break-all">{verificationResult.proof_id}</p>
-                </div>
-
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <h3 className="text-sm font-medium text-gray-500 mb-1">Contract Identifier</h3>
-                  <p className="font-medium">{verificationResult.contract_identifier}</p>
-                </div>
-
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <h3 className="text-sm font-medium text-gray-500 mb-1">Contract Version</h3>
-                  <p className="font-medium">{verificationResult.contract_version}</p>
+                  <h3 className="text-sm font-medium text-gray-500 mb-1">Evidence ID</h3>
+                  <p className="font-mono text-sm break-all">{result.evidence_id}</p>
                 </div>
 
                 <div className="bg-gray-50 p-4 rounded-lg">
                   <h3 className="text-sm font-medium text-gray-500 mb-1">Blockchain Network</h3>
-                  <p className="font-medium">{verificationResult.blockchain_network}</p>
+                  <p className="font-medium">{result.blockchain_network ?? 'N/A'}</p>
                 </div>
 
-                {verificationResult.transaction_hash && (
+                {result.contract_address && (
                   <div className="bg-gray-50 p-4 rounded-lg">
-                    <h3 className="text-sm font-medium text-gray-500 mb-1">Transaction Hash</h3>
-                    <p className="font-mono text-sm break-all">{verificationResult.transaction_hash}</p>
+                    <h3 className="text-sm font-medium text-gray-500 mb-1">Registry Contract</h3>
+                    <a
+                      href={sepoliaAddressUrl(result.contract_address)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-sm break-all text-blue-600 hover:text-blue-800 underline"
+                    >
+                      {result.contract_address}
+                    </a>
                   </div>
                 )}
 
-                {verificationResult.block_number && (
+                {result.transaction_hash && (
+                  <div className="bg-gray-50 p-4 rounded-lg">
+                    <h3 className="text-sm font-medium text-gray-500 mb-1">Transaction</h3>
+                    <a
+                      href={sepoliaTxUrl(result.transaction_hash)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-sm break-all text-blue-600 hover:text-blue-800 underline"
+                    >
+                      {result.transaction_hash}
+                    </a>
+                    <p className="text-xs text-gray-400 mt-1">View on Sepolia Etherscan ↗</p>
+                  </div>
+                )}
+
+                {result.block_number != null && (
                   <div className="bg-gray-50 p-4 rounded-lg">
                     <h3 className="text-sm font-medium text-gray-500 mb-1">Block Number</h3>
-                    <p className="font-mono">{verificationResult.block_number}</p>
+                    <p className="font-mono">{result.block_number}</p>
                   </div>
                 )}
 
-                {verificationResult.anchoring_timestamp && (
+                {result.anchored_at && (
                   <div className="bg-gray-50 p-4 rounded-lg">
-                    <h3 className="text-sm font-medium text-gray-500 mb-1">Anchoring Timestamp</h3>
-                    <p className="font-medium">{formatDate(verificationResult.anchoring_timestamp)}</p>
+                    <h3 className="text-sm font-medium text-gray-500 mb-1">Anchored At</h3>
+                    <p className="font-medium">{formatDate(result.anchored_at)}</p>
                   </div>
                 )}
               </div>
 
               {/* Hashes */}
-              <div className="border-t pt-4">
-                <h3 className="text-sm font-medium text-gray-500 mb-3">Document Hashes</h3>
-                <div className="space-y-3">
-                  <div>
-                    <div className="flex justify-between items-start mb-1">
-                      <span className="text-sm font-medium text-gray-700">Document Hash</span>
-                      <button
-                        onClick={() => copyToClipboard(verificationResult.document_hash)}
-                        className="text-sm text-blue-600 hover:text-blue-800"
-                      >
-                        Copy
-                      </button>
-                    </div>
-                    <p className="font-mono text-xs break-all bg-gray-50 p-2 rounded">{verificationResult.document_hash}</p>
-                  </div>
+              {(result.evidence_hash_on_chain || result.computed_hash) && (
+                <div className="border-t pt-4">
+                  <h3 className="text-sm font-medium text-gray-500 mb-3">Hash Comparison</h3>
+                  <div className="space-y-3">
+                    {result.evidence_hash_on_chain && (
+                      <div>
+                        <div className="flex justify-between items-start mb-1">
+                          <span className="text-sm font-medium text-gray-700">On-Chain Hash</span>
+                          <button
+                            onClick={() => copyToClipboard(result.evidence_hash_on_chain!)}
+                            className="text-sm text-blue-600 hover:text-blue-800"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                        <p className="font-mono text-xs break-all bg-gray-50 p-2 rounded">
+                          {result.evidence_hash_on_chain}
+                        </p>
+                      </div>
+                    )}
 
-                  <div>
-                    <div className="flex justify-between items-start mb-1">
-                      <span className="text-sm font-medium text-gray-700">Policy Hash</span>
-                      <button
-                        onClick={() => copyToClipboard(verificationResult.policy_hash)}
-                        className="text-sm text-blue-600 hover:text-blue-800"
-                      >
-                        Copy
-                      </button>
-                    </div>
-                    <p className="font-mono text-xs break-all bg-gray-50 p-2 rounded">{verificationResult.policy_hash}</p>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between items-start mb-1">
-                      <span className="text-sm font-medium text-gray-700">Analysis Hash</span>
-                      <button
-                        onClick={() => copyToClipboard(verificationResult.analysis_hash)}
-                        className="text-sm text-blue-600 hover:text-blue-800"
-                      >
-                        Copy
-                      </button>
-                    </div>
-                    <p className="font-mono text-xs break-all bg-gray-50 p-2 rounded">{verificationResult.analysis_hash}</p>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between items-start mb-1">
-                      <span className="text-sm font-medium text-gray-700">Evidence Hash</span>
-                      <button
-                        onClick={() => copyToClipboard(verificationResult.evidence_hash)}
-                        className="text-sm text-blue-600 hover:text-blue-800"
-                      >
-                        Copy
-                      </button>
-                    </div>
-                    <p className="font-mono text-xs break-all bg-gray-50 p-2 rounded">{verificationResult.evidence_hash}</p>
+                    {result.computed_hash && (
+                      <div>
+                        <div className="flex justify-between items-start mb-1">
+                          <span className="text-sm font-medium text-gray-700">Recomputed Hash (from stored evidence)</span>
+                          <button
+                            onClick={() => copyToClipboard(result.computed_hash!)}
+                            className="text-sm text-blue-600 hover:text-blue-800"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                        <p className="font-mono text-xs break-all bg-gray-50 p-2 rounded">
+                          {result.computed_hash}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
+              )}
 
               {/* Timestamp */}
               <div className="border-t pt-4">
                 <h3 className="text-sm font-medium text-gray-500 mb-1">Verification Timestamp</h3>
-                <p className="font-mono text-sm">{new Date(verificationResult.timestamp).toLocaleString()}</p>
+                <p className="font-mono text-sm">{formatDate(result.timestamp)}</p>
               </div>
             </div>
           </div>

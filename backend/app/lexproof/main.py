@@ -3,7 +3,7 @@
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import blockchain_router, public_verify_router, time_machine_router, compliance_router, remediation_router, contracts_router
+from .api import blockchain_router, public_verify_router, time_machine_router, compliance_router, remediation_router, contracts_router, evidence_anchor_router
 from .api.auth import get_current_user
 from .config import get_settings
 from .domains.passport.api import contract_router, router as passport_router
@@ -26,8 +26,9 @@ def create_app() -> FastAPI:
     app.include_router(contract_router, prefix="/api", dependencies=private_dependencies)
     app.include_router(contracts_router, prefix="/api")
     app.include_router(blockchain_router, prefix="/api", dependencies=private_dependencies)
+    app.include_router(evidence_anchor_router, prefix="/api", dependencies=private_dependencies)
     app.include_router(time_machine_router, prefix="/api", dependencies=private_dependencies)
-    app.include_router(public_verify_router)
+    app.include_router(public_verify_router, prefix="/api")
     app.include_router(compliance_router, prefix="/api", dependencies=private_dependencies)
     app.include_router(remediation_router, prefix="/api", dependencies=private_dependencies)
     return app
