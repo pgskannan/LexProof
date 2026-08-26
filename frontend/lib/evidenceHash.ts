@@ -66,7 +66,21 @@ export function serializeCanonicalValue(value: unknown): string {
     if (!Number.isFinite(value)) {
       throw new TypeError('Unsupported numeric value: NaN/Infinity is not allowed')
     }
-    return String(value)
+
+    if (Object.is(value, -0)) return '-0.0'
+
+    const exponential = value.toExponential()
+    const [mantissaRaw, exponentRaw = '0'] = exponential.split('e')
+    const exponent = Number(exponentRaw)
+
+    if (exponent < -4 || exponent >= 20) {
+      const mantissa = mantissaRaw.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '')
+      const magnitude = Math.abs(exponent)
+      const padded = magnitude < 10 ? `0${magnitude}` : `${magnitude}`
+      return `${mantissa}e${exponent >= 0 ? '+' : '-'}${padded}`
+    }
+
+    return value.toString().replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '')
   }
   if (Array.isArray(value)) {
     return `[${value.map(item => serializeCanonicalValue(item)).join(', ')}]`

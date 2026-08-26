@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalizeEvidenceItem, compareEvidenceHash, hashEvidenceItem, serializeCanonicalEvidence } from './evidenceHash'
+import { canonicalizeEvidenceItem, compareEvidenceHash, hashEvidenceItem, serializeCanonicalEvidence, serializeCanonicalValue } from './evidenceHash'
 
 const GOLDEN_FIXTURE = {
   evidence_id: 'e-1',
@@ -88,5 +88,20 @@ describe('evidence hash', () => {
     expect(await compareEvidenceHash(GOLDEN_FIXTURE, localHash)).toBe(true)
     expect(await compareEvidenceHash(GOLDEN_FIXTURE, '0x' + localHash)).toBe(true)
     expect(await compareEvidenceHash(GOLDEN_FIXTURE, '0x' + '00'.repeat(32))).toBe(false)
+  })
+
+  it('matches Python numeric serialization for float edge cases', () => {
+    expect(serializeCanonicalValue(-0)).toBe('-0.0')
+    expect(serializeCanonicalValue(0)).toBe('0')
+    expect(serializeCanonicalValue(1.5)).toBe('1.5')
+    expect(serializeCanonicalValue(-1.5)).toBe('-1.5')
+    expect(serializeCanonicalValue(1e20)).toBe('1e+20')
+    expect(serializeCanonicalValue(-1e20)).toBe('-1e+20')
+    expect(serializeCanonicalValue(1e-6)).toBe('1e-06')
+    expect(serializeCanonicalValue(-1e-6)).toBe('-1e-06')
+    expect(serializeCanonicalValue(1e-7)).toBe('1e-07')
+    expect(serializeCanonicalValue(-1e-7)).toBe('-1e-07')
+    expect(serializeCanonicalValue(1.23456789e30)).toBe('1.23456789e+30')
+    expect(serializeCanonicalValue(1.23456789e-30)).toBe('1.23456789e-30')
   })
 })
