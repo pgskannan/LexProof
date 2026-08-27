@@ -76,3 +76,5 @@ frontend/out/
 
 # TypeScript build info
 frontend/*.tsbuildinfo
+# Contract build artifacts (regenerate via contracts/compile.sh)
+contracts/build/

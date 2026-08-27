@@ -42,7 +42,10 @@ class LexProofSettings(BaseSettings):
         validation_alias=AliasChoices("ETHEREUM_PRIVATE_KEY", "BLOCKCHAIN_PRIVATE_KEY"),
     )
     firebase_storage_bucket: str = ""
-    cors_origins: str = Field(default="http://localhost:3000", validation_alias="LEXPROOF_CORS_ORIGINS")
+    cors_origins: str = Field(
+        default="http://localhost:3000,http://localhost:3001,http://localhost:3002",
+        validation_alias="LEXPROOF_CORS_ORIGINS",
+    )
     integration_tests: bool = False
 
     @property

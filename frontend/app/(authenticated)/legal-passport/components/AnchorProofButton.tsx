@@ -126,8 +126,11 @@ export default function AnchorProofButton({ evidenceId }: AnchorProofButtonProps
   const [verification, setVerification] = useState<EvidenceVerification | null>(null)
   const [loading, setLoading] = useState(true)
   const [record, setRecord] = useState<EvidenceComplianceRecord | null>(null)
+  const [anchorError, setAnchorError] = useState('')
 
   const loadAnchor = async () => {
+    setLoading(true)
+    setAnchorError('')
     try {
       const statusResponse = await apiFetch(`/api/evidence/${evidenceId}/status`)
       if (!statusResponse.ok) throw new Error('Unable to load evidence anchor status')
@@ -136,8 +139,17 @@ export default function AnchorProofButton({ evidenceId }: AnchorProofButtonProps
         const response = await apiFetch(`/api/evidence/${evidenceId}/anchor`)
         if (!response.ok) throw new Error('Unable to load evidence anchor')
         setAnchor(await response.json())
+        void verifyOnChain()
+      } else {
+        setVerification({
+          verified: false,
+          status: 'NOT_FOUND',
+          message: 'No confirmed Ethereum anchor exists for this evidence.',
+        })
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to load Ethereum anchor status'
+      setAnchorError(message)
       console.error('Error loading evidence anchor:', error)
     } finally {
       setLoading(false)
@@ -243,6 +255,17 @@ export default function AnchorProofButton({ evidenceId }: AnchorProofButtonProps
 
   if (loading) return <div className="text-sm text-gray-500">Loading Evidence Anchor...</div>
 
+  if (anchorError) {
+    return (
+      <div className="border-t border-gray-200 pt-4 text-sm text-red-700">
+        <p>Unable to load evidence anchor: {anchorError}</p>
+        <button type="button" onClick={() => void loadAnchor()} className="mt-2 rounded bg-blue-600 px-3 py-2 font-medium text-white hover:bg-blue-700">
+          Retry anchor check
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="border-t border-gray-200 pt-4 space-y-4">
       <div className="flex items-center justify-between gap-3">
@@ -251,10 +274,15 @@ export default function AnchorProofButton({ evidenceId }: AnchorProofButtonProps
           <p className="text-xs text-gray-500">Ethereum Sepolia</p>
         </div>
         {!anchor ? (
-          <button type="button" onClick={handleAnchor} disabled={isAnchoring} className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60">
-            <Anchor className="h-4 w-4" />
-            {isAnchoring ? 'Anchoring...' : 'Anchor to Ethereum'}
-          </button>
+          <div className="flex items-center gap-3">
+            <span className="inline-flex items-center gap-1 rounded-md bg-yellow-100 px-2 py-1 text-xs font-medium text-yellow-800">
+              <Clock className="h-3 w-3" /> Not anchored
+            </span>
+            <button type="button" onClick={handleAnchor} disabled={isAnchoring} className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60">
+              <Anchor className="h-4 w-4" />
+              {isAnchoring ? 'Anchoring...' : 'Anchor to Ethereum'}
+            </button>
+          </div>
         ) : (
           <span className="inline-flex items-center gap-1 rounded-md bg-green-100 px-2 py-1 text-xs font-medium text-green-800">
             <CheckCircle2 className="h-3 w-3" /> Anchored
@@ -283,10 +311,14 @@ export default function AnchorProofButton({ evidenceId }: AnchorProofButtonProps
 
       {verification && (
         <div className={verification.verified ? 'text-sm text-green-700' : verification.status === 'NOT_FOUND' ? 'text-sm text-yellow-700' : 'text-sm text-red-700'}>
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide">Verification status: {verification.status}</div>
           <div className="flex items-center gap-2 font-medium">
             {verification.verified ? <CheckCircle2 className="h-4 w-4" /> : verification.status === 'NOT_FOUND' ? <Clock className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
             {verification.message}
           </div>
+          {verification.status === 'NOT_FOUND' && (
+            <div className="mt-1">This evidence has not yet been anchored to Ethereum.</div>
+          )}
           {verification.localHash && <div className="mt-1 break-all font-mono text-xs">Local Evidence Item Hash: {verification.localHash}</div>}
           {verification.ethereumHash && <div className="mt-1 break-all font-mono text-xs">Ethereum Evidence Hash: {verification.ethereumHash}</div>}
           {verificationHasTxn && verification.transactionHash && (

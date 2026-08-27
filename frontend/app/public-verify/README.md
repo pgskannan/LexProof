@@ -63,6 +63,19 @@ The route follows this real verification sequence:
 - No `document_content`, `title`, `content`, or score fields are exposed.
 - Any mutation after anchoring is detected by hash mismatch.
 
+## Independent client-side check (browser → Ethereum, no backend in the loop)
+
+The `/public-verify` page does not just display what the backend claims. Once a `VERIFIED` or
+`TAMPERED` result comes back, the browser independently calls the `LexProofRegistry` contract
+directly on Ethereum Sepolia — using `ethers.js` against a public RPC endpoint
+(`NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL`), with no request to the LexProof backend at all — and
+compares the on-chain hash it reads itself against the recomputed hash the backend returned.
+
+This closes the trust gap where a visitor would otherwise have to take the backend's word for
+what is (or isn't) anchored on-chain: the page shows a second, independently-sourced
+"on-chain hash" and a match/mismatch/not-anchored/error verdict, computed entirely client-side
+via `getEvidenceAnchor(evidence_id)` on the registry contract.
+
 ## Example
 
 ```bash

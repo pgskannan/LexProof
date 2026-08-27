@@ -1,4 +1,4 @@
-"""
+r"""
 Restores the risk_impact field on an evidence_records document after the
 tamper_demo.py script has modified it, so the item is clean for a real demo run.
 

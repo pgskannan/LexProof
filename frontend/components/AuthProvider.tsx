@@ -13,15 +13,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
   const pathname = usePathname()
   const router = useRouter()
+  const isPublicRoute = pathname === "/login" || pathname === "/public-verify"
 
   useEffect(() => onAuthStateChanged(auth, currentUser => {
     setUser(currentUser)
     setLoading(false)
-    if (!currentUser && pathname !== "/login") router.replace("/login")
-  }), [pathname, router])
+    if (!currentUser && !isPublicRoute) router.replace("/login")
+  }), [isPublicRoute, pathname, router])
 
   if (loading) return <main className="flex min-h-screen items-center justify-center">Loading...</main>
-  if (!user && pathname !== "/login") return null
+  if (!user && !isPublicRoute) return null
   return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>
 }
 

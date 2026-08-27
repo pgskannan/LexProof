@@ -57,7 +57,7 @@ class EvidenceService:
         if self.passport_repository is None:
             return True
         record = self.passport_repository.get(passport_id)
-        return bool(record and (not self.owner_id or record.get("owner_id") == self.owner_id))
+        return bool(record and (not self.owner_id or not record.get("owner_id") or record.get("owner_id") == self.owner_id))
 
     async def create_evidence_item(
         self,
@@ -169,7 +169,7 @@ class EvidenceService:
             for record in self.repository.stream():
                 if record.get("passport_id") != passport_id:
                     continue
-                if self.owner_id and record.get("owner_id") != self.owner_id:
+                if self.owner_id and record.get("owner_id") and record.get("owner_id") != self.owner_id:
                     continue
                 if not record.get("created_at") and self.passport_repository:
                     passport = self.passport_repository.get(passport_id)

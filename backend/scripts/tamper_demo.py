@@ -1,4 +1,4 @@
-"""
+r"""
 DEMO ONLY: simulates an attacker/insider bypassing the LexProof application
 and editing the evidence record directly in Firestore, to prove that
 Ethereum-anchored evidence detects tampering even when the app's own

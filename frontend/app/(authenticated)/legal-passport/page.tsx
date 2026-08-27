@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import { Shield, FileText, CheckCircle, AlertTriangle, Info, Clock, ArrowLeft, XCircle } from 'lucide-react'
+import { Shield, FileText, CheckCircle, AlertTriangle, Info, Clock, ArrowLeft, Copy, ExternalLink, XCircle } from 'lucide-react'
 import AnchorProofButton from './components/AnchorProofButton'
 import { apiFetch } from '../../../lib/api'
 import {
@@ -20,6 +20,7 @@ interface ContractPassport {
   evidence_hash: string
   metadata?: {
     passport_hash?: string
+    risk_level?: string
   }
   risk_score: number
   compliance_score: number
@@ -33,6 +34,11 @@ interface ContractPassport {
     timestamp: string
     created_by: string
   }>
+}
+
+interface ContractSummary {
+  contract_id: string
+  name: string
 }
 
 interface EvidenceItem {
@@ -70,15 +76,20 @@ interface PassportIntegrityResult {
 export default function LegalPassportPage() {
   const router = useRouter()
   const [passport, setPassport] = useState<ContractPassport | null>(null)
+  const [contract, setContract] = useState<ContractSummary | null>(null)
   const [evidence, setEvidence] = useState<EvidenceItem[]>([])
   const [statistics, setStatistics] = useState<Statistics | null>(null)
   const [loading, setLoading] = useState(true)
+  const [evidenceLoading, setEvidenceLoading] = useState(false)
+  const [evidenceError, setEvidenceError] = useState('')
   const [error, setError] = useState('')
   const [activeTab, setActiveTab] = useState<'overview' | 'evidence' | 'fingerprint'>('overview')
   const [expandedEvidenceId, setExpandedEvidenceId] = useState<string | null>(null)
+  const [copiedEvidenceId, setCopiedEvidenceId] = useState<string | null>(null)
   const [integrity, setIntegrity] = useState<PassportIntegrityResult | null>(null)
   const [integrityLoading, setIntegrityLoading] = useState(false)
   const [integrityError, setIntegrityError] = useState('')
+  const [passportRequest, setPassportRequest] = useState<{ contractId: string; contractVersion: number } | null>(null)
 
   const legalEvidence = useMemo(() => filterLegalEvidenceFindings(evidence), [evidence])
   const legalEvidenceCount = useMemo(
@@ -93,19 +104,24 @@ export default function LegalPassportPage() {
     const contractVersion = params.get('contractVersion')
 
     if (!contractId || !contractVersion) {
-      router.push('/contracts')
+      router.push('/dashboard/contracts')
       return
     }
 
-    fetchPassport(contractId, parseInt(contractVersion))
+    const version = parseInt(contractVersion, 10)
+    setPassportRequest({ contractId, contractVersion: version })
+    fetchPassport(contractId, version)
   }, [router])
 
   const fetchPassport = async (contractId: string, contractVersion: number) => {
+    setLoading(true)
+    setError('')
     try {
       const response = await apiFetch(`/api/contracts/${contractId}/passport?contract_version=${contractVersion}`)
       if (response.ok) {
         const data = await response.json()
         setPassport(data)
+        fetchContract(contractId)
         fetchEvidence(data.passport_id)
         fetchStatistics(data.passport_id)
         fetchIntegrity(data.passport_id)
@@ -124,15 +140,31 @@ export default function LegalPassportPage() {
     }
   }
 
+  const fetchContract = async (contractId: string) => {
+    try {
+      const response = await apiFetch(`/api/contracts/${contractId}`)
+      if (response.ok) setContract(await response.json())
+    } catch (error) {
+      console.error('Error fetching contract:', error)
+    }
+  }
+
   const fetchEvidence = async (passportId: string) => {
+    setEvidenceLoading(true)
+    setEvidenceError('')
     try {
       const response = await apiFetch(`/api/passports/${passportId}/evidence`)
       if (response.ok) {
         const data = await response.json()
         setEvidence(data)
+      } else {
+        const body = await response.json().catch(() => null)
+        setEvidenceError(body?.detail || `Unable to load evidence (${response.status})`)
       }
     } catch (error) {
-      console.error('Error fetching evidence:', error)
+      setEvidenceError(error instanceof Error ? error.message : 'Unable to load evidence')
+    } finally {
+      setEvidenceLoading(false)
     }
   }
 
@@ -207,12 +239,22 @@ export default function LegalPassportPage() {
     return `${hash.substring(0, 8)}...${hash.substring(hash.length - 8)}`
   }
 
+  const copyEvidenceId = async (evidenceId: string) => {
+    try {
+      await navigator.clipboard.writeText(evidenceId)
+      setCopiedEvidenceId(evidenceId)
+      window.setTimeout(() => setCopiedEvidenceId(current => current === evidenceId ? null : current), 2000)
+    } catch (error) {
+      console.error('Unable to copy evidence ID:', error)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading passport...</p>
+          <p className="text-gray-600">Loading Legal Passport...</p>
         </div>
       </div>
     )
@@ -225,8 +267,17 @@ export default function LegalPassportPage() {
           <Shield className="w-16 h-16 text-gray-400 mx-auto mb-4" />
           <h2 className="text-2xl font-semibold text-gray-700 mb-2">{error || 'Passport unavailable'}</h2>
           <p className="text-gray-600 mb-4">Check your session or try loading the contract again.</p>
+          {passportRequest && (
+            <button
+              type="button"
+              onClick={() => void fetchPassport(passportRequest.contractId, passportRequest.contractVersion)}
+              className="px-4 py-2 mr-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+            >
+              Retry
+            </button>
+          )}
           <button
-            onClick={() => router.push('/contracts')}
+            onClick={() => router.push('/dashboard/contracts')}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
           >
             Back to Contracts
@@ -244,14 +295,14 @@ export default function LegalPassportPage() {
           <div className="flex items-center justify-between">
             <div>
               <button
-                onClick={() => router.push('/contracts')}
+                onClick={() => router.push('/dashboard/contracts')}
                 className="text-blue-600 hover:text-blue-700 mb-2 inline-flex items-center"
               >
                 <ArrowLeft className="w-4 h-4 mr-1" />
                 Back to Contracts
               </button>
               <h1 className="text-3xl font-bold text-gray-900">Legal Passport</h1>
-              <p className="text-gray-600 mt-1">Cryptographically verifiable legal intelligence record</p>
+              <p className="text-gray-600 mt-1">{contract?.name || 'Cryptographically verifiable legal intelligence record'}</p>
             </div>
             <div className="flex items-center space-x-4">
               <div className={`flex items-center space-x-2 px-4 py-2 rounded-lg ${getStatusColor(passport.status)}`}>
@@ -423,8 +474,22 @@ export default function LegalPassportPage() {
                       <p className="text-sm text-gray-900 mt-1">{passport.contract_id}</p>
                     </div>
                     <div>
+                      <label className="text-sm font-medium text-gray-500">Contract Name</label>
+                      <p className="text-sm text-gray-900 mt-1">{contract?.name || 'Loading contract name...'}</p>
+                    </div>
+                    <div>
                       <label className="text-sm font-medium text-gray-500">Contract Version</label>
                       <p className="text-sm text-gray-900 mt-1">{passport.contract_version}</p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Risk Information</label>
+                      <p className="text-sm text-gray-900 mt-1">
+                        {passport.risk_score}/100{passport.metadata?.risk_level ? ` (${passport.metadata.risk_level})` : ''}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Evidence Count</label>
+                      <p className="text-sm text-gray-900 mt-1">{legalEvidenceCount}</p>
                     </div>
                     <div>
                       <label className="text-sm font-medium text-gray-500">Policy Version</label>
@@ -466,7 +531,24 @@ export default function LegalPassportPage() {
                 <div className="text-sm text-gray-600 mb-4">
                   Evidence ({legalEvidenceCount})
                 </div>
-                {legalEvidence.map((item) => {
+                {evidenceLoading && (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
+                    Loading evidence...
+                  </div>
+                )}
+                {!evidenceLoading && evidenceError && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+                    <p className="text-sm text-red-700">{evidenceError}</p>
+                    <button
+                      type="button"
+                      onClick={() => void fetchEvidence(passport.passport_id)}
+                      className="mt-3 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                    >
+                      Retry evidence
+                    </button>
+                  </div>
+                )}
+                {!evidenceLoading && !evidenceError && legalEvidence.map((item) => {
                   const isExpanded = expandedEvidenceId === item.evidence_id
                   const severity = item.metadata?.finding_severity || 'medium'
                   const sourceSection = item.metadata?.source_section || item.contract_reference
@@ -510,6 +592,29 @@ export default function LegalPassportPage() {
                           </div>
                         </div>
                       </button>
+
+                      <div className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-4 py-3 text-xs">
+                        <span className="font-medium text-gray-600">Evidence ID:</span>
+                        <span className="min-w-0 flex-1 break-all font-mono text-gray-900">{item.evidence_id}</span>
+                        <button
+                          type="button"
+                          onClick={() => void copyEvidenceId(item.evidence_id)}
+                          className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 font-medium text-gray-700 hover:bg-gray-100"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                          {copiedEvidenceId === item.evidence_id ? 'Copied' : 'Copy Evidence ID'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => router.push(`/public-verify?evidence_id=${encodeURIComponent(item.evidence_id)}`)}
+                          className="inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-700"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          Verify Publicly
+                        </button>
+                      </div>
+
+                      <AnchorProofButton evidenceId={item.evidence_id} />
                       
                       {isExpanded && (
                         <div className="border-t border-gray-200 bg-gray-50 p-4 space-y-4">
@@ -554,10 +659,10 @@ export default function LegalPassportPage() {
                           )}
                           
                           <div className="pt-2 text-xs text-gray-500">
-                            ID: <span className="font-mono">{item.evidence_id.slice(0, 8)}...</span>
+                            <div className="mt-1"><span className="font-medium text-gray-700">Evidence type:</span> {item.evidence_type}</div>
+                            <div className="mt-1"><span className="font-medium text-gray-700">Risk / severity:</span> {severity}{item.risk_impact != null ? ` (${item.risk_impact.toFixed(0)}/100)` : ''}</div>
+                            <div className="mt-1"><span className="font-medium text-gray-700">Evidence status:</span> {item.evidence_status}</div>
                           </div>
-
-                          <AnchorProofButton evidenceId={item.evidence_id} />
                         </div>
                       )}
                     </div>

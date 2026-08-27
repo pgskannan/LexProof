@@ -28,3 +28,16 @@ async def gcp_health() -> dict[str, str]:
 @router.get("/health/ai")
 async def ai_health() -> dict[str, str]:
     return _status(get_settings().has_ai_configuration(), "vertex_ai")
+
+
+@router.get("/health/config")
+async def configuration_health() -> dict[str, object]:
+    settings = get_settings()
+    network = "ethereum-sepolia" if settings.ethereum_chain_id == 11155111 else f"chain-{settings.ethereum_chain_id}"
+    return {
+        "network": network,
+        "chain_id": settings.ethereum_chain_id,
+        "contract_address": settings.contract_address,
+        "gemini_model": settings.gemini_model,
+        "ethereum_configured": bool(settings.ethereum_rpc_url and settings.contract_address),
+    }

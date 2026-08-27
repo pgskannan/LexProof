@@ -353,7 +353,7 @@ async def verify_passport_integrity_endpoint(
                 record
                 for record in evidence_service.repository.stream()
                 if record.get("passport_id") == passport_id_value
-                and (not evidence_service.owner_id or record.get("owner_id") == evidence_service.owner_id)
+                and (not evidence_service.owner_id or not record.get("owner_id") or record.get("owner_id") == evidence_service.owner_id)
             ]
 
     return verify_passport_integrity(passport_doc, evidence_items=evidence_items)

@@ -43,6 +43,12 @@ _passports_by_contract: Dict[tuple[str, int], str] = {}
 _evidence_by_passport: Dict[str, List[Dict[str, Any]]] = {}
 
 
+def _is_visible_to_tenant(record: Dict[str, Any], tenant_id: str) -> bool:
+    """Support legacy ownerless passports while preserving tenant isolation."""
+    owner_id = record.get("owner_id")
+    return not owner_id or owner_id == tenant_id
+
+
 class PassportService:
     """Service for creating and managing legal passports."""
 
@@ -361,7 +367,7 @@ class PassportService:
         passport = _passports.get(passport_id)
         if passport is None and self.repository:
             stored = self.repository.get(passport_id)
-            if stored and stored.get("owner_id") == self.tenant_id:
+            if stored and _is_visible_to_tenant(stored, self.tenant_id):
                 passport = ContractPassport.model_validate(stored)
         return ContractPassportResponse.model_validate(passport) if passport else None
 
@@ -385,7 +391,7 @@ class PassportService:
         if self.repository:
             for stored in self.repository.stream():
                 if stored.get("contract_id") == contract_id and stored.get("contract_version") == contract_version:
-                    if stored.get("owner_id") != self.tenant_id:
+                    if not _is_visible_to_tenant(stored, self.tenant_id):
                         continue
                     return ContractPassportResponse.model_validate(stored)
         return None

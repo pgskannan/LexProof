@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { apiFetch } from '../../lib/api';
 
 interface EvidenceVerificationResult {
@@ -15,6 +16,16 @@ interface EvidenceVerificationResult {
   block_number: number | null;
   anchored_at: string | null;
   timestamp: string;
+}
+
+type ChainCheckStatus = 'idle' | 'loading' | 'match' | 'mismatch' | 'not_anchored' | 'error';
+
+interface ChainCheckResult {
+  status: ChainCheckStatus;
+  onChainHash: string | null;
+  onChainTimestamp: string | null;
+  anchoredBy: string | null;
+  message: string;
 }
 
 const STATUS_COPY: Record<string, { label: string; tone: 'green' | 'red' | 'amber' }> = {
@@ -42,6 +53,20 @@ const TONE_CLASSES: Record<'green' | 'red' | 'amber', { box: string; text: strin
   },
 };
 
+const CHAIN_TONE_CLASSES: Record<'green' | 'red' | 'amber' | 'gray', { box: string; text: string }> = {
+  green: { box: 'bg-green-50 border border-green-400', text: 'text-green-700' },
+  red: { box: 'bg-red-50 border border-red-400', text: 'text-red-700' },
+  amber: { box: 'bg-amber-50 border border-amber-400', text: 'text-amber-700' },
+  gray: { box: 'bg-gray-50 border border-gray-300', text: 'text-gray-600' },
+};
+
+const SEPOLIA_RPC_URL =
+  process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com';
+const REGISTRY_CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_LEXPROOF_CONTRACT_ADDRESS || '';
+const REGISTRY_ABI = [
+  'function getEvidenceAnchor(string) view returns (bytes32 evidenceHash, uint256 timestamp, address anchoredBy)',
+];
+
 function sepoliaTxUrl(txHash: string): string {
   return `https://sepolia.etherscan.io/tx/${txHash}`;
 }
@@ -50,14 +75,107 @@ function sepoliaAddressUrl(address: string): string {
   return `https://sepolia.etherscan.io/address/${address}`;
 }
 
+/**
+ * Independently verify an evidence hash directly against the LexProofRegistry
+ * contract on Ethereum Sepolia, from the browser, using a public RPC endpoint.
+ *
+ * This does NOT go through the LexProof backend at all — it is a second,
+ * independent path to the same on-chain fact, so a visitor doesn't have to
+ * trust the backend's word for what is (or isn't) anchored on-chain.
+ */
+async function verifyOnChainIndependently(
+  evidenceId: string,
+  expectedHash: string | null
+): Promise<ChainCheckResult> {
+  if (!REGISTRY_CONTRACT_ADDRESS) {
+    return {
+      status: 'error',
+      onChainHash: null,
+      onChainTimestamp: null,
+      anchoredBy: null,
+      message: 'Registry contract address is not configured on this deployment.',
+    };
+  }
+
+  try {
+    const { ethers } = await import('ethers');
+    const provider = new ethers.JsonRpcProvider(SEPOLIA_RPC_URL);
+    const contract = new ethers.Contract(REGISTRY_CONTRACT_ADDRESS, REGISTRY_ABI, provider);
+
+    const [evidenceHash, timestamp, anchoredBy] = await contract.getEvidenceAnchor(evidenceId);
+    const onChainHash: string = evidenceHash.toString().toLowerCase();
+    const zeroHash = '0x' + '0'.repeat(64);
+
+    if (!onChainHash || onChainHash === zeroHash) {
+      return {
+        status: 'not_anchored',
+        onChainHash: null,
+        onChainTimestamp: null,
+        anchoredBy: null,
+        message: 'The contract has no anchor for this evidence ID.',
+      };
+    }
+
+    const onChainTimestamp = new Date(Number(timestamp) * 1000).toLocaleString();
+    const normalizedExpected = expectedHash ? `0x${expectedHash.replace(/^0x/i, '').toLowerCase()}` : null;
+
+    if (normalizedExpected && normalizedExpected === onChainHash) {
+      return {
+        status: 'match',
+        onChainHash,
+        onChainTimestamp,
+        anchoredBy,
+        message: 'The hash read directly from the smart contract matches the recomputed evidence hash.',
+      };
+    }
+
+    return {
+      status: 'mismatch',
+      onChainHash,
+      onChainTimestamp,
+      anchoredBy,
+      message: normalizedExpected
+        ? 'The hash read directly from the smart contract does NOT match the recomputed evidence hash.'
+        : 'Read an on-chain hash, but no recomputed hash was available to compare it against.',
+    };
+  } catch (err) {
+    const reason =
+      (err as { shortMessage?: string; reason?: string; message?: string })?.shortMessage ||
+      (err as { reason?: string })?.reason ||
+      (err instanceof Error ? err.message : String(err));
+
+    if (typeof reason === 'string' && reason.toLowerCase().includes('evidence anchor does not exist')) {
+      return {
+        status: 'not_anchored',
+        onChainHash: null,
+        onChainTimestamp: null,
+        anchoredBy: null,
+        message: 'The contract has no anchor for this evidence ID.',
+      };
+    }
+
+    return {
+      status: 'error',
+      onChainHash: null,
+      onChainTimestamp: null,
+      anchoredBy: null,
+      message: `Could not reach Ethereum Sepolia directly from your browser: ${reason}`,
+    };
+  }
+}
+
 export default function PublicVerifyPage() {
+  const searchParams = useSearchParams();
+  const evidenceIdFromUrl = searchParams.get('evidence_id')?.trim();
   const [evidenceId, setEvidenceId] = useState('');
   const [result, setResult] = useState<EvidenceVerificationResult | null>(null);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [chainCheck, setChainCheck] = useState<ChainCheckResult | null>(null);
 
-  const handleVerify = async () => {
-    if (!evidenceId.trim()) {
+  const handleVerify = async (id = evidenceId) => {
+    const requestedEvidenceId = id.trim();
+    if (!requestedEvidenceId) {
       setError('Please enter an evidence ID');
       return;
     }
@@ -65,9 +183,10 @@ export default function PublicVerifyPage() {
     setIsLoading(true);
     setError('');
     setResult(null);
+    setChainCheck(null);
 
     try {
-      const response = await apiFetch(`/api/verify/${encodeURIComponent(evidenceId.trim())}`);
+      const response = await apiFetch(`/api/verify/${encodeURIComponent(requestedEvidenceId)}`);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -83,6 +202,30 @@ export default function PublicVerifyPage() {
     }
   };
 
+  useEffect(() => {
+    if (!evidenceIdFromUrl) return;
+    setEvidenceId(evidenceIdFromUrl);
+    void handleVerify(evidenceIdFromUrl);
+    // The URL is the source of truth for this one-time deep-link verification.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evidenceIdFromUrl]);
+
+  const runChainCheck = useCallback(async () => {
+    if (!result) return;
+    setChainCheck({ status: 'loading', onChainHash: null, onChainTimestamp: null, anchoredBy: null, message: '' });
+    const outcome = await verifyOnChainIndependently(result.evidence_id, result.computed_hash);
+    setChainCheck(outcome);
+  }, [result]);
+
+  // Automatically run the independent on-chain check as soon as a backend
+  // result comes back that has something to compare against — this is what
+  // makes it a check the visitor doesn't have to remember to ask for.
+  useEffect(() => {
+    if (result && (result.status === 'VERIFIED' || result.status === 'TAMPERED')) {
+      runChainCheck();
+    }
+  }, [result, runChainCheck]);
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     alert('Copied to clipboard!');
@@ -96,6 +239,16 @@ export default function PublicVerifyPage() {
 
   const statusInfo = result ? STATUS_COPY[result.status] ?? { label: result.status, tone: 'amber' as const } : null;
   const toneClasses = statusInfo ? TONE_CLASSES[statusInfo.tone] : null;
+
+  const chainToneKey: 'green' | 'red' | 'amber' | 'gray' =
+    chainCheck?.status === 'match'
+      ? 'green'
+      : chainCheck?.status === 'mismatch'
+      ? 'red'
+      : chainCheck?.status === 'not_anchored' || chainCheck?.status === 'error'
+      ? 'amber'
+      : 'gray';
+  const chainToneClasses = CHAIN_TONE_CLASSES[chainToneKey];
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4">
@@ -132,7 +285,7 @@ export default function PublicVerifyPage() {
           </div>
 
           <button
-            onClick={handleVerify}
+            onClick={() => void handleVerify()}
             disabled={isLoading || !evidenceId.trim()}
             className="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-medium hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
           >
@@ -161,6 +314,64 @@ export default function PublicVerifyPage() {
                   : 'No matching evidence and/or Ethereum anchor was found for this ID.'}
               </p>
             </div>
+
+            {/* Independent on-chain check */}
+            {(result.status === 'VERIFIED' || result.status === 'TAMPERED') && (
+              <div className={`rounded-lg p-4 mb-6 ${chainToneClasses.box}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-gray-700">
+                    Independent check &mdash; read directly from Ethereum Sepolia by your browser
+                  </h3>
+                  <button
+                    onClick={runChainCheck}
+                    disabled={chainCheck?.status === 'loading'}
+                    className="text-xs text-blue-600 hover:text-blue-800 disabled:text-gray-400"
+                  >
+                    {chainCheck?.status === 'loading' ? 'Checking…' : 'Re-check'}
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mb-2">
+                  This calls the LexProofRegistry contract directly from your browser using a public
+                  Sepolia RPC endpoint &mdash; it does not go through the LexProof backend, so it isn&apos;t
+                  relying on this site to honestly report what is on-chain.
+                </p>
+
+                {chainCheck?.status === 'loading' && (
+                  <p className="text-sm text-gray-500">Querying the smart contract…</p>
+                )}
+
+                {chainCheck && chainCheck.status !== 'loading' && (
+                  <div>
+                    <p className={`text-sm font-medium mb-2 ${chainToneClasses.text}`}>
+                      {chainCheck.status === 'match' && '✓ ON-CHAIN MATCH — independently confirmed.'}
+                      {chainCheck.status === 'mismatch' && '✗ Mismatch: on-chain hash does not match.'}
+                      {chainCheck.status === 'not_anchored' && '○ No on-chain anchor found for this ID.'}
+                      {chainCheck.status === 'error' && '⚠ Could not complete the independent check.'}
+                    </p>
+                    <p className="text-xs text-gray-600 mb-2">{chainCheck.message}</p>
+                    {chainCheck.onChainHash && (
+                      <p className="font-mono text-xs break-all bg-white/60 p-2 rounded">
+                        on-chain hash: {chainCheck.onChainHash}
+                      </p>
+                    )}
+                    {chainCheck.anchoredBy && (
+                      <p className="text-xs text-gray-600 mt-2">
+                        Anchored by{' '}
+                        <a
+                          href={sepoliaAddressUrl(chainCheck.anchoredBy)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-mono text-blue-600 hover:text-blue-800 underline"
+                        >
+                          {chainCheck.anchoredBy}
+                        </a>{' '}
+                        at {chainCheck.onChainTimestamp}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Verification Details */}
             <div className="space-y-4">

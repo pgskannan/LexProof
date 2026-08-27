@@ -26,18 +26,12 @@ export default function Dashboard() {
     {
       title: 'Compliance',
       items: [
-        { name: 'Policies', href: '/dashboard/compliance/policies' },
-        { name: 'Violations', href: '/dashboard/compliance/violations' },
-        { name: 'Monitoring', href: '/dashboard/compliance/monitoring' },
+        { name: 'Command Center', href: '/compliance-command-center' },
       ],
     },
     {
-      title: 'Legal Passport',
-      items: [{ name: 'Legal Passport', href: '/dashboard/legal-passport' }],
-    },
-    {
       title: 'Blockchain Proof',
-      items: [{ name: 'Blockchain Proof', href: '/dashboard/blockchain-proof' }],
+      items: [{ name: 'Blockchain Proof', href: '/dashboard/verification' }],
     },
     {
       title: 'Verification',
@@ -49,7 +43,7 @@ export default function Dashboard() {
     },
     {
       title: 'Administration',
-      items: [{ name: 'Administration', href: '/dashboard/administration' }],
+      items: [{ name: 'System & Anchoring Status', href: '/dashboard/administration' }],
     },
   ];
 

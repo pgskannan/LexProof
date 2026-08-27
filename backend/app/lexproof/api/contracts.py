@@ -54,6 +54,95 @@ def _repositories() -> tuple[FirestoreRepository, FirestoreRepository, CloudStor
     return FirestoreRepository("contracts"), FirestoreRepository("contract_versions"), CloudStorageRepository()
 
 
+def _is_visible_to_user(record: dict[str, Any], uid: str) -> bool:
+    """Allow the current tenant and legacy records created before owner scoping."""
+    owner_id = record.get("owner_id")
+    return not owner_id or owner_id == uid
+
+
+def _passport_contract_name(passport: dict[str, Any]) -> str:
+    metadata = passport.get("metadata") or {}
+    return metadata.get("contract_name") or metadata.get("contract_title") or passport["contract_id"]
+
+
+def _contract_summary(
+    contract: dict[str, Any],
+    versions: FirestoreRepository,
+    passports: FirestoreRepository,
+    passport: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the current, owner-scoped contract record used by the dashboard."""
+    version_id = contract.get("current_version_id")
+    version = versions.get(version_id) if version_id else None
+    passport_id = (version.get("passport_id") if version else None) or (passport or {}).get("passport_id") or (passport or {}).get("id")
+    passport = passport or (passports.get(passport_id) if passport_id else None)
+
+    return {
+        "contract_id": contract.get("id") or contract.get("contract_id") or (passport or {}).get("contract_id"),
+        "name": contract.get("name") or contract.get("contract_name") or (_passport_contract_name(passport) if passport else None),
+        "status": contract.get("status"),
+        "created_at": contract.get("created_at"),
+        "updated_at": contract.get("updated_at"),
+        "version": (version.get("version_number") if version else None) or (passport or {}).get("contract_version"),
+        "analysis_status": version.get("analysis_status") if version else None,
+        "passport_id": passport_id,
+        "risk_score": passport.get("risk_score") if passport else None,
+        "risk_level": passport.get("risk_level") if passport else None,
+        "evidence_count": passport.get("evidence_count") if passport else None,
+    }
+
+
+@router.get("")
+async def list_contracts(user: dict[str, Any] = Depends(get_current_user)):
+    """List the signed-in user's contracts with their current passport summary."""
+    uid = str(user["uid"])
+    contracts, versions, _ = _repositories()
+    passports = FirestoreRepository("legal_passports")
+    records = [
+        _contract_summary(contract, versions, passports)
+        for contract in contracts.stream()
+        if _is_visible_to_user(contract, uid)
+    ]
+    existing_contract_versions = {
+        (record["contract_id"], record["version"])
+        for record in records
+        if record.get("contract_id") and record.get("version") is not None
+    }
+
+    # Early imports persisted the analysis output directly as passports rather
+    # than creating a separate contracts/contract_versions document. Surface
+    # those real records too, so their evidence remains reachable in the UI.
+    for passport in passports.stream():
+        if not _is_visible_to_user(passport, uid):
+            continue
+        identity = (passport.get("contract_id"), passport.get("contract_version"))
+        if not identity[0] or identity in existing_contract_versions:
+            continue
+        records.append(_contract_summary({}, versions, passports, passport=passport))
+    return sorted(records, key=lambda record: record.get("updated_at") or "", reverse=True)
+
+
+@router.get("/{contract_id}")
+async def get_contract(contract_id: str, user: dict[str, Any] = Depends(get_current_user)):
+    """Get one signed-in user's contract and current passport summary."""
+    uid = str(user["uid"])
+    contracts, versions, _ = _repositories()
+    contract = contracts.get(contract_id)
+    passports = FirestoreRepository("legal_passports")
+    if contract and _is_visible_to_user(contract, uid):
+        return _contract_summary(contract, versions, passports)
+
+    legacy_passports = [
+        passport
+        for passport in passports.stream()
+        if passport.get("contract_id") == contract_id and _is_visible_to_user(passport, uid)
+    ]
+    if not legacy_passports:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    latest_passport = max(legacy_passports, key=lambda passport: passport.get("contract_version", 0))
+    return _contract_summary({}, versions, passports, passport=latest_passport)
+
+
 def parse_structured_analysis(content: str) -> dict[str, Any]:
     """Parse Gemini JSON output without manufacturing missing analysis data."""
     candidates = [content.strip()]
