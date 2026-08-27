@@ -1,0 +1,431 @@
+# LexProof — Full Integrity & Verification Inspection
+We are preparing LexProof for the final implementation/demo phase.
+
+**DO NOT MODIFY ANY CODE.**
+**DO NOT CREATE FILES.**
+**DO NOT RUN destructive commands.**
+**DO NOT refactor anything yet.**
+
+Your job is to perform a **read-only technical audit** of the current LexProof implementation and report exactly what exists today.
+
+## Objective
+Trace the complete evidence lifecycle:
+
+```
+Legal Document
+    ↓
+AI Analysis
+    ↓
+Evidence / Findings
+    ↓
+Evidence Package / Passport
+    ↓
+Canonicalization
+    ↓
+SHA-256 Hash
+    ↓
+Firestore Persistence
+    ↓
+Ethereum Anchor
+    ↓
+Verification
+```
+We need to determine whether the current implementation can reliably prove:
+
+> "The evidence being presented now is exactly the evidence that was previously analyzed and anchored."
+
+---
+
+# 1. Repository Structure
+First inspect the repository structure.
+
+Identify:
+
+- frontend application
+- backend application
+- API routes
+- domain/services
+- repositories
+- models
+- schemas
+- hashing utilities
+- passport/evidence code
+- Ethereum/blockchain code
+- verification code
+- tests
+- configuration/environment files
+Do NOT modify anything.
+
+Provide a concise architecture map.
+
+---
+
+# 2. Evidence Creation Path
+Trace the actual code path from document upload/analysis to evidence creation.
+
+Identify:
+
+- entry-point API
+- service/function responsible for analysis
+- evidence/finding creation
+- evidence package/passport creation
+- database persistence
+- IDs generated
+- timestamps generated
+- metadata included
+- fields included in the final evidence object
+For every step, provide:
+
+```
+File
+Function/Class
+What it does
+Input
+Output
+Next function
+```
+Do not guess. Reference actual code.
+
+---
+
+# 3. Canonicalization Audit
+Find the exact code responsible for canonicalizing evidence before hashing.
+
+Determine:
+
+- What fields are included?
+- What fields are excluded?
+- Are dictionary/object keys sorted?
+- Are arrays sorted?
+- Is whitespace normalized?
+- Are timestamps normalized?
+- Are UUIDs included?
+- Are database-generated IDs included?
+- Are null/empty fields treated consistently?
+- Is JSON serialization deterministic?
+- Is encoding explicitly UTF-8?
+- Are floating-point values handled deterministically?
+- Does object/property ordering affect the hash?
+Explain whether two semantically identical evidence packages can produce different hashes.
+
+---
+
+# 4. SHA-256 Hashing Audit
+Find the exact hashing implementation.
+
+Determine:
+
+- hashing algorithm
+- input format
+- encoding
+- digest format
+- hex/base64/etc.
+- whether the same hashing function is used during creation and verification
+- whether any additional salt/prefix/version is used
+- whether the hash is calculated over raw document bytes, canonical JSON, or another representation
+Show the exact call chain.
+
+---
+
+# 5. CREATE vs VERIFY Comparison
+This is the most important part.
+
+Trace these independently:
+
+### CREATE
+
+```
+Evidence
+ ↓
+Canonicalization
+ ↓
+Hash
+ ↓
+Stored hash
+```
+
+### VERIFY
+
+```
+Evidence supplied for verification
+ ↓
+Canonicalization
+ ↓
+Hash
+ ↓
+Computed hash
+ ↓
+Comparison
+```
+Compare the two pipelines step-by-step.
+
+Create a table:
+
+StepCREATEVERIFYIdentical?InputCanonicalizationSerializationEncodingSHA-256Digest formatComparisonIf they differ anywhere, flag it as:
+
+**CRITICAL / HIGH / MEDIUM / LOW**
+
+---
+
+# 6. Mutation / Tamper Resistance
+Determine whether the current implementation would correctly detect changes.
+
+Evaluate these cases conceptually using the existing code:
+
+```
+Original evidence              → expected PASS
+Change numeric value           → expected FAIL
+Change string                  → expected FAIL
+Add field                       → expected FAIL
+Remove field                    → expected FAIL
+Change timestamp                → expected ?
+Change ID                       → expected ?
+Reorder object keys             → expected PASS
+Reorder semantically ordered array → expected ?
+Reorder semantically unordered array → expected ?
+Change whitespace               → expected ?
+Change Unicode representation   → expected ?
+```
+DO NOT modify the implementation to test these yet.
+
+Tell us what the current implementation would do and why.
+
+---
+
+# 7. Firestore Persistence Audit
+Inspect how evidence records are stored.
+
+Determine:
+
+- collection name
+- document ID strategy
+- stored evidence package
+- stored hash
+- algorithm/version metadata
+- Ethereum transaction information
+- timestamps
+- verification status
+- whether original evidence is immutable
+- whether records can be overwritten
+- whether versioning exists
+Identify any integrity risks.
+
+---
+
+# 8. Ethereum Anchoring Audit
+Find all Ethereum-related implementation.
+
+Determine:
+
+- network
+- RPC provider
+- wallet/account mechanism
+- transaction creation
+- what exactly is written on-chain
+- whether the evidence hash is directly anchored
+- transaction ID storage
+- block number storage
+- confirmation handling
+- failure handling
+- retry behavior
+- idempotency
+- gas handling
+- testnet/mainnet configuration
+Most importantly answer:
+
+> Can an independent third party take the stored evidence hash and verify the Ethereum anchor without trusting LexProof's database?
+
+---
+
+# 9. Verification API Audit
+Find the verification endpoint(s).
+
+Document:
+
+- endpoint
+- HTTP method
+- request schema
+- response schema
+- authentication requirements
+- verification algorithm
+- database dependencies
+- Ethereum dependencies
+- failure states
+Determine whether verification is:
+
+```
+Database verification
+```
+or
+
+```
+Cryptographic verification
+```
+or
+
+```
+Cryptographic + Ethereum verification
+```
+Explain precisely.
+
+---
+
+# 10. Frontend Verification UX
+Inspect the frontend implementation.
+
+Find:
+
+- evidence/passport page
+- verification page
+- hash display
+- Ethereum transaction display
+- verification status
+- error states
+- explorer links
+- AI findings display
+Determine whether a non-technical legal user can understand:
+
+1. What was analyzed?
+2. What evidence was created?
+3. What hash represents that evidence?
+4. What was anchored to Ethereum?
+5. Whether the evidence is currently authentic?
+6. What happens when evidence has been tampered with?
+Do NOT redesign yet.
+
+Just report the current state.
+
+---
+
+# 11. Existing Tests
+Inspect all relevant tests.
+
+Identify:
+
+- hashing tests
+- canonicalization tests
+- passport tests
+- evidence tests
+- verification tests
+- Firestore tests
+- Ethereum tests
+- API tests
+- frontend tests
+Report:
+
+```
+Test file
+Test name
+What it verifies
+PASS/FAIL/UNKNOWN
+Coverage gap
+```
+Do not run tests that modify external state.
+
+If safe read-only/unit tests can be run, you may run them, but clearly distinguish:
+
+**Existing test result**
+
+from
+
+**Your code inspection conclusion.**
+
+---
+
+# 12. Security / Integrity Concerns
+Look specifically for:
+
+- mutable evidence
+- hash calculated from incomplete data
+- inconsistent canonicalization
+- timestamp contamination
+- ID contamination
+- database-controlled verification
+- trust placed in frontend
+- Ethereum transaction not actually containing the evidence hash
+- transaction replacement issues
+- replay problems
+- lack of algorithm/version metadata
+- weak verification semantics
+- missing failure states
+- missing audit trail
+Prioritize findings.
+
+---
+
+# 13. Current Architecture Diagram
+Produce a simple text diagram based ONLY on the actual code:
+
+```
+[Upload]
+   ↓
+[...actual component...]
+   ↓
+[...actual component...]
+   ↓
+[Canonicalization]
+   ↓
+[SHA-256]
+   ↓
+[Firestore]
+   ↓
+[Ethereum]
+   ↓
+[Verification]
+```
+Use actual file/function names where possible.
+
+---
+
+# 14. Final Assessment
+End with these exact sections:
+
+## A. What is already solid
+List things we should NOT unnecessarily change.
+
+## B. Critical integrity gaps
+Only genuine issues found in the current implementation.
+
+## C. Verification gaps
+What prevents us from confidently claiming independent verification.
+
+## D. Ethereum gaps
+What prevents us from confidently claiming blockchain-backed proof.
+
+## E. Test gaps
+Tests that must be added before final demo.
+
+## F. Recommended implementation order
+Give a prioritized list:
+
+```
+P0 — must fix
+P1 — should fix
+P2 — polish
+```
+
+## G. Final verdict
+Give one of:
+
+- READY FOR HARDENING
+- NEEDS INTEGRITY FIXES
+- MAJOR ARCHITECTURAL ISSUE
+Explain why in no more than 5 sentences.
+
+---
+
+# Important constraints
+
+1. **READ ONLY.**
+2. Do not edit files.
+3. Do not refactor.
+4. Do not invent missing behavior.
+5. Do not assume the README accurately describes the implementation.
+6. Prefer actual code over documentation.
+7. If something cannot be verified from the repository, explicitly say:
+**"NOT VERIFIED FROM CODE."**
+8. Do not recommend new features until the current implementation has been completely traced.
+9. We will use your report as the baseline for the next implementation sprint.
+The goal is not to make LexProof bigger.
+
+The goal is to make the existing core claim **technically defensible, cryptographically correct, independently verifiable, and demo-ready.**

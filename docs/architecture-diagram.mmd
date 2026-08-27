@@ -1,0 +1,11 @@
+flowchart LR
+User[User uploads Contract] --> Next[LexProof Frontend<br/>Next.js]
+Next --> API[FastAPI Backend]
+API --> Gemini[Gemini AI Analysis]
+API --> Firestore[(Firestore<br/>Legal Evidence + Legal Passport)]
+API --> Hash[canonicalize_evidence_item<br/>SHA-256]
+Hash -->|anchor| Ethereum[(Ethereum Sepolia<br/>LexProofRegistry Solidity contract)]
+
+Verifier[Verifier<br/>logged-in or public] --> Browser[Browser verifier<br/>verifyOnChainIndependently<br/>readEvidenceAnchorFromEthereum]
+Browser -->|direct public RPC<br/>NOT through FastAPI| Ethereum
+Browser --> Result[VERIFIED or TAMPERED<br/>Etherscan transaction link]
