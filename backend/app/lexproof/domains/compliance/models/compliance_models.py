@@ -461,6 +461,11 @@ class AmendmentRequest(BaseModel):
     regulatory_requirement: str = Field(..., description="Regulatory or policy requirement")
     jurisdiction: str = Field(..., description="Jurisdiction for compliance")
     amendment_reason: str = Field(..., description="Reason for amendment")
+    finding_id: Optional[str] = Field(None, description="Related AI finding identifier")
+    version_id: Optional[str] = Field(None, description="Related contract version identifier")
+    evidence_id: Optional[str] = Field(None, description="Related evidence identifier")
+    evidence_quote: Optional[str] = Field(None, description="Supporting evidence quote")
+    source_section: Optional[str] = Field(None, description="Source section for the finding")
 
 
 class ProposedAmendment(BaseModel):
@@ -479,6 +484,11 @@ class ProposedAmendment(BaseModel):
     compliance_improvement: str = Field(..., description="Compliance improvement")
     created_at: datetime = Field(..., description="Creation timestamp")
     created_by: str = Field(..., description="Who created this amendment")
+    finding_id: Optional[str] = Field(None, description="Related AI finding identifier")
+    version_id: Optional[str] = Field(None, description="Related contract version identifier")
+    evidence_id: Optional[str] = Field(None, description="Related evidence identifier")
+    evidence_quote: Optional[str] = Field(None, description="Supporting evidence quote")
+    source_section: Optional[str] = Field(None, description="Source section for the finding")
 
     class Config:
         """Pydantic configuration."""

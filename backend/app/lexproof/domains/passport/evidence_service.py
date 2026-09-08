@@ -6,9 +6,10 @@ that support contract intelligence assessments in ContractPassports.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .models import (
@@ -96,7 +97,7 @@ class EvidenceService:
                 contract_reference=evidence_data.contract_reference,
                 policy_reference=evidence_data.policy_reference,
                 analysis_reference=evidence_data.analysis_reference,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
                 verified_at=None,
                 source=evidence_data.source,
                 source_id=evidence_data.source_id,
@@ -166,25 +167,69 @@ class EvidenceService:
                 evidence_summaries.append(EvidenceItemSummary.model_validate(evidence_item))
 
         if self.repository:
-            for record in self.repository.stream():
-                if record.get("passport_id") != passport_id:
-                    continue
-                if self.owner_id and record.get("owner_id") and record.get("owner_id") != self.owner_id:
-                    continue
-                if not record.get("created_at") and self.passport_repository:
-                    passport = self.passport_repository.get(passport_id)
-                    if passport and passport.get("created_at"):
-                        record = {**record, "created_at": passport["created_at"]}
-                        evidence_id = record.get("id") or record.get("evidence_id")
-                        if not self.is_evidence_anchored(evidence_id):
-                            self.repository.set(evidence_id, {"created_at": record["created_at"]}, merge=True)
+            # self.repository.stream() (plus, on this path, the occasional
+            # self.passport_repository.get()/self.repository.set() backfill)
+            # all go through the real, synchronous Firestore SDK client.
+            # Called directly inside this async method, a full evidence
+            # collection scan runs on the event loop's own thread and blocks
+            # every other concurrent request on it -- this is the
+            # status-and-plan.md §2c hang, reproduced live via this exact
+            # endpoint (GET /passports/{id}/evidence, and its statistics
+            # sibling which calls this method too) returning 503 while a
+            # concurrent POST /verify succeeded. Push the scan (reads and any
+            # backfill writes) onto a worker thread so it can't stall the loop.
+            repository = self.repository
+            passport_repository = self.passport_repository
+            owner_id = self.owner_id
+            is_evidence_anchored = self.is_evidence_anchored
+
+            def _scan_and_backfill() -> list[dict[str, Any]]:
+                matched: list[dict[str, Any]] = []
+                for record in repository.stream():
+                    if record.get("passport_id") != passport_id:
+                        continue
+                    if owner_id and record.get("owner_id") and record.get("owner_id") != owner_id:
+                        continue
+                    if not record.get("created_at") and passport_repository:
+                        passport = passport_repository.get(passport_id)
+                        if passport and passport.get("created_at"):
+                            record = {**record, "created_at": passport["created_at"]}
+                            evidence_id = record.get("id") or record.get("evidence_id")
+                            if not is_evidence_anchored(evidence_id):
+                                repository.set(evidence_id, {"created_at": record["created_at"]}, merge=True)
+                    matched.append(record)
+                return matched
+
+            for record in await asyncio.to_thread(_scan_and_backfill):
                 evidence_summaries.append(EvidenceItemSummary.model_validate(record))
 
-        # Sort by created_at (newest first)
-        evidence_summaries.sort(
-            key=lambda x: x.created_at,
-            reverse=True
-        )
+        # Sort by created_at (newest first).
+        #
+        # This is the actual root cause behind the long-documented
+        # status-and-plan.md "§2c" hang: evidence items can come from two
+        # sources with different datetime handling -- the in-memory
+        # self.evidence_items store (naive datetimes) and Firestore records
+        # (aware datetimes, or naive ones backfilled a few lines up from a
+        # passport's created_at). Comparing a naive and an aware datetime in
+        # the same sort call raises `TypeError: can't compare offset-naive
+        # and offset-aware datetimes`, which was an *unhandled* exception --
+        # Starlette's CORSMiddleware doesn't get a chance to add CORS
+        # headers to the resulting 500, so the browser's fetch() saw a
+        # response that failed CORS and reported it as an opaque "Failed to
+        # fetch"/network error instead of a real error message. That in turn
+        # made every past reproduction of this look like an indefinite hang
+        # or a mysterious 503, rather than what it actually was: a fast,
+        # consistent 500 on this specific sort. (The blocking
+        # `FirestoreRepository.stream()` calls fixed earlier this session in
+        # this file and in api/router.py were real bugs too -- just not the
+        # one actually causing this particular failure.)
+        def _sort_key(item: EvidenceItemSummary) -> datetime:
+            created_at = item.created_at
+            if isinstance(created_at, datetime) and created_at.tzinfo is None:
+                return created_at.replace(tzinfo=timezone.utc)
+            return created_at
+
+        evidence_summaries.sort(key=_sort_key, reverse=True)
 
         return evidence_summaries
 
@@ -294,7 +339,7 @@ class EvidenceService:
         try:
             self._ensure_evidence_is_mutable(evidence_id)
             # Update verification timestamp
-            evidence_item.verified_at = datetime.utcnow()
+            evidence_item.verified_at = datetime.now(timezone.utc)
 
             # Add verification data to metadata if provided
             if verification_data:

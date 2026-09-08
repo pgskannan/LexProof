@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { ExternalLink, RefreshCw, Server, ShieldCheck } from 'lucide-react';
 import { apiFetch } from '../../../../lib/api';
+import { Skeleton } from '../../../../components/ui/skeleton';
 
 type HealthStatus = { status: string; service: string };
 type SystemConfig = {
@@ -57,7 +58,13 @@ export default function Administration() {
           </button>
         </header>
 
-        {loading && <div className="rounded-xl border border-slate-200 bg-white p-6 text-slate-600">Loading system status...</div>}
+        {loading && (
+          <div className="grid gap-5 md:grid-cols-3">
+            <Skeleton className="h-36 w-full" />
+            <Skeleton className="h-36 w-full" />
+            <Skeleton className="h-36 w-full" />
+          </div>
+        )}
         {error && <div className="rounded-xl border border-red-200 bg-red-50 p-5 text-red-700">{error}</div>}
 
         {!loading && !error && (

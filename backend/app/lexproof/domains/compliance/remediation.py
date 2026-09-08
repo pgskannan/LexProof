@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -58,8 +58,13 @@ class RemediationService:
             ),
             risk_reduction="Expected reduction after re-analysis; not yet verified.",
             compliance_improvement="Expected improvement after policy evaluation; not yet verified.",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             created_by="gemini",
+            finding_id=request.finding_id,
+            version_id=request.version_id,
+            evidence_id=request.evidence_id,
+            evidence_quote=request.evidence_quote,
+            source_section=request.source_section,
         )
         self._requests[request_id] = request
         self._proposals[proposal_id] = proposal
@@ -151,7 +156,7 @@ class RemediationService:
         approval = AmendmentApproval(
             id=str(uuid4()), amendment_id=proposal.id, event_id=proposal.event_id,
             contract_id=proposal.contract_id, approved=approved, approved_by=approved_by,
-            approved_at=datetime.utcnow(), approval_notes=notes, rejection_reason=rejection_reason,
+            approved_at=datetime.now(timezone.utc), approval_notes=notes, rejection_reason=rejection_reason,
         )
         self._approvals[proposal.id] = approval
         return approval
@@ -160,6 +165,6 @@ class RemediationService:
         entry = AuditTrailEntry(
             id=str(uuid4()), event_id=event_id, contract_id=contract_id,
             action_type=action_type, action_description=description,
-            timestamp=datetime.utcnow(), performed_by="system",
+            timestamp=datetime.now(timezone.utc), performed_by="system",
         )
         self._audit.setdefault(event_id, []).append(entry)

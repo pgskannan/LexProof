@@ -167,6 +167,7 @@ class TestEvidenceItemModels:
         assert EvidenceType.AUDIT_LOG.value == "audit_log"
         assert EvidenceType.METADATA.value == "metadata"
         assert EvidenceType.ATTACHMENT.value == "attachment"
+        assert EvidenceType.COUNTERPARTY_COUNTERSIGNATURE.value == "counterparty_countersignature"
         assert EvidenceType.OTHER.value == "other"
 
     def test_evidence_item_hash_validation(self):

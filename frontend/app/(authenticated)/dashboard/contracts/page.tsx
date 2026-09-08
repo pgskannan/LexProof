@@ -2,7 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { AlertTriangle } from 'lucide-react';
 import { apiFetch } from '../../../../lib/api';
+import { EmptyState } from '../../../../components/EmptyState';
+import { Skeleton } from '../../../../components/ui/skeleton';
 
 interface ContractSummary {
   contract_id: string;
@@ -60,12 +63,24 @@ export default function AllContracts() {
     } finally { setBusy(false); }
   }
 
+  const failed = contracts.filter((item) => item.analysis_status === 'failed');
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">All Contracts</h1>
         <p className="text-gray-600 mt-2">View and manage all contracts in the system</p>
       </div>
+
+      {failed.length > 0 && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4">
+          <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-700" />
+          <div>
+            <p className="font-semibold text-amber-900">{failed.length} contract{failed.length === 1 ? '' : 's'} need attention</p>
+            <p className="mt-1 text-sm text-amber-800">Analysis failed. Open the contract lifecycle page and use Retry so they do not sit silently on a failed badge.</p>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-lg shadow p-6">
         <h2 className="text-xl font-semibold text-gray-900">Analyze a contract</h2>
@@ -83,33 +98,46 @@ export default function AllContracts() {
         <div className="flex items-center justify-between gap-4">
           <div>
             <h2 className="text-xl font-semibold text-gray-900">Your contracts</h2>
-            <p className="mt-1 text-sm text-gray-600">Select an analyzed contract to open its Legal Passport.</p>
+            <p className="mt-1 text-sm text-gray-600">Open a contract&apos;s lifecycle, or jump to its Legal Passport when one exists.</p>
           </div>
           <button type="button" onClick={() => void loadContracts()} className="text-sm font-medium text-blue-700 hover:text-blue-900">
             Refresh
           </button>
         </div>
 
-        {loadingContracts && <p className="mt-6 text-sm text-gray-500">Loading contracts...</p>}
-        {!loadingContracts && contracts.length === 0 && <p className="mt-6 text-sm text-gray-500">No contracts yet. Upload and analyze one to create a Legal Passport.</p>}
+        {loadingContracts && (
+          <div className="mt-6 space-y-3">
+            <Skeleton className="h-24 w-full" />
+            <Skeleton className="h-24 w-full" />
+            <Skeleton className="h-24 w-full" />
+          </div>
+        )}
+        {!loadingContracts && contracts.length === 0 && (
+          <div className="mt-6">
+            <EmptyState
+              title="No contracts yet"
+              description="Upload a PDF, DOCX, or TXT file above and run analysis. That creates findings, a Legal Passport, and evidence you can later anchor."
+            />
+          </div>
+        )}
         <div className="mt-6 space-y-3">
           {contracts.map((contract) => {
             const canOpenPassport = Boolean(contract.passport_id && contract.version != null);
+            const failedAnalysis = contract.analysis_status === 'failed';
             return (
               <button
                 key={contract.contract_id}
                 type="button"
-                disabled={!canOpenPassport}
-                onClick={() => router.push(`/legal-passport?contractId=${encodeURIComponent(contract.contract_id)}&contractVersion=${contract.version}`)}
-                className="w-full rounded-lg border border-gray-200 p-4 text-left transition hover:border-blue-400 hover:bg-blue-50 disabled:cursor-not-allowed disabled:hover:border-gray-200 disabled:hover:bg-white"
+                onClick={() => router.push(`/dashboard/contracts/${encodeURIComponent(contract.contract_id)}`)}
+                className="w-full rounded-lg border border-gray-200 p-4 text-left transition hover:border-blue-400 hover:bg-blue-50"
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h3 className="font-semibold text-gray-900">{contract.name}</h3>
                     <p className="mt-1 font-mono text-xs text-gray-600">Contract ID: {contract.contract_id}</p>
                   </div>
-                  <span className="rounded bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700">
-                    {canOpenPassport ? 'Open Legal Passport' : contract.analysis_status || contract.status}
+                  <span className={`rounded px-2 py-1 text-xs font-medium ${failedAnalysis ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700'}`}>
+                    {failedAnalysis ? 'Analysis failed — retry' : canOpenPassport ? 'Open lifecycle' : contract.analysis_status || contract.status}
                   </span>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-gray-600">

@@ -23,6 +23,7 @@ class EvidenceType(str, Enum):
     AUDIT_LOG = "audit_log"
     METADATA = "metadata"
     ATTACHMENT = "attachment"
+    COUNTERPARTY_COUNTERSIGNATURE = "counterparty_countersignature"
     OTHER = "other"
 
 

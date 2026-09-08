@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 from .utils.hashing import (
@@ -66,10 +67,79 @@ def _recompute_analysis_hash(passport_data: Dict[str, Any]) -> Optional[str]:
     )
 
 
-def _recompute_evidence_hash(evidence_items: List[Dict[str, Any]]) -> Optional[str]:
-    if not evidence_items:
+def _parse_timestamp(value: Any) -> datetime | None:
+    if value is None:
         return None
-    return hash_evidence_package(evidence_items)
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _item_created_at(item: Any) -> Any:
+    if isinstance(item, dict):
+        return item.get("created_at")
+    return getattr(item, "created_at", None)
+
+
+def evidence_as_of_publish(evidence_items: Iterable[Any], published_at: Any) -> List[Any]:
+    """Return evidence that existed at publish time, excluding later appends.
+
+    Post-publish items (anchoring bookkeeping, counterparty countersignatures)
+    must not make a legitimate passport look tampered.
+    """
+    items = list(evidence_items or [])
+    cutoff = _parse_timestamp(published_at)
+    if cutoff is None:
+        return [
+            item
+            for item in items
+            if str(
+                (item.get("evidence_type") if isinstance(item, dict) else getattr(item, "evidence_type", ""))
+                or ""
+            )
+            != "counterparty_countersignature"
+        ]
+    matched: List[Any] = []
+    for item in items:
+        created = _parse_timestamp(_item_created_at(item))
+        evidence_type = item.get("evidence_type") if isinstance(item, dict) else getattr(item, "evidence_type", "")
+        if str(evidence_type or "") == "counterparty_countersignature":
+            continue
+        if created is None or created <= cutoff:
+            matched.append(item)
+    return matched
+
+
+def _recompute_evidence_hash(
+    passport_data: Dict[str, Any], evidence_items: List[Dict[str, Any]]
+) -> Optional[str]:
+    """Recompute the evidence-package hash for comparison against the stored one.
+
+    Prefers the immutable evidence snapshot captured at publish time (like the
+    document/policy/analysis checks), falling back to publish-time live evidence
+    for older passports. Later appends (anchoring, countersignatures) are not
+    treated as tampering.
+    """
+    metadata = passport_data.get("metadata") or {}
+    snapshot = metadata.get("verification_snapshot") or {}
+    snapshot_evidence = snapshot.get("evidence_items")
+    if snapshot_evidence is not None:
+        source_items = snapshot_evidence
+    else:
+        source_items = evidence_as_of_publish(evidence_items, passport_data.get("created_at"))
+    if not source_items:
+        return None
+    return hash_evidence_package(_normalize_evidence_items(source_items))
 
 
 def verify_passport_integrity(
@@ -91,7 +161,7 @@ def verify_passport_integrity(
     recomputed_document_hash = _recompute_document_hash(passport_data)
     recomputed_policy_hash = _recompute_policy_hash(passport_data)
     recomputed_analysis_hash = _recompute_analysis_hash(passport_data)
-    recomputed_evidence_hash = _recompute_evidence_hash(normalized_evidence)
+    recomputed_evidence_hash = _recompute_evidence_hash(passport_data, normalized_evidence)
 
     document_verified = (
         recomputed_document_hash == stored_document_hash

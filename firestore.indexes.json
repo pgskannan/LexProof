@@ -1,51 +1,85 @@
 {
-  // Example (Standard Edition):
-  //
-  // "indexes": [
-  //   {
-  //     "collectionGroup": "widgets",
-  //     "queryScope": "COLLECTION",
-  //     "fields": [
-  //       { "fieldPath": "foo", "arrayConfig": "CONTAINS" },
-  //       { "fieldPath": "bar", "mode": "DESCENDING" }
-  //     ]
-  //   },
-  //
-  //  "fieldOverrides": [
-  //    {
-  //      "collectionGroup": "widgets",
-  //      "fieldPath": "baz",
-  //      "indexes": [
-  //        { "order": "ASCENDING", "queryScope": "COLLECTION" }
-  //      ]
-  //    },
-  //   ]
-  // ]
-  //
-  // Example (Enterprise Edition):
-  //
-  // "indexes": [
-  //   {
-  //     "collectionGroup": "reviews",
-  //     "queryScope": "COLLECTION_GROUP",
-  //     "apiScope": "MONGODB_COMPATIBLE_API",
-  //     "density": "DENSE",
-  //     "multikey": false,
-  //     "fields": [
-  //       { "fieldPath": "baz", "mode": "ASCENDING" }
-  //     ]
-  //   },
-  //   {
-  //     "collectionGroup": "items",
-  //     "queryScope": "COLLECTION_GROUP",
-  //     "apiScope": "MONGODB_COMPATIBLE_API",
-  //     "density": "SPARSE_ANY",
-  //     "multikey": true,
-  //     "fields": [
-  //       { "fieldPath": "baz", "mode": "ASCENDING" }
-  //     ]
-  //   },
-  // ]
-  "indexes": [],
+  "indexes": [
+    {
+      "collectionGroup": "workflow_instances",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "created_at", "mode": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workflow_instances",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "entity_type", "mode": "ASCENDING" },
+        { "fieldPath": "created_at", "mode": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workflow_instances",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "status", "mode": "ASCENDING" },
+        { "fieldPath": "created_at", "mode": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workflow_instances",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "entity_type", "mode": "ASCENDING" },
+        { "fieldPath": "status", "mode": "ASCENDING" },
+        { "fieldPath": "created_at", "mode": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workflow_instances",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "entity_type", "mode": "ASCENDING" },
+        { "fieldPath": "entity_id", "mode": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workflow_instances",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "available_roles", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "created_at", "mode": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workflow_definitions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "name", "mode": "ASCENDING" },
+        { "fieldPath": "version", "mode": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "organization_invites",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "email", "mode": "ASCENDING" },
+        { "fieldPath": "status", "mode": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "external_access_links",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "contract_id", "mode": "ASCENDING" },
+        { "fieldPath": "redline_proposal_id", "mode": "ASCENDING" }
+      ]
+    }
+  ],
   "fieldOverrides": []
 }

@@ -189,6 +189,27 @@ def test_evidence_hash_includes_risk_impact():
     assert hash1 != hash2, "Changing risk_impact should change the hash"
 
 
+def test_evidence_hash_restores_after_risk_impact_is_restored():
+    evidence = {
+        "evidence_id": "tamper-demo",
+        "passport_id": "passport-tamper-demo",
+        "evidence_type": "CLAUSE",
+        "title": "Liability cap",
+        "content": "The liability cap applies to sensitive health data.",
+        "risk_impact": 90,
+        "compliance_impact": 75,
+    }
+
+    anchored_hash = hash_evidence_item(evidence)
+    evidence["risk_impact"] = 5
+    tampered_hash = hash_evidence_item(evidence)
+    evidence["risk_impact"] = 90
+    restored_hash = hash_evidence_item(evidence)
+
+    assert tampered_hash != anchored_hash
+    assert restored_hash == anchored_hash
+
+
 def test_evidence_hash_includes_compliance_impact():
     """Test that compliance_impact is included in the evidence hash (P0.1)."""
     evidence_item1 = {

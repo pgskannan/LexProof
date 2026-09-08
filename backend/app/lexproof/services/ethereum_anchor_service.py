@@ -11,6 +11,7 @@ Never stores private keys in source code or configuration files.
 
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
+import asyncio
 import logging
 import re
 
@@ -96,33 +97,81 @@ class EthereumAnchorService:
             return existing
 
         # Check Ethereum for existing anchor (recovery path for distributed failures)
-        on_chain = self.blockchain.get_evidence_anchor(evidence_id)
-        if on_chain and on_chain.get("evidence_hash", "").lower().removeprefix("0x") == evidence_hash.lower():
-            # Ethereum has the anchor, recover and persist metadata using the event log's
-            # actual transaction hash rather than the evidence hash itself.
-            tx_hash_value = self.blockchain.get_anchor_transaction_hash(evidence_id, on_chain["evidence_hash"])
-            tx_hash, block_number, anchored_timestamp = self.blockchain.recover_confirmed_transaction(tx_hash_value)
-            blockchain_proof = {
-                "evidence_id": evidence_id,
-                "passport_id": passport_id,
-                "blockchain_network": "ethereum-sepolia",
-                "contract_address": self.blockchain.contract_address,
-                "transaction_hash": tx_hash,
-                "block_number": block_number,
-                "anchored_at": datetime.fromtimestamp(anchored_timestamp, timezone.utc).isoformat(),
-                "evidence_hash": evidence_hash,
-            }
-            self._create_anchor(evidence_id, blockchain_proof)
-            return blockchain_proof
-        elif on_chain:
-            # Ethereum has a different anchor with a different hash - conflict detected
+        recovered = await self._recover_from_chain_if_anchored(evidence_id, passport_id, evidence_hash)
+        if recovered is not None:
+            return recovered
+
+        # No Ethereum anchor exists yet, submit a new transaction.
+        try:
+            tx_hash, block_number, anchored_timestamp = await asyncio.to_thread(
+                self.blockchain.anchor_evidence, evidence_id, bytes.fromhex(evidence_hash)
+            )
+        except Exception as exc:
+            # The submission itself can fail because a concurrent caller (e.g. a
+            # retried analyze request, or two requests racing after a prior
+            # transient failure) already anchored this exact evidence_id in the
+            # window between our on-chain check above and this transaction being
+            # built and sent - gas estimation or the transaction then reverts
+            # against the now-updated contract state. Re-check Ethereum once more
+            # before giving up: if the anchor is there now, this was that race and
+            # we should recover the now-confirmed anchor instead of failing.
+            recovered = await self._recover_from_chain_if_anchored(evidence_id, passport_id, evidence_hash)
+            if recovered is not None:
+                logger.warning(
+                    "Ethereum anchor submission for evidence_id=%s failed (%s) but a matching "
+                    "anchor was found on-chain afterward; recovering instead of failing.",
+                    evidence_id, exc,
+                )
+                return recovered
+            raise
+
+        blockchain_proof = {
+            "evidence_id": evidence_id,
+            "passport_id": passport_id,
+            "blockchain_network": "ethereum-sepolia",
+            "contract_address": self.blockchain.contract_address,
+            "transaction_hash": tx_hash,
+            "block_number": block_number,
+            "anchored_at": datetime.fromtimestamp(anchored_timestamp, timezone.utc).isoformat(),
+            "evidence_hash": evidence_hash,
+            # Discriminator for anchoring strategy. Every real anchor submitted through
+            # this method is a direct single-hash anchor; a batched (Merkle-root)
+            # anchoring strategy is a documented future direction (see
+            # hackathon-polish-roadmap.md), demonstrated via a hand-crafted mock
+            # record (scripts/create_merkle_batch_demo_anchor.py), never through this
+            # code path. This field is purely additive and does not change what gets
+            # submitted on-chain or how existing anchors are read.
+            "anchoring_method": "SINGLE_HASH",
+        }
+        self._create_anchor(evidence_id, blockchain_proof)
+
+        return blockchain_proof
+
+    async def _recover_from_chain_if_anchored(
+        self, evidence_id: str, passport_id: str, evidence_hash: str
+    ) -> Optional[Dict[str, Any]]:
+        """Check Ethereum for an anchor matching evidence_hash and recover it if found.
+
+        Returns None (without raising) when no anchor exists on-chain yet - callers
+        should treat that as "still need to submit a new transaction". Raises
+        ValueError only when Ethereum already has a *different*, conflicting anchor
+        for this evidence_id, since that is a genuine data-integrity problem rather
+        than a race to recover from.
+        """
+        on_chain = await asyncio.to_thread(self.blockchain.get_evidence_anchor, evidence_id)
+        if not on_chain:
+            return None
+        if on_chain.get("evidence_hash", "").lower().removeprefix("0x") != evidence_hash.lower():
             raise ValueError(
                 f"Evidence already has a different Ethereum anchor with hash {on_chain.get('evidence_hash', 'unknown')}"
             )
-
-        # No Ethereum anchor exists, submit new transaction
-        tx_hash, block_number, anchored_timestamp = self.blockchain.anchor_evidence(
-            evidence_id, bytes.fromhex(evidence_hash)
+        # Ethereum has the anchor, recover and persist metadata using the event log's
+        # actual transaction hash rather than the evidence hash itself.
+        tx_hash_value = await asyncio.to_thread(
+            self.blockchain.get_anchor_transaction_hash, evidence_id, on_chain["evidence_hash"]
+        )
+        tx_hash, block_number, anchored_timestamp = await asyncio.to_thread(
+            self.blockchain.recover_confirmed_transaction, tx_hash_value
         )
         blockchain_proof = {
             "evidence_id": evidence_id,
@@ -133,12 +182,12 @@ class EthereumAnchorService:
             "block_number": block_number,
             "anchored_at": datetime.fromtimestamp(anchored_timestamp, timezone.utc).isoformat(),
             "evidence_hash": evidence_hash,
+            "anchoring_method": "SINGLE_HASH",
         }
         self._create_anchor(evidence_id, blockchain_proof)
-
         return blockchain_proof
 
-    def verify_evidence(
+    async def verify_evidence(
         self,
         evidence_id: str,
     ) -> Dict[str, Any]:
@@ -186,9 +235,9 @@ class EthereumAnchorService:
                 "anchored_at": None,
             }
 
-        on_chain = self.blockchain.get_evidence_anchor(evidence_id)
-        hashes_match = self.blockchain.verify_evidence(
-            evidence_id, bytes.fromhex(computed_hash)
+        on_chain = await asyncio.to_thread(self.blockchain.get_evidence_anchor, evidence_id)
+        hashes_match = await asyncio.to_thread(
+            self.blockchain.verify_evidence, evidence_id, bytes.fromhex(computed_hash)
         )
 
         result = {
@@ -213,7 +262,7 @@ class EthereumAnchorService:
 
         return result
 
-    def recover_anchor_from_transaction(
+    async def recover_anchor_from_transaction(
         self,
         evidence_id: str,
         transaction_hash: str,
@@ -236,10 +285,10 @@ class EthereumAnchorService:
                 raise ValueError("Evidence already has a different Ethereum anchor")
             return existing
 
-        tx_hash, block_number, anchored_timestamp = self.blockchain.recover_confirmed_transaction(
-            transaction_hash
+        tx_hash, block_number, anchored_timestamp = await asyncio.to_thread(
+            self.blockchain.recover_confirmed_transaction, transaction_hash
         )
-        on_chain = self.blockchain.get_evidence_anchor(evidence_id)
+        on_chain = await asyncio.to_thread(self.blockchain.get_evidence_anchor, evidence_id)
         if on_chain.get("evidence_hash", "").lower().removeprefix("0x") != evidence_hash:
             raise ValueError("On-chain evidence hash does not match the authoritative evidence record")
         blockchain_proof = {
@@ -251,6 +300,7 @@ class EthereumAnchorService:
             "block_number": block_number,
             "anchored_at": datetime.fromtimestamp(anchored_timestamp, timezone.utc).isoformat(),
             "evidence_hash": evidence_hash,
+            "anchoring_method": "SINGLE_HASH",
         }
         self._create_anchor(evidence_id, blockchain_proof)
         return blockchain_proof

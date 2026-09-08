@@ -7,8 +7,8 @@ export default function LegalPassport() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace('/dashboard/contracts');
+    router.replace('/legal-passport');
   }, [router]);
 
-  return <p className="text-gray-600">Opening your contracts…</p>;
+  return <p className="text-gray-600">Opening Legal Passport…</p>;
 }

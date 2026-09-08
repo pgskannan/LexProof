@@ -1,14 +1,17 @@
 "use client"
 
 import { useState, useEffect, useMemo } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Shield, FileText, CheckCircle, AlertTriangle, Info, Clock, ArrowLeft, Copy, ExternalLink, XCircle } from 'lucide-react'
 import AnchorProofButton from './components/AnchorProofButton'
+import { IndependentVerificationPanel } from './components/IndependentVerificationPanel'
 import { apiFetch } from '../../../lib/api'
 import {
   countLegalEvidenceFindings,
   filterLegalEvidenceFindings,
 } from '../../../lib/passport/evidence'
+import { EmptyState } from '../../../components/EmptyState'
+import { Skeleton } from '../../../components/ui/skeleton'
 
 interface ContractPassport {
   passport_id: string
@@ -39,6 +42,8 @@ interface ContractPassport {
 interface ContractSummary {
   contract_id: string
   name: string
+  version?: number | null
+  passport_id?: string | null
 }
 
 interface EvidenceItem {
@@ -75,6 +80,7 @@ interface PassportIntegrityResult {
 
 export default function LegalPassportPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [passport, setPassport] = useState<ContractPassport | null>(null)
   const [contract, setContract] = useState<ContractSummary | null>(null)
   const [evidence, setEvidence] = useState<EvidenceItem[]>([])
@@ -90,6 +96,9 @@ export default function LegalPassportPage() {
   const [integrityLoading, setIntegrityLoading] = useState(false)
   const [integrityError, setIntegrityError] = useState('')
   const [passportRequest, setPassportRequest] = useState<{ contractId: string; contractVersion: number } | null>(null)
+  const [pickerContracts, setPickerContracts] = useState<ContractSummary[]>([])
+  const [pickerLoading, setPickerLoading] = useState(false)
+  const [needsPicker, setNeedsPicker] = useState(false)
 
   const legalEvidence = useMemo(() => filterLegalEvidenceFindings(evidence), [evidence])
   const legalEvidenceCount = useMemo(
@@ -97,34 +106,55 @@ export default function LegalPassportPage() {
     [passport?.evidence_count, evidence],
   )
 
-  // Check if contract ID is provided in URL
+  // Load a specific passport when the URL has contract + version; otherwise
+  // show a picker so the sidebar Legal Passport link is never a dead stub.
+  // Depends on `searchParams` (not `router`, and not a manual
+  // window.location.search read) so this re-runs on a same-page,
+  // client-side navigation between picker rows -- router.push() to a new
+  // ?contractId=...&contractVersion=... does not change `router` identity,
+  // so keying the effect on `router` alone left it stuck showing the
+  // picker after a row click until a hard reload.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const contractId = params.get('contractId')
-    const contractVersion = params.get('contractVersion')
+    const contractId = searchParams.get('contractId')
+    const contractVersion = searchParams.get('contractVersion')
 
     if (!contractId || !contractVersion) {
-      router.push('/dashboard/contracts')
+      setNeedsPicker(true)
+      setLoading(false)
+      setPickerLoading(true)
+      void apiFetch('/api/contracts')
+        .then(async (response) => {
+          if (!response.ok) throw new Error('Unable to load contracts')
+          const records: ContractSummary[] = await response.json()
+          setPickerContracts(records.filter((item) => item.passport_id && item.version != null))
+        })
+        .catch(() => setPickerContracts([]))
+        .finally(() => setPickerLoading(false))
       return
     }
 
+    setNeedsPicker(false)
     const version = parseInt(contractVersion, 10)
     setPassportRequest({ contractId, contractVersion: version })
-    fetchPassport(contractId, version)
-  }, [router])
+    const controller = new AbortController()
+    void fetchPassport(contractId, version, controller.signal)
+    return () => controller.abort()
+  }, [searchParams])
 
-  const fetchPassport = async (contractId: string, contractVersion: number) => {
+  const isAbortError = (error: unknown) => error instanceof DOMException && error.name === 'AbortError'
+
+  const fetchPassport = async (contractId: string, contractVersion: number, signal?: AbortSignal) => {
     setLoading(true)
     setError('')
     try {
-      const response = await apiFetch(`/api/contracts/${contractId}/passport?contract_version=${contractVersion}`)
+      const response = await apiFetch(`/api/contracts/${contractId}/passport?contract_version=${contractVersion}`, { signal })
       if (response.ok) {
         const data = await response.json()
         setPassport(data)
-        fetchContract(contractId)
-        fetchEvidence(data.passport_id)
-        fetchStatistics(data.passport_id)
-        fetchIntegrity(data.passport_id)
+        fetchContract(contractId, signal)
+        fetchEvidence(data.passport_id, signal)
+        fetchStatistics(data.passport_id, signal)
+        fetchIntegrity(data.passport_id, signal)
       } else if (response.status === 401) {
         setError('Your session is still initializing. Please sign in again.')
       } else if (response.status === 404) {
@@ -134,26 +164,28 @@ export default function LegalPassportPage() {
         setError(body?.detail || `Unable to load passport (${response.status})`)
       }
     } catch (error) {
+      if (isAbortError(error)) return
       setError(error instanceof Error ? error.message : 'Unable to load passport')
     } finally {
-      setLoading(false)
+      if (!signal?.aborted) setLoading(false)
     }
   }
 
-  const fetchContract = async (contractId: string) => {
+  const fetchContract = async (contractId: string, signal?: AbortSignal) => {
     try {
-      const response = await apiFetch(`/api/contracts/${contractId}`)
+      const response = await apiFetch(`/api/contracts/${contractId}`, { signal })
       if (response.ok) setContract(await response.json())
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching contract:', error)
     }
   }
 
-  const fetchEvidence = async (passportId: string) => {
+  const fetchEvidence = async (passportId: string, signal?: AbortSignal) => {
     setEvidenceLoading(true)
     setEvidenceError('')
     try {
-      const response = await apiFetch(`/api/passports/${passportId}/evidence`)
+      const response = await apiFetch(`/api/passports/${passportId}/evidence`, { signal })
       if (response.ok) {
         const data = await response.json()
         setEvidence(data)
@@ -162,29 +194,32 @@ export default function LegalPassportPage() {
         setEvidenceError(body?.detail || `Unable to load evidence (${response.status})`)
       }
     } catch (error) {
+      if (isAbortError(error)) return
       setEvidenceError(error instanceof Error ? error.message : 'Unable to load evidence')
     } finally {
-      setEvidenceLoading(false)
+      if (!signal?.aborted) setEvidenceLoading(false)
     }
   }
 
-  const fetchStatistics = async (passportId: string) => {
+  const fetchStatistics = async (passportId: string, signal?: AbortSignal) => {
     try {
-      const response = await apiFetch(`/api/passports/${passportId}/evidence/statistics`)
+      const response = await apiFetch(`/api/passports/${passportId}/evidence/statistics`, { signal })
       if (response.ok) {
         const data = await response.json()
         setStatistics(data)
       }
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching statistics:', error)
     }
   }
-  const fetchIntegrity = async (passportId: string) => {
+  const fetchIntegrity = async (passportId: string, signal?: AbortSignal) => {
     setIntegrityLoading(true)
     setIntegrityError('')
     try {
       const response = await apiFetch(`/api/passports/${passportId}/verify`, {
         method: 'POST',
+        signal,
       })
       if (response.ok) {
         const data = await response.json()
@@ -194,9 +229,10 @@ export default function LegalPassportPage() {
         setIntegrityError(body?.detail || `Integrity check failed (${response.status})`)
       }
     } catch (error) {
+      if (isAbortError(error)) return
       setIntegrityError(error instanceof Error ? error.message : 'Integrity check failed')
     } finally {
-      setIntegrityLoading(false)
+      if (!signal?.aborted) setIntegrityLoading(false)
     }
   }
 
@@ -249,12 +285,64 @@ export default function LegalPassportPage() {
     }
   }
 
+  if (needsPicker) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-8">
+        <div className="mx-auto max-w-4xl">
+          <h1 className="text-3xl font-bold text-gray-900">Legal Passport</h1>
+          <p className="mt-2 text-gray-600">
+            Open the cryptographically verifiable record for a contract that has already been analyzed.
+          </p>
+          {pickerLoading && (
+            <div className="mt-8 space-y-3">
+              <Skeleton className="h-20 w-full" />
+              <Skeleton className="h-20 w-full" />
+            </div>
+          )}
+          {!pickerLoading && pickerContracts.length === 0 && (
+            <div className="mt-8">
+              <EmptyState
+                title="No Legal Passports yet"
+                description="Upload a contract and run analysis to create a passport. The namesake record is created at the end of that workflow."
+                actionLabel="Go to contracts"
+                onAction={() => router.push('/dashboard/contracts')}
+                icon={<Shield className="h-6 w-6" />}
+              />
+            </div>
+          )}
+          {!pickerLoading && pickerContracts.length > 0 && (
+            <div className="mt-8 space-y-3">
+              {pickerContracts.map((item) => (
+                <button
+                  key={item.contract_id}
+                  type="button"
+                  onClick={() =>
+                    router.push(
+                      `/legal-passport?contractId=${encodeURIComponent(item.contract_id)}&contractVersion=${item.version}`,
+                    )
+                  }
+                  className="w-full rounded-lg border border-gray-200 bg-white p-4 text-left hover:border-blue-400 hover:bg-blue-50"
+                >
+                  <p className="font-semibold text-gray-900">{item.name || item.contract_id}</p>
+                  <p className="mt-1 font-mono text-xs text-gray-500">
+                    Version {item.version} · Passport {item.passport_id}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading Legal Passport...</p>
+      <div className="min-h-screen bg-gray-50 p-8">
+        <div className="mx-auto max-w-6xl space-y-4">
+          <Skeleton className="h-10 w-64" />
+          <Skeleton className="h-40 w-full" />
+          <Skeleton className="h-64 w-full" />
         </div>
       </div>
     )
@@ -403,9 +491,7 @@ export default function LegalPassportPage() {
                 <div>
                   <h2 className="text-lg font-semibold text-gray-900 mb-4">Passport Integrity</h2>
                   {integrityLoading && (
-                    <div className="p-4 bg-gray-50 rounded-lg text-sm text-gray-600">
-                      Verifying passport integrity...
-                    </div>
+                    <Skeleton className="h-24 w-full" />
                   )}
                   {!integrityLoading && integrityError && (
                     <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
@@ -461,6 +547,13 @@ export default function LegalPassportPage() {
                   )}
                 </div>
 
+                <IndependentVerificationPanel
+                  passportId={passport.passport_id}
+                  contractId={passport.contract_id}
+                  contractVersion={passport.contract_version}
+                  evidence={legalEvidence}
+                />
+
                 {/* Passport Info */}
                 <div>
                   <h2 className="text-lg font-semibold text-gray-900 mb-4">Passport Information</h2>
@@ -475,7 +568,7 @@ export default function LegalPassportPage() {
                     </div>
                     <div>
                       <label className="text-sm font-medium text-gray-500">Contract Name</label>
-                      <p className="text-sm text-gray-900 mt-1">{contract?.name || 'Loading contract name...'}</p>
+                      <p className="text-sm text-gray-900 mt-1">{contract?.name || '—'}</p>
                     </div>
                     <div>
                       <label className="text-sm font-medium text-gray-500">Contract Version</label>
@@ -532,8 +625,9 @@ export default function LegalPassportPage() {
                   Evidence ({legalEvidenceCount})
                 </div>
                 {evidenceLoading && (
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
-                    Loading evidence...
+                  <div className="space-y-3">
+                    <Skeleton className="h-20 w-full" />
+                    <Skeleton className="h-20 w-full" />
                   </div>
                 )}
                 {!evidenceLoading && evidenceError && (

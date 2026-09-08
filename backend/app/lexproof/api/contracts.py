@@ -3,28 +3,42 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import logging
-import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
+from pydantic import BaseModel
 
-from ..services.auth import get_current_user
+from ..services.auth import get_current_user, load_org_member
 from ..config import get_settings
-from ..domains.passport.service import PassportService
 from ..domains.passport.api.router import configure_passport_service
 from ..repositories.cloud_storage import CloudStorageRepository
 from ..repositories.firestore import FirestoreRepository
-from ..services.vertex_ai import VertexGeminiProvider, VertexAIError
+from ..repositories.firestore import EvidenceAnchorRepository
+from ..services.vertex_ai import VertexGeminiProvider
+from ..services.ethereum_anchor_service import get_ethereum_anchor_service
+from ..services.version_analysis import VersionAnalysisService, parse_structured_analysis
+from ..services.audit import record_audit_event
+from ..services.contract_versions import (
+    ContractNotFoundError,
+    SourceVersionNotFoundError,
+    create_contract_version,
+)
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
-logger = logging.getLogger(__name__)
 MAX_FILE_SIZE = 10 * 1024 * 1024
 ALLOWED_TYPES = {"text/plain", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
 ALLOWED_EXTENSIONS = {".txt", ".pdf", ".docx"}
+
+
+class ContractVersionCreateRequest(BaseModel):
+    source_version_id: str
+    storage_path: str | None = None
+    content_hash: str | None = None
+    filename: str | None = None
+    content_type: str | None = None
+    document_text: str | None = None
 
 
 def _extension(filename: str) -> str:
@@ -103,21 +117,37 @@ async def list_contracts(user: dict[str, Any] = Depends(get_current_user)):
         for contract in contracts.stream()
         if _is_visible_to_user(contract, uid)
     ]
-    existing_contract_versions = {
-        (record["contract_id"], record["version"])
+    # A contract with a real contracts/ document is fully represented by its
+    # one row above (showing its current version) regardless of how many
+    # older passport versions exist for it, so only the contract_id matters
+    # here -- keying this on (contract_id, version) previously let every
+    # non-current passport version of an otherwise normal contract slip past
+    # this de-dup check and get treated as a phantom "legacy" row below,
+    # producing duplicate rows for the same contract in the list.
+    existing_contract_ids = {
+        record["contract_id"]
         for record in records
-        if record.get("contract_id") and record.get("version") is not None
+        if record.get("contract_id")
     }
 
     # Early imports persisted the analysis output directly as passports rather
     # than creating a separate contracts/contract_versions document. Surface
     # those real records too, so their evidence remains reachable in the UI.
+    # This must only fire for passports with no contracts/ document at all
+    # (true legacy/orphan imports) -- not for older versions of a contract
+    # that does have one, which already have all their versions covered by
+    # the current-version row built above.
+    latest_orphan_passport_by_contract: dict[str, dict[str, Any]] = {}
     for passport in passports.stream():
         if not _is_visible_to_user(passport, uid):
             continue
-        identity = (passport.get("contract_id"), passport.get("contract_version"))
-        if not identity[0] or identity in existing_contract_versions:
+        contract_id = passport.get("contract_id")
+        if not contract_id or contract_id in existing_contract_ids:
             continue
+        current = latest_orphan_passport_by_contract.get(contract_id)
+        if current is None or (passport.get("contract_version") or 0) > (current.get("contract_version") or 0):
+            latest_orphan_passport_by_contract[contract_id] = passport
+    for passport in latest_orphan_passport_by_contract.values():
         records.append(_contract_summary({}, versions, passports, passport=passport))
     return sorted(records, key=lambda record: record.get("updated_at") or "", reverse=True)
 
@@ -143,42 +173,93 @@ async def get_contract(contract_id: str, user: dict[str, Any] = Depends(get_curr
     return _contract_summary({}, versions, passports, passport=latest_passport)
 
 
-def parse_structured_analysis(content: str) -> dict[str, Any]:
-    """Parse Gemini JSON output without manufacturing missing analysis data."""
-    candidates = [content.strip()]
-    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", content.strip(), re.IGNORECASE | re.DOTALL)
-    if fenced:
-        candidates.append(fenced.group(1).strip())
-    for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
+@router.get("/{contract_id}/versions")
+async def list_contract_versions(contract_id: str, user: dict[str, Any] = Depends(get_current_user)):
+    """Return the read-only version history for an owned contract."""
+    uid = str(user["uid"])
+    contracts, versions, _ = _repositories()
+    contract = contracts.get(contract_id)
+    if not contract or contract.get("owner_id") != uid:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    passports = FirestoreRepository("legal_passports")
+    proposals = FirestoreRepository("redline_proposals")
+    published_versions = {
+        proposal.get("published_version_id")
+        for proposal in proposals.stream()
+        if proposal.get("contract_id") == contract_id
+    }
+    result = []
+    for version in versions.stream():
+        if version.get("contract_id") != contract_id or not _is_visible_to_user(version, uid):
             continue
-        if isinstance(parsed, dict):
-            if not isinstance(parsed.get("findings"), list):
-                raise ValueError("Vertex AI response omitted findings")
-            return parsed
+        passport_id = version.get("passport_id")
+        passport = passports.get(passport_id) if passport_id else None
+        result.append({
+            "version_id": version.get("id"),
+            "version_number": version.get("version_number"),
+            "parent_version_id": version.get("parent_version_id"),
+            "created_at": version.get("created_at"),
+            "created_by": version.get("created_by"),
+            "analysis_status": version.get("analysis_status"),
+            "passport_id": passport_id,
+            "passport_status": passport.get("status") if passport else None,
+            "published": version.get("id") in published_versions,
+            "is_current": version.get("id") == contract.get("current_version_id"),
+        })
+    return sorted(result, key=lambda item: item.get("version_number") or 0)
 
-    decoder = json.JSONDecoder()
-    for match in re.finditer(r"\{", content):
-        try:
-            parsed, _ = decoder.raw_decode(content[match.start():])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            if not isinstance(parsed.get("findings"), list):
-                raise ValueError("Vertex AI response omitted findings")
-            return parsed
-    raise ValueError("Vertex AI returned invalid structured analysis")
+
+@router.post("/{contract_id}/versions", status_code=status.HTTP_201_CREATED)
+async def create_version(
+    contract_id: str,
+    request: ContractVersionCreateRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    """Create a new owner-authorized contract version from an existing version."""
+    uid = str(user["uid"])
+    contracts, versions, _ = _repositories()
+    contract = contracts.get(contract_id)
+    if not contract:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found")
+    if contract.get("owner_id") != uid:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to create a version")
+    try:
+        return create_contract_version(
+            contract_id,
+            request.source_version_id,
+            request.model_dump(exclude={"source_version_id"}, exclude_none=True),
+            uid,
+            contracts=contracts,
+            versions=versions,
+        )
+    except ContractNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found") from exc
+    except SourceVersionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source contract version not found") from exc
 
 
-def _log_analysis_parse_failure(content: str) -> None:
-    preview = " ".join(content[:500].split())
-    logger.warning("Vertex AI structured analysis parse failed (length=%d, preview=%r)", len(content), preview)
+def _version_analysis_service(
+    contracts: FirestoreRepository,
+    versions: FirestoreRepository,
+) -> VersionAnalysisService:
+    return VersionAnalysisService(
+        contracts=contracts,
+        versions=versions,
+        repository_factory=FirestoreRepository,
+        anchor_repository_factory=EvidenceAnchorRepository,
+        provider_factory=VertexGeminiProvider,
+        anchor_service_factory=get_ethereum_anchor_service,
+        passport_configurator=configure_passport_service,
+    )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def upload_contract(file: UploadFile = File(...), user: dict[str, Any] = Depends(get_current_user)):
+async def upload_contract(
+    file: UploadFile = File(...),
+    user: dict[str, Any] = Depends(get_current_user),
+    x_org_id: Annotated[str | None, Header(alias="X-Org-Id")] = None,
+):
     filename = file.filename or ""
     extension = _extension(filename)
     if not filename or filename != filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] or extension not in ALLOWED_EXTENSIONS:
@@ -189,6 +270,7 @@ async def upload_contract(file: UploadFile = File(...), user: dict[str, Any] = D
     if not content or len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="Contract file must be between 1 byte and 10 MB")
     uid = str(user["uid"])
+    org_id = load_org_member(x_org_id.strip(), user)["org_id"] if x_org_id and x_org_id.strip() else None
     contract_id, version_id = str(uuid.uuid4()), str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     content_hash = hashlib.sha256(content).hexdigest()
@@ -196,12 +278,27 @@ async def upload_contract(file: UploadFile = File(...), user: dict[str, Any] = D
     contracts, versions, storage = _repositories()
     try:
         storage_uri = storage.upload(storage_path, content, file.content_type)
-        contracts.set(contract_id, {"id": contract_id, "owner_id": uid, "name": filename, "status": "uploaded", "current_version_id": version_id, "created_at": now, "updated_at": now})
-        versions.set(version_id, {"id": version_id, "owner_id": uid, "contract_id": contract_id, "version_number": 1, "storage_path": storage_uri, "content_hash": content_hash, "created_at": now, "analysis_status": "pending", "filename": filename, "content_type": file.content_type, "document_text": _extract_text(filename, content)})
+        contract_record = {"id": contract_id, "owner_id": uid, "name": filename, "status": "uploaded", "current_version_id": version_id, "created_at": now, "updated_at": now}
+        version_record = {"id": version_id, "owner_id": uid, "contract_id": contract_id, "version_number": 1, "storage_path": storage_uri, "content_hash": content_hash, "created_at": now, "analysis_status": "pending", "filename": filename, "content_type": file.content_type, "document_text": _extract_text(filename, content)}
+        if org_id:
+            contract_record["org_id"] = org_id
+            version_record["org_id"] = org_id
+        contracts.set(contract_id, contract_record)
+        versions.set(version_id, version_record)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Contract persistence failed: {exc}") from exc
+    record_audit_event(
+        actor_id=uid,
+        actor_email=user.get("email"),
+        action="contract.uploaded",
+        resource_type="contract",
+        resource_id=contract_id,
+        resource_name=filename,
+        summary=f"Uploaded contract \"{filename}\"",
+        org_id=org_id,
+    )
     return {"contract_id": contract_id, "version_id": version_id, "content_hash": content_hash, "status": "uploaded"}
 
 
@@ -212,52 +309,31 @@ async def analyze_contract(contract_id: str, user: dict[str, Any] = Depends(get_
     contract = contracts.get(contract_id)
     if not contract or contract.get("owner_id") != uid:
         raise HTTPException(status_code=404, detail="Contract not found")
-    version = versions.get(contract["current_version_id"])
-    if not version or version.get("owner_id") != uid:
-        raise HTTPException(status_code=404, detail="Contract version not found")
-    provider = VertexGeminiProvider()
-
-    class Request:
-        prompt = (
-            "Return JSON only with risk_score (0-100), compliance_score (0-100), risk_level, findings[], "
-            "key_clauses[], and compliance_items[]. Each finding must contain: title, severity, description, "
-            "evidence, recommendation, risk_impact (0-100), compliance_impact (0-100), source_section, and evidence_quote. "
-            "For source_section, cite the exact clause, section, or page reference (e.g., 'Section 7.2', 'Clause 12.3', 'Page 5'). "
-            "For evidence_quote, extract the exact text from the contract that supports this finding. "
-            "Do not omit fields. Use 0 when a finding truly has zero impact; never invent missing values or contract text.\n\nContract:\n"
-            + version["document_text"]
-        )
-        model = None
-        system_prompt = "You are a legal contract risk analyst. Analyze only the supplied contract."
-
-    try:
-        response = await provider.complete(Request())
-        try:
-            analysis = parse_structured_analysis(response.content)
-        except ValueError:
-            _log_analysis_parse_failure(response.content)
-            raise
-    except VertexAIError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="Vertex AI returned invalid structured analysis") from exc
-    findings = analysis["findings"]
-
-    async def engine(document: str, policy: str) -> dict[str, Any]:
-        return analysis
-
-    passport_service = PassportService(engine, user_id=uid, tenant_id=uid, repository=FirestoreRepository("legal_passports"))
-    passport = await passport_service.create_passport(
-        contract_id=contract_id, contract_version=version["version_number"], policy_version="default", document_content=version["document_text"], metadata={"owner_id": uid, "risk_level": analysis.get("risk_level"), "key_clauses": analysis.get("key_clauses", []), "compliance_items": analysis.get("compliance_items", []), "content_hash": version["content_hash"]}
+    result = await _version_analysis_service(contracts, versions).analyze_version(
+        contract_id,
+        contract["current_version_id"],
+        uid,
+        anchor_evidence=False,
     )
-    now = datetime.now(timezone.utc).isoformat()
-    FirestoreRepository("legal_passports").set(passport.passport_id, {**passport.model_dump(mode="json"), "id": passport.passport_id, "owner_id": uid, "version_id": version["id"], "risk_level": analysis.get("risk_level"), "findings_count": len(findings), "content_hash": version["content_hash"], "blockchain_status": "not_anchored", "analysis_timestamp": now})
-    for finding in findings:
-        finding_id = str(uuid.uuid4())
-        FirestoreRepository("risk_findings").set(finding_id, {"id": finding_id, "owner_id": uid, "contract_id": contract_id, "version_id": version["id"], **finding, "created_at": now})
-    evidence_repository = FirestoreRepository("evidence_records")
-    for evidence_item in await passport_service.get_evidence(passport.passport_id):
-        evidence_repository.set(evidence_item["evidence_id"], evidence_item)
-    versions.set(version["id"], {"analysis_status": "complete", "passport_id": passport.passport_id}, merge=True)
-    configure_passport_service(passport_service)
-    return passport
+    return result["passport"]
+
+
+@router.post("/{contract_id}/versions/{version_id}/analyze")
+async def analyze_explicit_version(contract_id: str, version_id: str, user: dict[str, Any] = Depends(get_current_user)):
+    uid = str(user["uid"])
+    contracts, versions, _ = _repositories()
+    result = await _version_analysis_service(contracts, versions).analyze_version(
+        contract_id,
+        version_id,
+        uid,
+        anchor_evidence=True,
+    )
+    return {
+        "contract_id": contract_id,
+        "version_id": version_id,
+        "version_number": versions.get(version_id)["version_number"],
+        "passport_id": result["passport_id"],
+        "analysis_status": result["analysis_status"],
+        "finding_count": result["finding_count"],
+        "evidence_count": result["evidence_count"],
+    }

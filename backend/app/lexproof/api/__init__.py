@@ -9,5 +9,6 @@ from .compliance import router as compliance_router
 from .remediation import router as remediation_router
 from .contracts import router as contracts_router
 from .evidence_anchor import router as evidence_anchor_router
+from .findings import router as findings_router
 
-__all__ = ["blockchain_router", "public_verify_router", "time_machine_router", "compliance_router", "remediation_router", "contracts_router", "evidence_anchor_router"]
+__all__ = ["blockchain_router", "public_verify_router", "time_machine_router", "compliance_router", "remediation_router", "contracts_router", "evidence_anchor_router", "findings_router"]

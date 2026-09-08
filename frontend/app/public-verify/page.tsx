@@ -3,6 +3,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { apiFetch } from '../../lib/api';
+import {
+  verifyOnChainIndependently,
+  type ChainCheckResult,
+} from '../../lib/independentChainVerify';
 
 interface EvidenceVerificationResult {
   evidence_id: string;
@@ -16,16 +20,6 @@ interface EvidenceVerificationResult {
   block_number: number | null;
   anchored_at: string | null;
   timestamp: string;
-}
-
-type ChainCheckStatus = 'idle' | 'loading' | 'match' | 'mismatch' | 'not_anchored' | 'error';
-
-interface ChainCheckResult {
-  status: ChainCheckStatus;
-  onChainHash: string | null;
-  onChainTimestamp: string | null;
-  anchoredBy: string | null;
-  message: string;
 }
 
 const STATUS_COPY: Record<string, { label: string; tone: 'green' | 'red' | 'amber' }> = {
@@ -60,108 +54,12 @@ const CHAIN_TONE_CLASSES: Record<'green' | 'red' | 'amber' | 'gray', { box: stri
   gray: { box: 'bg-gray-50 border border-gray-300', text: 'text-gray-600' },
 };
 
-const SEPOLIA_RPC_URL =
-  process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com';
-const REGISTRY_CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_LEXPROOF_CONTRACT_ADDRESS || '';
-const REGISTRY_ABI = [
-  'function getEvidenceAnchor(string) view returns (bytes32 evidenceHash, uint256 timestamp, address anchoredBy)',
-];
-
 function sepoliaTxUrl(txHash: string): string {
   return `https://sepolia.etherscan.io/tx/${txHash}`;
 }
 
 function sepoliaAddressUrl(address: string): string {
   return `https://sepolia.etherscan.io/address/${address}`;
-}
-
-/**
- * Independently verify an evidence hash directly against the LexProofRegistry
- * contract on Ethereum Sepolia, from the browser, using a public RPC endpoint.
- *
- * This does NOT go through the LexProof backend at all — it is a second,
- * independent path to the same on-chain fact, so a visitor doesn't have to
- * trust the backend's word for what is (or isn't) anchored on-chain.
- */
-async function verifyOnChainIndependently(
-  evidenceId: string,
-  expectedHash: string | null
-): Promise<ChainCheckResult> {
-  if (!REGISTRY_CONTRACT_ADDRESS) {
-    return {
-      status: 'error',
-      onChainHash: null,
-      onChainTimestamp: null,
-      anchoredBy: null,
-      message: 'Registry contract address is not configured on this deployment.',
-    };
-  }
-
-  try {
-    const { ethers } = await import('ethers');
-    const provider = new ethers.JsonRpcProvider(SEPOLIA_RPC_URL);
-    const contract = new ethers.Contract(REGISTRY_CONTRACT_ADDRESS, REGISTRY_ABI, provider);
-
-    const [evidenceHash, timestamp, anchoredBy] = await contract.getEvidenceAnchor(evidenceId);
-    const onChainHash: string = evidenceHash.toString().toLowerCase();
-    const zeroHash = '0x' + '0'.repeat(64);
-
-    if (!onChainHash || onChainHash === zeroHash) {
-      return {
-        status: 'not_anchored',
-        onChainHash: null,
-        onChainTimestamp: null,
-        anchoredBy: null,
-        message: 'The contract has no anchor for this evidence ID.',
-      };
-    }
-
-    const onChainTimestamp = new Date(Number(timestamp) * 1000).toLocaleString();
-    const normalizedExpected = expectedHash ? `0x${expectedHash.replace(/^0x/i, '').toLowerCase()}` : null;
-
-    if (normalizedExpected && normalizedExpected === onChainHash) {
-      return {
-        status: 'match',
-        onChainHash,
-        onChainTimestamp,
-        anchoredBy,
-        message: 'The hash read directly from the smart contract matches the recomputed evidence hash.',
-      };
-    }
-
-    return {
-      status: 'mismatch',
-      onChainHash,
-      onChainTimestamp,
-      anchoredBy,
-      message: normalizedExpected
-        ? 'The hash read directly from the smart contract does NOT match the recomputed evidence hash.'
-        : 'Read an on-chain hash, but no recomputed hash was available to compare it against.',
-    };
-  } catch (err) {
-    const reason =
-      (err as { shortMessage?: string; reason?: string; message?: string })?.shortMessage ||
-      (err as { reason?: string })?.reason ||
-      (err instanceof Error ? err.message : String(err));
-
-    if (typeof reason === 'string' && reason.toLowerCase().includes('evidence anchor does not exist')) {
-      return {
-        status: 'not_anchored',
-        onChainHash: null,
-        onChainTimestamp: null,
-        anchoredBy: null,
-        message: 'The contract has no anchor for this evidence ID.',
-      };
-    }
-
-    return {
-      status: 'error',
-      onChainHash: null,
-      onChainTimestamp: null,
-      anchoredBy: null,
-      message: `Could not reach Ethereum Sepolia directly from your browser: ${reason}`,
-    };
-  }
 }
 
 export default function PublicVerifyPage() {
@@ -251,202 +149,304 @@ export default function PublicVerifyPage() {
   const chainToneClasses = CHAIN_TONE_CLASSES[chainToneKey];
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4">
-      <div className="max-w-4xl mx-auto">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-5xl mx-auto">
         {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">LexProof Verification Portal</h1>
-          <p className="text-gray-600">
-            Public, cryptographic verification of legal evidence anchored on Ethereum Sepolia
+        <div className="text-center mb-12">
+          <div className="inline-block mb-4">
+            <div className="flex items-center justify-center w-12 h-12 rounded-lg bg-blue-100">
+              <svg className="w-7 h-7 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
+                <path fillRule="evenodd" d="M4 5a2 2 0 012-2 1 1 0 000-2H6a4 4 0 00-4 4v10a4 4 0 004 4h8a4 4 0 004-4V5a1 1 0 100 2h2a2 2 0 012 2v7a2 2 0 11-4 0V9a1 1 0 10-2 0v3a4 4 0 11-8 0V5z" clipRule="evenodd" />
+              </svg>
+            </div>
+          </div>
+          <h1 className="text-4xl sm:text-5xl font-bold text-gray-900 mb-3">LexProof Verification Portal</h1>
+          <p className="text-lg text-gray-600 max-w-2xl mx-auto">
+            Public cryptographic verification of legal evidence anchored on Ethereum Sepolia
           </p>
         </div>
 
         {/* Verification Form */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4">Verify Evidence</h2>
-          <p className="text-sm text-gray-500 mb-4">
-            Enter an Evidence ID to recompute its hash from the stored evidence record and compare it
-            against the hash anchored on Ethereum. If the stored evidence has changed since it was
-            anchored, verification will fail.
-          </p>
-
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 mb-2">Evidence ID</label>
-            <input
-              type="text"
-              value={evidenceId}
-              onChange={(e) => setEvidenceId(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleVerify();
-              }}
-              placeholder="Enter evidence ID"
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
+        <div className="bg-white rounded-xl shadow-lg p-8 mb-8 border border-gray-200">
+          <div className="mb-6">
+            <label htmlFor="evidence-id" className="block text-sm font-semibold text-gray-900 mb-3">Evidence ID</label>
+            <div className="flex gap-3">
+              <input
+                id="evidence-id"
+                type="text"
+                value={evidenceId}
+                onChange={(e) => setEvidenceId(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleVerify();
+                }}
+                placeholder="Enter evidence ID to verify"
+                className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-base transition-colors"
+              />
+              <button
+                onClick={() => void handleVerify()}
+                disabled={isLoading || !evidenceId.trim()}
+                className="px-8 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+              >
+                {isLoading ? 'Verifying...' : 'Verify'}
+              </button>
+            </div>
           </div>
-
-          <button
-            onClick={() => void handleVerify()}
-            disabled={isLoading || !evidenceId.trim()}
-            className="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-medium hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-          >
-            {isLoading ? 'Verifying...' : 'Verify Evidence'}
-          </button>
         </div>
 
         {/* Error Message */}
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-            <p className="text-red-700">{error}</p>
+          <div className="bg-red-50 border-l-4 border-red-500 rounded-lg p-5 mb-8">
+            <div className="flex">
+              <div className="flex-shrink-0">
+                <svg className="w-6 h-6 text-red-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="ml-3">
+                <p className="text-sm font-medium text-red-800">{error}</p>
+              </div>
+            </div>
           </div>
         )}
 
         {/* Verification Result */}
         {result && statusInfo && toneClasses && (
-          <div className="bg-white rounded-lg shadow-md p-6">
-            {/* Verification Status */}
-            <div className={`text-center py-8 px-4 rounded-lg mb-6 ${toneClasses.box}`}>
-              <div className={`text-5xl font-bold mb-2 ${toneClasses.text}`}>{statusInfo.label}</div>
-              <p className={`text-lg font-medium ${toneClasses.sub}`}>
-                {result.verified
-                  ? 'Recomputed hash matches the hash anchored on Ethereum.'
-                  : result.status === 'TAMPERED'
-                  ? 'Recomputed hash does NOT match the on-chain hash. This evidence has been altered since it was anchored.'
-                  : 'No matching evidence and/or Ethereum anchor was found for this ID.'}
-              </p>
+          <div className="space-y-6">
+            {/* Main Status Card */}
+            <div className={`rounded-xl shadow-xl overflow-hidden border-2 ${toneClasses.box}`}>
+              <div className="px-8 py-12 sm:px-12 sm:py-16 text-center">
+                <div className="mb-4">
+                  {statusInfo.tone === 'green' && (
+                    <svg className="w-16 h-16 mx-auto text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                  )}
+                  {statusInfo.tone === 'red' && (
+                    <svg className="w-16 h-16 mx-auto text-red-600" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                  )}
+                  {statusInfo.tone === 'amber' && (
+                    <svg className="w-16 h-16 mx-auto text-amber-600" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                  )}
+                </div>
+                <div className={`text-6xl font-bold mb-3 ${toneClasses.text}`}>{statusInfo.label}</div>
+                <p className={`text-xl ${toneClasses.sub} max-w-2xl mx-auto`}>
+                  {result.verified
+                    ? 'Recomputed hash matches the hash anchored on Ethereum.'
+                    : result.status === 'TAMPERED'
+                    ? 'Recomputed hash does NOT match the on-chain hash. This evidence has been altered since it was anchored.'
+                    : 'No matching evidence and/or Ethereum anchor was found for this ID.'}
+                </p>
+              </div>
             </div>
 
             {/* Independent on-chain check */}
             {(result.status === 'VERIFIED' || result.status === 'TAMPERED') && (
-              <div className={`rounded-lg p-4 mb-6 ${chainToneClasses.box}`}>
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-sm font-semibold text-gray-700">
-                    Independent check &mdash; read directly from Ethereum Sepolia by your browser
-                  </h3>
-                  <button
-                    onClick={runChainCheck}
-                    disabled={chainCheck?.status === 'loading'}
-                    className="text-xs text-blue-600 hover:text-blue-800 disabled:text-gray-400"
-                  >
-                    {chainCheck?.status === 'loading' ? 'Checking…' : 'Re-check'}
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mb-2">
-                  This calls the LexProofRegistry contract directly from your browser using a public
-                  Sepolia RPC endpoint &mdash; it does not go through the LexProof backend, so it isn&apos;t
-                  relying on this site to honestly report what is on-chain.
-                </p>
-
-                {chainCheck?.status === 'loading' && (
-                  <p className="text-sm text-gray-500">Querying the smart contract…</p>
-                )}
-
-                {chainCheck && chainCheck.status !== 'loading' && (
-                  <div>
-                    <p className={`text-sm font-medium mb-2 ${chainToneClasses.text}`}>
-                      {chainCheck.status === 'match' && '✓ ON-CHAIN MATCH — independently confirmed.'}
-                      {chainCheck.status === 'mismatch' && '✗ Mismatch: on-chain hash does not match.'}
-                      {chainCheck.status === 'not_anchored' && '○ No on-chain anchor found for this ID.'}
-                      {chainCheck.status === 'error' && '⚠ Could not complete the independent check.'}
-                    </p>
-                    <p className="text-xs text-gray-600 mb-2">{chainCheck.message}</p>
-                    {chainCheck.onChainHash && (
-                      <p className="font-mono text-xs break-all bg-white/60 p-2 rounded">
-                        on-chain hash: {chainCheck.onChainHash}
+              <div className={`rounded-xl shadow-lg overflow-hidden border-2 ${chainToneClasses.box}`}>
+                <div className="px-8 py-8 sm:px-10 sm:py-10">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 gap-4">
+                    <div>
+                      <h2 className="text-2xl font-bold text-gray-900 mb-1">Independent Ethereum Verification</h2>
+                      <p className="text-sm text-gray-600">
+                        Your browser directly queries the blockchain
                       </p>
-                    )}
-                    {chainCheck.anchoredBy && (
-                      <p className="text-xs text-gray-600 mt-2">
-                        Anchored by{' '}
-                        <a
-                          href={sepoliaAddressUrl(chainCheck.anchoredBy)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-mono text-blue-600 hover:text-blue-800 underline"
-                        >
-                          {chainCheck.anchoredBy}
-                        </a>{' '}
-                        at {chainCheck.onChainTimestamp}
-                      </p>
-                    )}
+                    </div>
+                    <button
+                      onClick={runChainCheck}
+                      disabled={chainCheck?.status === 'loading'}
+                      className="px-4 py-2 text-sm font-medium text-blue-600 hover:text-blue-700 disabled:text-gray-400 transition-colors self-start sm:self-auto"
+                    >
+                      {chainCheck?.status === 'loading' ? 'Checking…' : 'Re-check'}
+                    </button>
                   </div>
-                )}
+
+                  <p className="text-sm text-gray-600 mb-6 pb-6 border-b border-gray-200">
+                    This verification reads the LexProofRegistry contract <strong>directly from Ethereum Sepolia</strong> using a public RPC endpoint. <strong>It does not go through the LexProof backend</strong>, ensuring you don't have to trust this website's word for what is actually anchored on-chain.
+                  </p>
+
+                  {chainCheck?.status === 'loading' && (
+                    <div className="flex items-center justify-center py-8">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mr-3"></div>
+                      <p className="text-gray-600 font-medium">Querying Ethereum Sepolia…</p>
+                    </div>
+                  )}
+
+                  {chainCheck && chainCheck.status !== 'loading' && (
+                    <div className="space-y-4">
+                      <div className="flex items-start gap-3">
+                        {chainCheck.status === 'match' && (
+                          <>
+                            <svg className="w-6 h-6 text-green-600 flex-shrink-0 mt-1" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                            <div>
+                              <p className="text-lg font-bold text-green-700">ON-CHAIN MATCH — independently confirmed</p>
+                              <p className="text-sm text-green-600 mt-1">{chainCheck.message}</p>
+                            </div>
+                          </>
+                        )}
+                        {chainCheck.status === 'mismatch' && (
+                          <>
+                            <svg className="w-6 h-6 text-red-600 flex-shrink-0 mt-1" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                            </svg>
+                            <div>
+                              <p className="text-lg font-bold text-red-700">HASH MISMATCH</p>
+                              <p className="text-sm text-red-600 mt-1">{chainCheck.message}</p>
+                            </div>
+                          </>
+                        )}
+                        {chainCheck.status === 'not_anchored' && (
+                          <>
+                            <svg className="w-6 h-6 text-amber-600 flex-shrink-0 mt-1" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                            </svg>
+                            <div>
+                              <p className="text-lg font-bold text-amber-700">NOT YET ANCHORED</p>
+                              <p className="text-sm text-amber-600 mt-1">{chainCheck.message}</p>
+                            </div>
+                          </>
+                        )}
+                        {chainCheck.status === 'error' && (
+                          <>
+                            <svg className="w-6 h-6 text-gray-600 flex-shrink-0 mt-1" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                            </svg>
+                            <div>
+                              <p className="text-lg font-bold text-gray-700">Could not verify</p>
+                              <p className="text-sm text-gray-600 mt-1">{chainCheck.message}</p>
+                            </div>
+                          </>
+                        )}
+                      </div>
+
+                      {chainCheck.onChainHash && (
+                        <div className="mt-6 pt-6 border-t border-gray-200">
+                          <p className="text-sm font-medium text-gray-700 mb-2">On-chain hash</p>
+                          <p className="font-mono text-xs break-all bg-white/60 p-3 rounded-lg border border-gray-200">
+                            {chainCheck.onChainHash}
+                          </p>
+                        </div>
+                      )}
+
+                      {chainCheck.anchoredBy && (
+                        <div className="text-xs text-gray-600 space-y-1">
+                          <p>
+                            Anchored by{' '}
+                            <a
+                              href={sepoliaAddressUrl(chainCheck.anchoredBy)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-mono text-blue-600 hover:text-blue-800 underline break-all"
+                            >
+                              {chainCheck.anchoredBy}
+                            </a>
+                          </p>
+                          {chainCheck.onChainTimestamp && (
+                            <p>at {chainCheck.onChainTimestamp}</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
-            {/* Verification Details */}
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <h3 className="text-sm font-medium text-gray-500 mb-1">Evidence ID</h3>
-                  <p className="font-mono text-sm break-all">{result.evidence_id}</p>
-                </div>
-
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <h3 className="text-sm font-medium text-gray-500 mb-1">Blockchain Network</h3>
-                  <p className="font-medium">{result.blockchain_network ?? 'N/A'}</p>
-                </div>
-
-                {result.contract_address && (
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <h3 className="text-sm font-medium text-gray-500 mb-1">Registry Contract</h3>
-                    <a
-                      href={sepoliaAddressUrl(result.contract_address)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-mono text-sm break-all text-blue-600 hover:text-blue-800 underline"
-                    >
-                      {result.contract_address}
-                    </a>
-                  </div>
-                )}
-
-                {result.transaction_hash && (
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <h3 className="text-sm font-medium text-gray-500 mb-1">Transaction</h3>
-                    <a
-                      href={sepoliaTxUrl(result.transaction_hash)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-mono text-sm break-all text-blue-600 hover:text-blue-800 underline"
-                    >
-                      {result.transaction_hash}
-                    </a>
-                    <p className="text-xs text-gray-400 mt-1">View on Sepolia Etherscan ↗</p>
-                  </div>
-                )}
-
-                {result.block_number != null && (
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <h3 className="text-sm font-medium text-gray-500 mb-1">Block Number</h3>
-                    <p className="font-mono">{result.block_number}</p>
-                  </div>
-                )}
-
-                {result.anchored_at && (
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <h3 className="text-sm font-medium text-gray-500 mb-1">Anchored At</h3>
-                    <p className="font-medium">{formatDate(result.anchored_at)}</p>
-                  </div>
-                )}
+            {/* Proof Metadata */}
+            <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+              <div className="px-8 py-6 border-b border-gray-200 bg-gray-50">
+                <h3 className="text-lg font-bold text-gray-900">Proof Metadata</h3>
               </div>
+              <div className="p-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Evidence ID</h4>
+                    <p className="font-mono text-sm break-all text-gray-900 bg-gray-50 p-3 rounded-lg">{result.evidence_id}</p>
+                  </div>
 
-              {/* Hashes */}
-              {(result.evidence_hash_on_chain || result.computed_hash) && (
-                <div className="border-t pt-4">
-                  <h3 className="text-sm font-medium text-gray-500 mb-3">Hash Comparison</h3>
-                  <div className="space-y-3">
+                  <div>
+                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Network</h4>
+                    <p className="font-medium text-gray-900">{result.blockchain_network ?? 'N/A'}</p>
+                  </div>
+
+                  {result.contract_address && (
+                    <div>
+                      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Registry Contract</h4>
+                      <a
+                        href={sepoliaAddressUrl(result.contract_address)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono text-sm break-all text-blue-600 hover:text-blue-800 underline bg-blue-50 p-3 rounded-lg block"
+                      >
+                        {result.contract_address}
+                      </a>
+                    </div>
+                  )}
+
+                  {result.transaction_hash && (
+                    <div>
+                      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Transaction</h4>
+                      <a
+                        href={sepoliaTxUrl(result.transaction_hash)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono text-sm break-all text-blue-600 hover:text-blue-800 underline bg-blue-50 p-3 rounded-lg block"
+                      >
+                        {result.transaction_hash}
+                      </a>
+                      <p className="text-xs text-gray-500 mt-2">View on Sepolia Etherscan ↗</p>
+                    </div>
+                  )}
+
+                  {result.block_number != null && (
+                    <div>
+                      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Block Number</h4>
+                      <p className="font-mono text-sm font-medium text-gray-900">{result.block_number}</p>
+                    </div>
+                  )}
+
+                  {result.anchored_at && (
+                    <div>
+                      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Anchored At</h4>
+                      <p className="font-medium text-gray-900">{formatDate(result.anchored_at)}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Hash Comparison */}
+            {(result.evidence_hash_on_chain || result.computed_hash) && (
+              <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+                <div className="px-8 py-6 border-b border-gray-200 bg-gray-50">
+                  <h3 className="text-lg font-bold text-gray-900">Hash Comparison</h3>
+                  <p className="text-sm text-gray-600 mt-1">
+                    {result.status === 'ANCHOR_NOT_FOUND'
+                      ? 'This evidence has never been anchored on-chain, so there is nothing to compare the recomputed hash against.'
+                      : result.verified
+                      ? 'The hashes match — the evidence has not been tampered with.'
+                      : 'The hashes do not match — the stored evidence has been altered since anchoring.'}
+                  </p>
+                </div>
+                <div className="p-8">
+                  <div className="space-y-6">
                     {result.evidence_hash_on_chain && (
                       <div>
-                        <div className="flex justify-between items-start mb-1">
-                          <span className="text-sm font-medium text-gray-700">On-Chain Hash</span>
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-sm font-semibold text-gray-900">On-Chain Hash</h4>
                           <button
                             onClick={() => copyToClipboard(result.evidence_hash_on_chain!)}
-                            className="text-sm text-blue-600 hover:text-blue-800"
+                            className="text-xs px-3 py-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
                           >
                             Copy
                           </button>
                         </div>
-                        <p className="font-mono text-xs break-all bg-gray-50 p-2 rounded">
+                        <p className="font-mono text-xs break-all bg-green-50 p-4 rounded-lg border border-green-200 text-gray-900">
                           {result.evidence_hash_on_chain}
                         </p>
                       </div>
@@ -454,29 +454,29 @@ export default function PublicVerifyPage() {
 
                     {result.computed_hash && (
                       <div>
-                        <div className="flex justify-between items-start mb-1">
-                          <span className="text-sm font-medium text-gray-700">Recomputed Hash (from stored evidence)</span>
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-sm font-semibold text-gray-900">Recomputed Hash</h4>
                           <button
                             onClick={() => copyToClipboard(result.computed_hash!)}
-                            className="text-sm text-blue-600 hover:text-blue-800"
+                            className="text-xs px-3 py-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
                           >
                             Copy
                           </button>
                         </div>
-                        <p className="font-mono text-xs break-all bg-gray-50 p-2 rounded">
+                        <p className="font-mono text-xs break-all bg-amber-50 p-4 rounded-lg border border-amber-200 text-gray-900">
                           {result.computed_hash}
                         </p>
                       </div>
                     )}
                   </div>
                 </div>
-              )}
-
-              {/* Timestamp */}
-              <div className="border-t pt-4">
-                <h3 className="text-sm font-medium text-gray-500 mb-1">Verification Timestamp</h3>
-                <p className="font-mono text-sm">{formatDate(result.timestamp)}</p>
               </div>
+            )}
+
+            {/* Verification Timestamp */}
+            <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-8">
+              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Verification Timestamp</h4>
+              <p className="font-mono text-sm text-gray-900">{formatDate(result.timestamp)}</p>
             </div>
           </div>
         )}

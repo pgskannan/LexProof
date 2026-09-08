@@ -41,6 +41,19 @@ def test_firebase_credentials_from_application_credentials(monkeypatch, tmp_path
 
 def test_firebase_credentials_missing(monkeypatch, tmp_path):
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    # Also clear the env-based credential fields explicitly, not just the
+    # file-based path. Importing tests/test_tamper_demo.py (which imports
+    # scripts/tamper_demo.py and scripts/restore_demo_evidence.py) loads the
+    # real backend/.env at collection time via those scripts' module-level
+    # load_dotenv() calls, which populates FIREBASE_CLIENT_EMAIL /
+    # FIREBASE_PRIVATE_KEY / FIREBASE_PROJECT_ID with real values for the
+    # rest of the pytest process (python-dotenv doesn't override already-set
+    # vars, but does set ones that weren't set yet) -- this test would then
+    # see real credentials and wrongly conclude they're "configured" when
+    # run as part of the full suite, even though it passes in isolation.
+    monkeypatch.delenv("FIREBASE_CLIENT_EMAIL", raising=False)
+    monkeypatch.delenv("FIREBASE_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("FIREBASE_PROJECT_ID", raising=False)
     monkeypatch.setattr(firebase_credentials, "local_service_account_path", lambda: tmp_path / "missing.json")
     assert LexProofSettings().has_firebase_credentials() is False
 
@@ -110,7 +123,14 @@ async def test_vertex_provider_uses_llm_compatible_response(settings):
     assert result.provider == "vertex_ai"
 
 
-def test_vertex_provider_requires_project():
+def test_vertex_provider_requires_project(monkeypatch):
+    # This test needs an environment with no project configured. Delete both
+    # env vars explicitly rather than relying on their ambient absence -- this
+    # suite is commonly run with GOOGLE_CLOUD_PROJECT/FIREBASE_PROJECT_ID set
+    # globally (other tests here need a project configured), which otherwise
+    # makes LexProofSettings().project_id truthy and this guard never fires.
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("FIREBASE_PROJECT_ID", raising=False)
     with pytest.raises(VertexAIError):
         VertexGeminiProvider(LexProofSettings())._create_model("model")
 

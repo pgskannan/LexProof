@@ -1,6 +1,10 @@
 "use client"
 
 import { useState, useEffect } from 'react'
+import { Shield } from 'lucide-react'
+import { EmptyState } from '../../../components/EmptyState'
+import { Skeleton } from '../../../components/ui/skeleton'
+import { apiFetch } from '../../../lib/api'
 
 interface AffectedContract {
   contract_id: string
@@ -52,7 +56,7 @@ export default function ComplianceCommandCenter() {
 
   const fetchCommandCenter = async () => {
     try {
-      const response = await fetch('/api/compliance/command-center')
+      const response = await apiFetch('/api/compliance/command-center')
       if (!response.ok) throw new Error('Failed to fetch command center')
       const data = await response.json()
       setCommandCenter(data)
@@ -138,9 +142,15 @@ export default function ComplianceCommandCenter() {
       {/* Metrics */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {loading ? (
-          <div className="text-center py-12">
-            <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-            <p className="mt-4 text-gray-600">Loading compliance data...</p>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-5">
+              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-28 w-full" />
+            </div>
+            <Skeleton className="h-64 w-full" />
           </div>
         ) : commandCenter ? (
           <>
@@ -254,16 +264,23 @@ export default function ComplianceCommandCenter() {
               </div>
 
               {commandCenter.events.length === 0 && (
-                <div className="px-6 py-12 text-center text-gray-500">
-                  No monitoring events yet. Simulate a regulatory change to get started.
+                <div className="px-6 py-8">
+                  <EmptyState
+                    compact
+                    title="No monitoring events yet"
+                    description="Regulatory tracking runs as contracts are analyzed. Simulate a regulatory change to populate this list."
+                    icon={<Shield className="h-4 w-4" />}
+                  />
                 </div>
               )}
             </div>
           </>
         ) : (
-          <div className="text-center py-12 text-gray-500">
-            No data available
-          </div>
+          <EmptyState
+            title="No compliance data yet"
+            description="This page shows regulatory-change impact across your contracts. Simulate a regulatory change, or return here after contracts have been analyzed, to populate the command center."
+            icon={<Shield className="h-6 w-6" />}
+          />
         )}
       </div>
 
@@ -337,7 +354,7 @@ function EventDetailsModal({
 
   const handleApprove = async (approved: boolean) => {
     try {
-      const response = await fetch(`/api/compliance/events/${event.id}/approve?approved=${approved}`, {
+      const response = await apiFetch(`/api/compliance/events/${event.id}/approve?approved=${approved}`, {
         method: 'POST',
       })
       if (!response.ok) throw new Error('Failed to approve event')

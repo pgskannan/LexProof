@@ -7,6 +7,7 @@ from typing import Optional, Tuple, Dict, Any
 from enum import Enum
 import json
 import logging
+import time
 import requests
 import sys
 
@@ -98,15 +99,35 @@ class BlockchainService:
         Returns:
             Contract ABI dictionary
         """
-        try:
-            import os
-            abi_path = os.path.join(
-                os.path.dirname(__file__),
-                "../../../../contracts/build/LexProofRegistry.abi"
-            )
-            with open(abi_path, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
+        import os
+        import glob
+
+        build_dir = os.path.join(os.path.dirname(__file__), "../../../../contracts/build")
+        # Hardhat/solc name compiled ABI files "<SourceFile>_sol_<ContractName>.abi" by
+        # default, not "<ContractName>.abi" - try the plain name first (in case a build
+        # step ever renames it), then the actual default output name, then fall back to
+        # a glob match on the contract name so a build-tool naming change doesn't quietly
+        # regress this to the (incomplete) hardcoded stub below.
+        candidates = [
+            os.path.join(build_dir, "LexProofRegistry.abi"),
+            os.path.join(build_dir, "LexProofRegistry_sol_LexProofRegistry.abi"),
+        ]
+        candidates.extend(sorted(glob.glob(os.path.join(build_dir, "*LexProofRegistry.abi"))))
+        for abi_path in candidates:
+            try:
+                with open(abi_path, 'r') as f:
+                    return json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue
+
+        # Last-resort fallback only if no compiled ABI could be found on disk at all.
+        # Kept in sync with the real contract's public interface, including the
+        # EvidenceAnchored event - anchor recovery (get_anchor_transaction_hash) reads
+        # this event's logs, and silently using an event-less ABI here previously broke
+        # every anchor recovery/retry with "the abi for this contract contains no event
+        # definitions" while normal function calls kept working, which made it easy to
+        # miss.
+        if True:
             return [
                 {
                     "inputs": [
@@ -197,6 +218,17 @@ class BlockchainService:
                     ],
                     "stateMutability": "view",
                     "type": "function",
+                },
+                {
+                    "anonymous": False,
+                    "inputs": [
+                        {"indexed": True, "internalType": "string", "name": "recordId", "type": "string"},
+                        {"indexed": True, "internalType": "bytes32", "name": "evidenceHash", "type": "bytes32"},
+                        {"indexed": False, "internalType": "uint256", "name": "timestamp", "type": "uint256"},
+                        {"indexed": True, "internalType": "address", "name": "anchoredBy", "type": "address"},
+                    ],
+                    "name": "EvidenceAnchored",
+                    "type": "event",
                 },
             ]
 
@@ -541,24 +573,142 @@ class BlockchainService:
         except Exception as exc:
             raise ValueError(f"Error waiting for transaction receipt: {exc}") from exc
 
+    # Many RPC providers cap a single eth_getLogs call to a small block range - Alchemy's
+    # free tier, which this app uses, allows only 10 blocks per call and rejects wider
+    # ranges outright (HTTP 400). Scanning fromBlock=0 in one call therefore always fails
+    # once the chain has advanced past a few blocks since contract deployment. These two
+    # constants bound the provider-safe chunked backward scan get_anchor_transaction_hash
+    # falls back to instead.
+    _LOG_SCAN_CHUNK_SIZE = 10
+    _LOG_SCAN_MAX_LOOKBACK_BLOCKS = 500
+    _LOG_SCAN_REQUEST_DELAY_SECONDS = 0.25
+    _LOG_SCAN_MAX_RETRIES_PER_CHUNK = 5
+
+    _EVIDENCE_ANCHORED_SIGNATURE = "EvidenceAnchored(string,bytes32,uint256,address)"
+
+    def _estimate_block_for_timestamp(self, target_timestamp: int) -> int:
+        """Binary-search for the highest block whose timestamp is <= target_timestamp.
+
+        Used to jump straight to the neighbourhood of an on-chain anchor's block
+        instead of brute-force-scanning from the chain tip: the registry contract
+        exposes the anchor's timestamp (getEvidenceAnchor -> anchored_at) even
+        though it doesn't expose the block number or tx hash, and Sepolia block
+        timestamps are monotonic, so a plain binary search over block numbers
+        resolves this in ~O(log(latest_block)) get_block calls (~23 for a chain
+        several million blocks deep) rather than hundreds of get_logs calls.
+        """
+        low = 0
+        high = self.w3.eth.block_number
+        latest_ts = int(self.w3.eth.get_block(high)["timestamp"])
+        if target_timestamp >= latest_ts:
+            return high
+        while low < high:
+            mid = (low + high + 1) // 2
+            mid_ts = int(self.w3.eth.get_block(mid)["timestamp"])
+            if mid_ts <= target_timestamp:
+                low = mid
+            else:
+                high = mid - 1
+        return low
+
     def get_anchor_transaction_hash(self, record_id: str, evidence_hash: Optional[str] = None) -> str:
         """Resolve the transaction hash for an EvidenceAnchored event for a record."""
         event = getattr(self.contract.events, "EvidenceAnchored", None)
         if event is None:
             raise RuntimeError("EvidenceAnchored event is unavailable from the contract ABI")
 
-        logs = event().get_logs(fromBlock=0, argument_filters={"recordId": record_id})
+        # Build eth_getLogs topics by hand (topic0 = event signature hash, topic1 = the
+        # indexed recordId string's own keccak256 hash, per how Solidity encodes indexed
+        # string/bytes params) and call w3.eth.get_logs directly, then decode each raw log
+        # with the contract event's own ABI. ContractEvent.get_logs(argument_filters=...)
+        # was tried first but Alchemy rejects the filter it builds for this event with a
+        # JSON-RPC "Invalid params / did not match any variant of untagged enum Variadic"
+        # error - the hand-built topics below are exactly what a raw eth_getLogs call
+        # needs and were verified directly against Alchemy before writing this.
+        topic0 = Web3.keccak(text=self._EVIDENCE_ANCHORED_SIGNATURE)
+        topic1 = Web3.keccak(text=record_id)
 
-        for log in logs:
-            args = getattr(log, "args", {}) or {}
-            log_hash = args.get("evidenceHash")
-            if log_hash is None:
-                continue
-            if evidence_hash is not None and Web3.to_hex(log_hash).lower() != evidence_hash.lower():
-                continue
-            return Web3.to_hex(log["transactionHash"]).lower()
+        # web3.py 6+/7+ renamed the block-range kwargs from the camelCase fromBlock/
+        # toBlock (v5) to snake_case from_block/to_block.
+        #
+        # Scan backward from the chain tip in provider-safe chunks rather than querying
+        # the whole history in one call (see the constants above for why): anchors this
+        # app creates are always recent, so this typically resolves within the first few
+        # chunks, and a bounded lookback keeps a genuinely-missing anchor from scanning
+        # the entire chain history one small chunk at a time.
+        chunk_size = self._LOG_SCAN_CHUNK_SIZE
+        max_lookback_blocks = self._LOG_SCAN_MAX_LOOKBACK_BLOCKS
+        chain_tip = self.w3.eth.block_number
 
-        raise RuntimeError(f"No EvidenceAnchored transaction found for record_id={record_id}")
+        # If the registry contract already has this anchor (the common recovery-path
+        # case), its on-chain timestamp lets us jump straight to a narrow window around
+        # the anchoring block instead of brute-force-scanning hundreds of chunks back
+        # from the tip - the anchor may be arbitrarily old relative to "now" (e.g. found
+        # during a later retry/debugging session), so a fixed recent lookback alone
+        # isn't reliable.
+        anchor_window_blocks = 50
+        anchor_info = self.get_evidence_anchor(record_id)
+        if anchor_info is not None:
+            approx_block = self._estimate_block_for_timestamp(anchor_info["anchored_at"])
+            latest_block = min(chain_tip, approx_block + anchor_window_blocks)
+            earliest_block = max(0, approx_block - anchor_window_blocks)
+        else:
+            latest_block = chain_tip
+            earliest_block = max(0, latest_block - max_lookback_blocks)
+
+        to_block = latest_block
+        while to_block >= earliest_block:
+            from_block = max(earliest_block, to_block - chunk_size + 1)
+
+            # Alchemy's free tier also rate-limits requests/sec (HTTP 429) - a bounded
+            # lookback keeps the worst case small, but still retry a single chunk with
+            # backoff rather than aborting the whole scan on a transient 429.
+            raw_logs = None
+            last_exc = None
+            for attempt in range(self._LOG_SCAN_MAX_RETRIES_PER_CHUNK):
+                try:
+                    raw_logs = self.w3.eth.get_logs({
+                        "address": self.contract_address,
+                        "topics": [topic0, topic1],
+                        "fromBlock": from_block,
+                        "toBlock": to_block,
+                    })
+                    break
+                except Exception as exc:  # noqa: BLE001 - provider-shaped errors vary
+                    last_exc = exc
+                    is_rate_limited = "429" in str(exc) or "Too Many Requests" in str(exc)
+                    if not is_rate_limited or attempt == self._LOG_SCAN_MAX_RETRIES_PER_CHUNK - 1:
+                        raise
+                    time.sleep(self._LOG_SCAN_REQUEST_DELAY_SECONDS * (2 ** attempt))
+            if raw_logs is None:
+                raise last_exc
+
+            time.sleep(self._LOG_SCAN_REQUEST_DELAY_SECONDS)
+
+            for raw_log in raw_logs:
+                decoded = event().process_log(raw_log)
+                args = getattr(decoded, "args", {}) or {}
+                log_hash = args.get("evidenceHash")
+                if log_hash is None:
+                    continue
+                # get_evidence_anchor() returns evidence_hash WITHOUT a "0x" prefix
+                # (bytes.hex()-style) while Web3.to_hex() always adds one - normalize
+                # both sides before comparing or this match silently never fires and
+                # the correct log gets skipped every time.
+                if evidence_hash is not None:
+                    expected = evidence_hash.lower().removeprefix("0x")
+                    actual = Web3.to_hex(log_hash).lower().removeprefix("0x")
+                    if actual != expected:
+                        continue
+                return Web3.to_hex(raw_log["transactionHash"]).lower()
+            if from_block == earliest_block:
+                break
+            to_block = from_block - 1
+
+        raise RuntimeError(
+            f"No EvidenceAnchored transaction found for record_id={record_id} "
+            f"in blocks {earliest_block}-{latest_block}"
+        )
 
     def recover_confirmed_transaction(self, transaction_hash: str) -> Tuple[str, int, int]:
         """Read a confirmed transaction receipt without submitting a transaction."""

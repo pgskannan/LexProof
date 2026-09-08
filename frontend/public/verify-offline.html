@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LexProof Offline Verifier</title>
+  <style>
+    :root {
+      --green: #059669;
+      --red: #dc2626;
+      --amber: #d97706;
+      --slate: #0f172a;
+    }
+    body {
+      margin: 0;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f8fafc;
+      color: var(--slate);
+    }
+    main { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1 { font-family: Georgia, "Source Serif 4", serif; font-size: 2rem; margin: 0 0 8px; }
+    .lede { color: #475569; line-height: 1.55; margin-bottom: 24px; }
+    .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    input[type="file"] { width: 100%; }
+    button {
+      background: #2563eb; color: #fff; border: 0; border-radius: 8px;
+      padding: 10px 16px; font-weight: 600; cursor: pointer;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .result { border-width: 2px; border-style: solid; border-radius: 12px; padding: 16px; margin-top: 12px; }
+    .green { background: #ecfdf5; border-color: #10b981; color: #047857; }
+    .red { background: #fef2f2; border-color: #ef4444; color: #b91c1c; }
+    .amber { background: #fffbeb; border-color: #f59e0b; color: #b45309; }
+    .gray { background: #f8fafc; border-color: #cbd5e1; color: #475569; }
+    .mono { font-family: ui-monospace, Menlo, Monaco, monospace; font-size: 12px; word-break: break-all; }
+    .item { border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-top: 10px; }
+    h2 { font-size: 1.1rem; margin: 0 0 8px; }
+    .note { font-size: 13px; color: #64748b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>LexProof Offline Verifier</h1>
+    <p class="lede">
+      This page does not call LexProof. It recomputes SHA-256 hashes in your browser and reads the
+      LexProofRegistry contract on Ethereum Sepolia through a public RPC. You can save this HTML file
+      and open it from disk. Confirming an on-chain anchor still requires a network connection to
+      Sepolia — not to LexProof.
+    </p>
+    <p class="note">A mismatch means the bundle, the original document, or the on-chain record has been altered.</p>
+
+    <div class="card">
+      <label for="bundle">Verification bundle (JSON)</label>
+      <input id="bundle" type="file" accept="application/json,.json" />
+      <label for="document" style="margin-top:16px">Original contract file (optional)</label>
+      <input id="document" type="file" />
+      <p class="note" style="margin-top:8px">
+        If you attach the original file, this page SHA-256s its bytes and UTF-8 text and compares them
+        to <span class="mono">original_document_hash</span> in the bundle.
+      </p>
+      <button id="run" style="margin-top:16px" type="button">Verify independently</button>
+    </div>
+    <div id="output"></div>
+  </main>
+
+  <!-- ethers is loaded from a public CDN so this file works from disk. Same ABI/RPC pattern as frontend/lib/independentChainVerify.ts -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+  <script>
+    const DEFAULT_RPC = "https://ethereum-sepolia-rpc.publicnode.com";
+    const DEFAULT_REGISTRY = "0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191";
+    const ABI = [
+      "function getEvidenceAnchor(string) view returns (bytes32 evidenceHash, uint256 timestamp, address anchoredBy)"
+    ];
+
+    function normalizeHash(value) {
+      return String(value || "").trim().replace(/^0x/i, "").toLowerCase();
+    }
+
+    function hashesEqual(a, b) {
+      const left = normalizeHash(a);
+      const right = normalizeHash(b);
+      return Boolean(left && right && left === right);
+    }
+
+    async function sha256Hex(buffer) {
+      const digest = await crypto.subtle.digest("SHA-256", buffer);
+      return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+
+    function toneClass(status) {
+      if (status === "VERIFIED" || status === "match") return "green";
+      if (status === "MISMATCH" || status === "mismatch") return "red";
+      if (status === "COULD NOT REACH CHAIN" || status === "error") return "amber";
+      return "gray";
+    }
+
+    async function verifyOnChain(evidenceId, expectedHash, rpcUrl, contractAddress) {
+      if (!contractAddress) {
+        return { status: "error", message: "No registry contract address in the bundle.", onChainHash: null };
+      }
+      if (typeof ethers === "undefined") {
+        return { status: "error", message: "Could not load the Ethereum library (CDN). Sepolia cannot be queried.", onChainHash: null };
+      }
+      try {
+        const provider = new ethers.JsonRpcProvider(rpcUrl || DEFAULT_RPC);
+        const contract = new ethers.Contract(contractAddress, ABI, provider);
+        const [evidenceHash, timestamp, anchoredBy] = await contract.getEvidenceAnchor(evidenceId);
+        const onChainHash = evidenceHash.toString().toLowerCase();
+        const zeroHash = "0x" + "0".repeat(64);
+        if (!onChainHash || onChainHash === zeroHash) {
+          return { status: "not_anchored", message: "The contract has no anchor for this evidence ID.", onChainHash: null };
+        }
+        const match = hashesEqual(onChainHash, expectedHash);
+        return {
+          status: match ? "match" : "mismatch",
+          onChainHash,
+          onChainTimestamp: new Date(Number(timestamp) * 1000).toLocaleString(),
+          anchoredBy,
+          message: match
+            ? "The hash read directly from the smart contract matches the bundle."
+            : "The hash read directly from the smart contract does NOT match the bundle.",
+        };
+      } catch (err) {
+        const reason = err && (err.shortMessage || err.reason || err.message) || String(err);
+        if (String(reason).toLowerCase().includes("evidence anchor does not exist")) {
+          return { status: "not_anchored", message: "The contract has no anchor for this evidence ID.", onChainHash: null };
+        }
+        return { status: "error", message: "Could not reach Ethereum Sepolia: " + reason, onChainHash: null };
+      }
+    }
+
+    function render(html) {
+      document.getElementById("output").innerHTML = html;
+    }
+
+    document.getElementById("run").addEventListener("click", async () => {
+      const bundleInput = document.getElementById("bundle");
+      const documentInput = document.getElementById("document");
+      if (!bundleInput.files || !bundleInput.files[0]) {
+        render('<div class="result amber">Select a verification bundle JSON file first.</div>');
+        return;
+      }
+      let bundle;
+      try {
+        bundle = JSON.parse(await bundleInput.files[0].text());
+      } catch (err) {
+        render('<div class="result red">The selected file is not valid JSON.</div>');
+        return;
+      }
+
+      const rpcUrl = bundle.sepolia_rpc_url || DEFAULT_RPC;
+      const registry = bundle.registry_contract_address || DEFAULT_REGISTRY;
+      const hashes = bundle.hashes || {};
+      const evidence = Array.isArray(bundle.evidence) ? bundle.evidence : [];
+      const contract = bundle.contract || {};
+
+      let documentCheck = "";
+      if (documentInput.files && documentInput.files[0]) {
+        const file = documentInput.files[0];
+        const bytes = await file.arrayBuffer();
+        const byteHash = await sha256Hex(bytes);
+        let textHash = "";
+        try {
+          textHash = await sha256Hex(new TextEncoder().encode(await file.text()));
+        } catch (err) {
+          textHash = "";
+        }
+        const expected = hashes.original_document_hash;
+        const matched = hashesEqual(byteHash, expected) || hashesEqual(textHash, expected);
+        documentCheck = `
+          <div class="result ${matched ? "green" : expected ? "red" : "amber"}">
+            <strong>${matched ? "DOCUMENT HASH MATCHES" : expected ? "DOCUMENT HASH MISMATCH" : "NO ORIGINAL DOCUMENT HASH IN BUNDLE"}</strong>
+            <p class="mono">file bytes: ${byteHash}</p>
+            ${textHash ? `<p class="mono">file utf-8: ${textHash}</p>` : ""}
+            <p class="mono">bundle original_document_hash: ${expected || "—"}</p>
+            <p class="note">document_hash in the bundle is a composite of original + normalized text and cannot be recomputed from the file alone.</p>
+          </div>`;
+      }
+
+      const itemResults = [];
+      for (const item of evidence) {
+        const expected = (item.anchor && item.anchor.evidence_hash) || item.hash;
+        const address = (item.anchor && item.anchor.contract_address) || registry;
+        if (!item.anchor || !expected) {
+          itemResults.push({
+            ...item,
+            chain: { status: "idle", message: "No on-chain anchor recorded in this bundle.", onChainHash: null },
+            label: "NOT ANCHORED IN BUNDLE",
+          });
+          continue;
+        }
+        const chain = await verifyOnChain(item.evidence_id, expected, rpcUrl, address);
+        const label = chain.status === "match" ? "VERIFIED"
+          : chain.status === "mismatch" ? "MISMATCH"
+          : chain.status === "error" ? "COULD NOT REACH CHAIN"
+          : "NOT YET ANCHORED";
+        itemResults.push({ ...item, chain, label });
+      }
+
+      const anchored = itemResults.filter((item) => item.anchor);
+      const verifiedCount = itemResults.filter((item) => item.chain.status === "match").length;
+      const mismatchCount = itemResults.filter((item) => item.chain.status === "mismatch").length;
+      const errorCount = itemResults.filter((item) => item.chain.status === "error").length;
+      const overall = mismatchCount
+        ? { label: "MISMATCH", tone: "red" }
+        : errorCount && !verifiedCount
+          ? { label: "COULD NOT REACH CHAIN", tone: "amber" }
+          : verifiedCount
+            ? { label: "VERIFIED", tone: "green" }
+            : { label: "NO ANCHORED EVIDENCE", tone: "amber" };
+
+      const itemsHtml = itemResults.map((item) => `
+        <div class="item">
+          <strong>${item.label}</strong>
+          <p>${item.title || item.evidence_id || "Evidence item"}</p>
+          <p class="mono">evidence_id: ${item.evidence_id || "—"}</p>
+          <p class="mono">bundle hash: ${item.hash || (item.anchor && item.anchor.evidence_hash) || "—"}</p>
+          <p class="mono">on-chain hash: ${item.chain.onChainHash || "—"}</p>
+          <p class="note">${item.chain.message || ""}</p>
+        </div>
+      `).join("");
+
+      render(`
+        <div class="result ${overall.tone}">
+          <h2>${overall.label}</h2>
+          <p>${contract.name || contract.contract_id || "Contract"} · passport ${contract.passport_id || "—"}</p>
+          <p>${verifiedCount} of ${anchored.length} anchored item(s) matched Sepolia directly.</p>
+        </div>
+        <div class="card">
+          <h2>Claimed passport hashes (SHA-256)</h2>
+          <p class="mono">document: ${hashes.document_hash || "—"}</p>
+          <p class="mono">policy: ${hashes.policy_hash || "—"}</p>
+          <p class="mono">analysis: ${hashes.analysis_hash || "—"}</p>
+          <p class="mono">evidence package: ${hashes.evidence_hash || "—"}</p>
+        </div>
+        ${documentCheck}
+        <div class="card">
+          <h2>Evidence vs Sepolia</h2>
+          ${itemsHtml || "<p class='note'>This bundle contains no evidence items.</p>"}
+        </div>
+        <p class="note">${bundle.how_to_verify || ""}</p>
+      `);
+    });
+  </script>
+</body>
+</html>

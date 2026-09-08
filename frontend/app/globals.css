@@ -1,7 +1,73 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:wght@400;600;700&display=swap');
 @import 'tailwindcss';
 
 :root {
   color-scheme: light;
+
+  /* Brand & Primary Colors */
+  --color-primary: #2563eb;
+  --color-primary-dark: #1d4ed8;
+  --color-primary-light: #dbeafe;
+  
+  /* Accent Colors */
+  --color-accent: #f59e0b;
+  --color-accent-dark: #d97706;
+  --color-accent-light: #fef3c7;
+
+  /* Verification States */
+  --color-verified: #10b981;
+  --color-verified-light: #d1fae5;
+  --color-verified-bg: #ecfdf5;
+  --color-verified-dark: #059669;
+
+  --color-tampered: #ef4444;
+  --color-tampered-light: #fecaca;
+  --color-tampered-bg: #fef2f2;
+  --color-tampered-dark: #dc2626;
+
+  --color-pending: #f59e0b;
+  --color-pending-light: #fde68a;
+  --color-pending-bg: #fffbeb;
+  --color-pending-dark: #d97706;
+
+  /* Risk Severity */
+  --color-critical: #dc2626;
+  --color-critical-bg: #fef2f2;
+  --color-critical-light: #fee2e2;
+
+  --color-high: #ea580c;
+  --color-high-bg: #fef3f2;
+  --color-high-light: #fed7aa;
+
+  --color-medium: #f59e0b;
+  --color-medium-bg: #fffbeb;
+  --color-medium-light: #fde68a;
+
+  --color-low: #10b981;
+  --color-low-bg: #ecfdf5;
+  --color-low-light: #d1fae5;
+
+  /* Neutral Palette */
+  --color-gray-50: #f8fafc;
+  --color-gray-100: #f1f5f9;
+  --color-gray-200: #e2e8f0;
+  --color-gray-300: #cbd5e1;
+  --color-gray-400: #94a3b8;
+  --color-gray-500: #64748b;
+  --color-gray-600: #475569;
+  --color-gray-700: #334155;
+  --color-gray-800: #1e293b;
+  --color-gray-900: #0f172a;
+
+  /* Text Colors */
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-tertiary: #94a3b8;
+
+  /* Surface & Borders */
+  --bg-surface: #ffffff;
+  --bg-surface-secondary: #f8fafc;
+  --border-color: #e2e8f0;
 }
 
 html,
@@ -9,11 +75,64 @@ body {
   min-height: 100%;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
   margin: 0;
-  background: #f8fafc;
-  color: #0f172a;
-  font-family: Arial, Helvetica, sans-serif;
+  padding: 0;
+  background: var(--bg-surface-secondary);
+  color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+/* Typography Scale */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Source Serif 4', 'Georgia', serif;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+h1 {
+  font-size: 2.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+h2 {
+  font-size: 1.875rem;
+  letter-spacing: -0.015em;
+}
+
+h3 {
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+}
+
+h4 {
+  font-size: 1.125rem;
+}
+
+h5 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+h6 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+p {
+  margin: 0;
+  color: var(--text-primary);
 }
 
 button,
@@ -21,4 +140,52 @@ input,
 textarea,
 select {
   font: inherit;
+}
+
+/* Code & Monospace */
+code,
+pre {
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+}
+
+code {
+  font-size: 0.875em;
+}
+
+/* Links */
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+  transition: color 200ms ease;
+}
+
+a:hover {
+  color: var(--color-primary-dark);
+}
+
+a:visited {
+  color: #7c3aed;
+}
+
+@media print {
+  nav {
+    display: none !important;
+  }
+
+  main {
+    margin-left: 0 !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #fff !important;
+  }
+
+  .certificate-sheet {
+    box-shadow: none !important;
+    border-color: #0f172a !important;
+  }
 }

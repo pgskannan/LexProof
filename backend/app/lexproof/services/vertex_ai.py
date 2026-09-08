@@ -106,6 +106,58 @@ class VertexGeminiProvider:
         latency_ms = int((time.monotonic() - start) * 1000)
         return LLMResponse(content=content, model=model_name, provider=self.provider_name, latency_ms=latency_ms)
 
+    async def complete_json(
+        self,
+        prompt: str,
+        schema: dict[str, Any],
+        system_prompt: str | None = None,
+    ) -> dict[str, Any]:
+        """Generate a JSON object using the same Vertex client as contract analysis.
+
+        Uses a caller-supplied response schema instead of the analysis schema so
+        Q&A and other structured tasks can share this provider without a second client.
+        """
+        import json
+
+        model_name = self.settings.gemini_model
+        model = self._model or self._create_model(model_name)
+        contents = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        try:
+            from vertexai.generative_models import GenerationConfig
+
+            generation_config = GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=schema,
+                temperature=self.settings.gemini_temperature,
+                max_output_tokens=self.settings.gemini_max_output_tokens,
+            )
+            if hasattr(model, "generate_content_async"):
+                async_kwargs = {}
+                if "generation_config" in inspect.signature(model.generate_content_async).parameters:
+                    async_kwargs["generation_config"] = generation_config
+                response = await model.generate_content_async(contents, **async_kwargs)
+            else:
+                sync_kwargs = {}
+                if "generation_config" in inspect.signature(model.generate_content).parameters:
+                    sync_kwargs["generation_config"] = generation_config
+                response = model.generate_content(contents, **sync_kwargs)
+        except Exception as exc:
+            raise VertexAIError(f"Vertex AI request failed: {exc}") from exc
+        content = getattr(response, "text", "") or ""
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.split("\n", 1)[-1]
+            if stripped.endswith("```"):
+                stripped = stripped[: stripped.rfind("```")]
+            stripped = stripped.strip()
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise VertexAIError(f"Vertex AI returned invalid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise VertexAIError("Vertex AI returned JSON that is not an object")
+        return parsed
+
     def _create_model(self, model_name: str) -> Any:
         if not self.settings.has_ai_configuration():
             raise VertexAIError("Google Cloud project is not configured")

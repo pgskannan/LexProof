@@ -153,6 +153,45 @@ def test_public_verifier_tampered_evidence_returns_tampered(patched_public_verif
     assert payload["evidence_hash_on_chain"] == on_chain_hash
 
 
+def test_public_verifier_detects_and_then_clears_current_evidence_tampering(
+    patched_public_verifier,
+):
+    evidence = {
+        "evidence_id": "evd-tamper-cycle",
+        "passport_id": "passport-tamper-cycle",
+        "evidence_type": "CLAUSE",
+        "title": "Liability cap",
+        "content": "The liability cap applies to sensitive health data.",
+        "risk_impact": 90,
+        "compliance_impact": 75,
+    }
+    on_chain_hash = hash_evidence_item(evidence)
+    patched_public_verifier["evidence_store"]["evd-tamper-cycle"] = evidence
+    patched_public_verifier["anchor_store"]["evd-tamper-cycle"] = {
+        "evidence_hash": on_chain_hash,
+        "blockchain_network": "ethereum-sepolia",
+        "contract_address": "0x1111111111111111111111111111111111111111",
+        "transaction_hash": "0x" + "ab" * 32,
+        "block_number": 123,
+        "anchored_at": "2025-01-15T12:00:00+00:00",
+    }
+
+    before = client.get("/api/verify/evd-tamper-cycle").json()
+    assert before["status"] == "VERIFIED"
+    assert before["computed_hash"] == on_chain_hash
+
+    evidence["risk_impact"] = 5
+    tampered = client.get("/api/verify/evd-tamper-cycle").json()
+    assert tampered["status"] == "TAMPERED"
+    assert tampered["computed_hash"] != on_chain_hash
+    assert tampered["evidence_hash_on_chain"] == on_chain_hash
+
+    evidence["risk_impact"] = 90
+    restored = client.get("/api/verify/evd-tamper-cycle").json()
+    assert restored["status"] == "VERIFIED"
+    assert restored["computed_hash"] == on_chain_hash
+
+
 def test_public_verifier_blank_evidence_id_returns_404(patched_public_verifier):
     response = client.get("/api/verify/")
     assert response.status_code == 404

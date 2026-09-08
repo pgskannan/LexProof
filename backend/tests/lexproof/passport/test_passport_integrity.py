@@ -154,26 +154,88 @@ async def test_verify_passport_integrity_analysis_snapshot_tampering_detected():
 
 @pytest.mark.asyncio
 async def test_verify_passport_integrity_evidence_snapshot_tampering_detected():
-    """Mutating the underlying evidence data should fail even if the stored evidence_hash remains unchanged."""
+    """Mutating the publish-time snapshot should fail; live evidence mutations must not."""
     _, passport, evidence_items = await _create_passport("contract-evidence-tamper")
     data = passport.model_dump(mode="json")
-    mutated_evidence = [json.loads(json.dumps(item)) for item in evidence_items]
-    original_quote = mutated_evidence[0]["metadata"]["evidence_quote"]
+    snapshot_items = data["metadata"]["verification_snapshot"]["evidence_items"]
+    original_quote = snapshot_items[0]["metadata"]["evidence_quote"]
 
-    result = verify_passport_integrity(data, evidence_items=mutated_evidence)
+    result = verify_passport_integrity(data, evidence_items=evidence_items)
     assert result["verified"] is True
     assert result["evidence_verified"] is True
 
-    mutated_evidence[0]["metadata"]["evidence_quote"] = "Tampered evidence quote"
-    result = verify_passport_integrity(data, evidence_items=mutated_evidence)
+    snapshot_items[0]["metadata"]["evidence_quote"] = "Tampered evidence quote"
+    result = verify_passport_integrity(data, evidence_items=evidence_items)
     assert result["evidence_verified"] is False
     assert result["verified"] is False
     assert result["passport_hash_verified"] is True
 
-    mutated_evidence[0]["metadata"]["evidence_quote"] = original_quote
-    result = verify_passport_integrity(data, evidence_items=mutated_evidence)
+    snapshot_items[0]["metadata"]["evidence_quote"] = original_quote
+    result = verify_passport_integrity(data, evidence_items=evidence_items)
     assert result["evidence_verified"] is True
     assert result["verified"] is True
+
+    live = [json.loads(json.dumps(item)) for item in evidence_items]
+    live[0]["metadata"]["evidence_quote"] = "Live mutation should not matter"
+    result = verify_passport_integrity(data, evidence_items=live)
+    assert result["evidence_verified"] is True
+    assert result["verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_passport_ignores_post_publish_evidence_appends():
+    """Passports published before snapshot.evidence_items must not FAIL when later evidence is appended."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.lexproof.domains.passport.utils.hashing import hash_evidence_package
+
+    published = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def item(evidence_id: str, created_at: str, evidence_type: str = "clause") -> dict:
+        return {
+            "evidence_id": evidence_id,
+            "passport_id": "legacy-passport",
+            "evidence_type": evidence_type,
+            "title": evidence_id,
+            "description": "",
+            "content": "clause text",
+            "content_type": "text/plain",
+            "risk_impact": 10,
+            "compliance_impact": 10,
+            "evidence_status": "valid",
+            "contract_reference": "",
+            "policy_reference": "",
+            "analysis_reference": "",
+            "source": "test",
+            "source_id": evidence_id,
+            "metadata": {},
+            "created_at": created_at,
+        }
+
+    original = [item("e1", published.isoformat())]
+    later = item("e2", (published + timedelta(days=1)).isoformat())
+    countersign = item("e3", published.isoformat(), "counterparty_countersignature")
+    evidence_hash = hash_evidence_package(original)
+    data = {
+        "document_hash": "d" * 64,
+        "policy_hash": "e" * 64,
+        "analysis_hash": "f" * 64,
+        "evidence_hash": evidence_hash,
+        "created_at": published.isoformat(),
+        "metadata": {
+            "passport_hash": compute_passport_hash("d" * 64, "e" * 64, "f" * 64, evidence_hash),
+            "verification_snapshot": {},
+        },
+    }
+
+    result = verify_passport_integrity(data, evidence_items=original + [later, countersign])
+    assert result["evidence_verified"] is True
+    assert result["verified"] is True
+
+    tampered = [{**original[0], "title": "tampered"}]
+    failed = verify_passport_integrity(data, evidence_items=tampered + [later])
+    assert failed["evidence_verified"] is False
+    assert failed["verified"] is False
 
 
 def test_verify_passport_integrity_deterministic_recomputation():

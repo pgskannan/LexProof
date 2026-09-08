@@ -75,7 +75,13 @@ class TestBlockchainService:
         abi_path.write_text('[{"name":"registerProof","type":"function"}]')
 
         # Mock Web3
-        with patch('lexproof.services.blockchain.Web3', return_value=mock_web3):
+        with patch('lexproof.services.blockchain.Web3', return_value=mock_web3) as mock_web3_class:
+            # Web3.to_checksum_address is a classmethod call the real service now
+            # makes on the address it's given (see blockchain.py __init__); the
+            # patched Web3 class needs it stubbed too, or it returns an
+            # unconfigured MagicMock instead of the (already-checksummed) test
+            # address.
+            mock_web3_class.to_checksum_address.side_effect = lambda address: address
             with patch('lexproof.services.blockchain.eth.contract', return_value=mock_contract):
                 with patch('lexproof.services.blockchain.requests.get'):
                     service = BlockchainService(
@@ -189,34 +195,45 @@ class TestBlockchainService:
         assert block_number == 5000000
 
     def test_get_anchor_transaction_hash_returns_matching_event_hash(self, blockchain_service):
-        class LogLike:
-            def __init__(self, evidence_hash, tx_hash):
+        # get_anchor_transaction_hash fetches raw logs via w3.eth.get_logs (chunked,
+        # provider-safe block ranges) and decodes each one with the contract event's own
+        # process_log - not ContractEvent.get_logs(argument_filters=...), which Alchemy
+        # rejected for this event with a JSON-RPC "Invalid params" error when tried
+        # against the real chain. Mock at that same level.
+        class DecodedLog:
+            def __init__(self, evidence_hash):
                 self.args = {"evidenceHash": evidence_hash}
-                self._data = {"transactionHash": tx_hash}
-
-            def __getitem__(self, key):
-                return self._data[key]
 
         tx_hash = b"\xCC" * 32
         evidence_hash = b"\xAA" * 32
-        blockchain_service.contract.events.EvidenceAnchored.return_value.get_logs.return_value = [
-            LogLike(evidence_hash, tx_hash)
-        ]
+        raw_log = {"transactionHash": tx_hash}
+        blockchain_service.w3.eth.get_logs.return_value = [raw_log]
+        blockchain_service.contract.events.EvidenceAnchored.return_value.process_log.return_value = DecodedLog(evidence_hash)
+        # get_anchor_transaction_hash first reads the anchor's on-chain timestamp so it
+        # can jump straight to the right block window instead of brute-force-scanning
+        # from the chain tip; mock that lookup and the binary search it feeds directly
+        # rather than the whole chain of w3.eth.get_block calls behind it.
+        blockchain_service.get_evidence_anchor = Mock(return_value={"anchored_at": 1700000000})
+        blockchain_service._estimate_block_for_timestamp = Mock(return_value=4999990)
 
         assert blockchain_service.get_anchor_transaction_hash("evidence-1", "0x" + "aa" * 32) == "0x" + "cc" * 32
+        # Should stop at the first (most recent) chunk once a match is found, not scan
+        # the whole configured lookback window.
+        assert blockchain_service.w3.eth.get_logs.call_count == 1
 
     def test_get_anchor_transaction_hash_raises_on_unmatched_event_hash(self, blockchain_service):
-        class LogLike:
-            def __init__(self, evidence_hash, tx_hash):
+        class DecodedLog:
+            def __init__(self, evidence_hash):
                 self.args = {"evidenceHash": evidence_hash}
-                self._data = {"transactionHash": tx_hash}
 
-            def __getitem__(self, key):
-                return self._data[key]
-
-        blockchain_service.contract.events.EvidenceAnchored.return_value.get_logs.return_value = [
-            LogLike(b"\x11" * 32, b"\x22" * 32)
-        ]
+        raw_log = {"transactionHash": b"\x22" * 32}
+        blockchain_service.w3.eth.get_logs.return_value = [raw_log]
+        blockchain_service.contract.events.EvidenceAnchored.return_value.process_log.return_value = DecodedLog(b"\x11" * 32)
+        # No on-chain anchor at all (the common case for this error): falls back to the
+        # bounded recent-lookback scan from the chain tip.
+        blockchain_service.get_evidence_anchor = Mock(return_value=None)
+        # Bound the lookback so a genuinely-unmatched search terminates quickly in the test.
+        blockchain_service._LOG_SCAN_MAX_LOOKBACK_BLOCKS = 20
 
         with pytest.raises(RuntimeError, match="No EvidenceAnchored transaction found"):
             blockchain_service.get_anchor_transaction_hash("evidence-1", "0x" + "aa" * 32)
@@ -227,7 +244,8 @@ class TestBlockchainService:
         abi_path = tmp_path / "LexProofRegistry.abi"
         abi_path.write_text('[{"name":"registerProof","type":"function"}]')
 
-        with patch('lexproof.services.blockchain.Web3'):
+        with patch('lexproof.services.blockchain.Web3') as mock_web3_class:
+            mock_web3_class.to_checksum_address.side_effect = lambda address: address
             with patch('lexproof.services.blockchain.requests.get'):
                 with patch.dict('os.environ', {
                     'ETHEREUM_RPC_URL': 'https://sepolia.infura.io/v3/test',

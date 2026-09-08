@@ -145,7 +145,9 @@ def test_recover_confirmed_transaction_persists_without_resubmitting(evidence_ha
     service.evidence_repository.set("evidence-1", evidence)
     transaction_hash = "0x" + "b" * 64
 
-    result = service.recover_anchor_from_transaction("evidence-1", transaction_hash)
+    result = __import__("asyncio").run(
+        service.recover_anchor_from_transaction("evidence-1", transaction_hash)
+    )
 
     assert result["evidence_id"] == "evidence-1"
     assert result["passport_id"] == "passport-1"
@@ -168,7 +170,9 @@ def test_recover_rejects_existing_anchor_with_different_hash(evidence_hash):
     service.evidence_repository.set("evidence-1", {**evidence, "content": "Changed"})
 
     with pytest.raises(ValueError, match="different Ethereum anchor"):
-        service.recover_anchor_from_transaction("evidence-1", "0x" + "b" * 64)
+        __import__("asyncio").run(
+            service.recover_anchor_from_transaction("evidence-1", "0x" + "b" * 64)
+        )
 
 
 def test_recovery_uses_event_transaction_hash_without_resubmitting_anchor():
@@ -202,7 +206,7 @@ def test_matching_hash_is_verified(evidence_hash):
         "anchored_at": datetime.fromtimestamp(1700000000, timezone.utc).isoformat(),
     })
 
-    result = service.verify_evidence("evidence-1")
+    result = __import__("asyncio").run(service.verify_evidence("evidence-1"))
     assert result["verified"] is True
     assert result["status"] == "VERIFIED"
 
@@ -221,7 +225,7 @@ def test_different_hash_is_tampered(evidence_hash):
         "anchored_at": datetime.fromtimestamp(1700000000, timezone.utc).isoformat(),
     })
 
-    result = service.verify_evidence("evidence-1")
+    result = __import__("asyncio").run(service.verify_evidence("evidence-1"))
     assert result["verified"] is False
     assert result["status"] == "TAMPERED"
 
@@ -240,7 +244,7 @@ def test_restored_evidence_is_verified(evidence_hash):
         "anchored_at": datetime.fromtimestamp(1700000000, timezone.utc).isoformat(),
     })
 
-    result = service.verify_evidence("evidence-1")
+    result = __import__("asyncio").run(service.verify_evidence("evidence-1"))
     assert result["verified"] is True
     assert result["status"] == "VERIFIED"
 
@@ -446,3 +450,66 @@ def test_anchor_evidence_normal_new_anchor_when_no_ethereum_anchor(evidence_hash
     # Verify metadata was persisted
     assert repository.get("evidence-1") is not None
     assert repository.get("evidence-1")["evidence_hash"] == computed_hash
+
+
+class RacingBlockchain(FakeBlockchain):
+    """Simulates losing a race to a concurrent caller: this call's own submission
+    reverts (e.g. gas estimation fails against updated contract state), but by the
+    time we re-check, the anchor is already on-chain because a concurrent caller's
+    transaction for the same evidence_id (e.g. a retried analyze_version call) was
+    mined moments earlier."""
+
+    def anchor_evidence(self, record_id, evidence_hash):
+        # Simulate the concurrent winner's transaction landing first.
+        self.on_chain_hash = evidence_hash.hex()
+        raise ValueError("Evidence anchor transaction reverted: 0x" + "d" * 64)
+
+
+def test_anchor_evidence_recovers_from_concurrent_race_on_submit_failure(evidence_hash):
+    """
+    Test recovery when this request's own submission reverts because a concurrent
+    caller (e.g. a retried analyze_version call for the same version) already
+    anchored the same evidence_id moments earlier.
+
+    Scenario:
+    1. No anchor exists in Firestore or on Ethereum when we start.
+    2. We attempt to submit a new anchor transaction.
+    3. The submission reverts because a concurrent caller's transaction for the
+       same evidence_id was mined in the window between our lookup and our
+       submission.
+    4. Instead of failing the whole request, we re-check Ethereum, find the
+       now-confirmed anchor, and recover it - no second transaction is sent.
+    """
+    evidence = evidence_record()
+    repository = MemoryRepository()
+    computed_hash = hash_evidence_item(evidence)
+
+    blockchain = RacingBlockchain(None)
+    service = make_service(repository, blockchain)
+    service.evidence_repository.set("evidence-1", evidence)
+
+    result = __import__("asyncio").run(service.anchor_evidence("evidence-1"))
+
+    # Recovered via the event-log transaction hash, not a second submission.
+    assert result["evidence_id"] == "evidence-1"
+    assert result["evidence_hash"] == computed_hash
+    assert result["transaction_hash"] == "0x" + "c" * 64
+    assert repository.get("evidence-1")["evidence_hash"] == computed_hash
+
+
+def test_anchor_evidence_still_raises_when_submit_fails_and_nothing_recoverable(evidence_hash):
+    """A genuine failure (no concurrent winner, nothing recoverable on-chain) must
+    still propagate instead of being silently swallowed."""
+    evidence = evidence_record()
+    repository = MemoryRepository()
+
+    class AlwaysFailingBlockchain(FakeBlockchain):
+        def anchor_evidence(self, record_id, evidence_hash):
+            raise ValueError("Evidence anchor transaction reverted: 0x" + "d" * 64)
+
+    blockchain = AlwaysFailingBlockchain(None)
+    service = make_service(repository, blockchain)
+    service.evidence_repository.set("evidence-1", evidence)
+
+    with pytest.raises(ValueError, match="reverted"):
+        __import__("asyncio").run(service.anchor_evidence("evidence-1"))

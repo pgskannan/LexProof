@@ -3,6 +3,7 @@ Blockchain API endpoints for LexProof
 """
 
 from typing import Any, Dict, List, Optional
+import asyncio
 from fastapi import APIRouter, HTTPException, BackgroundTasks, status
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -237,32 +238,36 @@ async def anchor_proof_to_blockchain(
         Proof anchoring response with transaction details
     """
     try:
-        # Create blockchain service
-        blockchain = create_blockchain_service()
-        
         # Convert hex strings to bytes
         contract_hash_bytes = bytes.fromhex(request.contract_hash.replace('0x', ''))
         policy_hash_bytes = bytes.fromhex(request.policy_hash.replace('0x', ''))
         analysis_hash_bytes = bytes.fromhex(request.analysis_hash.replace('0x', ''))
         evidence_hash_bytes = bytes.fromhex(request.evidence_hash.replace('0x', ''))
 
-        proof_id = blockchain.proof_id_for_hashes(
-            contract_hash_bytes, policy_hash_bytes, analysis_hash_bytes, evidence_hash_bytes
-        ).hex()
-        
-        # Register proof on-chain
-        tx_hash, block_number = blockchain.register_proof(
-            contract_hash=contract_hash_bytes,
-            policy_hash=policy_hash_bytes,
-            analysis_hash=analysis_hash_bytes,
-            evidence_hash=evidence_hash_bytes,
-            risk_score=request.risk_score,
-            compliance_score=request.compliance_score,
-            policy_version=request.policy_version,
-            evidence_count=request.evidence_count,
-            max_fee_per_gas=request.max_fee_per_gas,
-            max_priority_fee_per_gas=request.max_priority_fee_per_gas
-        )
+        # Blockchain service construction (RPC round-trip) and the register_proof
+        # transaction (submit + wait for receipt) are both blocking web3.py calls;
+        # run them on a worker thread so they don't stall the event loop and, with
+        # it, every other request (see status-and-plan.md §2c/§11f).
+        def _register_proof_sync():
+            blockchain = create_blockchain_service()
+            proof_id = blockchain.proof_id_for_hashes(
+                contract_hash_bytes, policy_hash_bytes, analysis_hash_bytes, evidence_hash_bytes
+            ).hex()
+            tx_hash, block_number = blockchain.register_proof(
+                contract_hash=contract_hash_bytes,
+                policy_hash=policy_hash_bytes,
+                analysis_hash=analysis_hash_bytes,
+                evidence_hash=evidence_hash_bytes,
+                risk_score=request.risk_score,
+                compliance_score=request.compliance_score,
+                policy_version=request.policy_version,
+                evidence_count=request.evidence_count,
+                max_fee_per_gas=request.max_fee_per_gas,
+                max_priority_fee_per_gas=request.max_priority_fee_per_gas
+            )
+            return blockchain, proof_id, tx_hash, block_number
+
+        blockchain, proof_id, tx_hash, block_number = await asyncio.to_thread(_register_proof_sync)
         
         # Store transaction status
         transaction_store.add_transaction(proof_id, tx_hash, block_number)
@@ -316,14 +321,15 @@ async def get_proof_from_blockchain(passport_id: str) -> ProofDetailsResponse:
         Proof details including hashes, scores, and metadata
     """
     try:
-        blockchain = create_blockchain_service()
-        
         # Convert proof_id to bytes
         proof_id_bytes = bytes.fromhex(passport_id)
-        
-        # Get proof details
-        proof_details = blockchain.get_proof(proof_id_bytes)
-        
+
+        def _get_proof_sync():
+            blockchain = create_blockchain_service()
+            return blockchain.get_proof(proof_id_bytes)
+
+        proof_details = await asyncio.to_thread(_get_proof_sync)
+
         return ProofDetailsResponse(**proof_details)
         
     except ValueError as e:
@@ -364,7 +370,8 @@ async def verify_proof(
         Verification result
     """
     try:
-        is_valid = verify_proof_on_chain(
+        is_valid = await asyncio.to_thread(
+            verify_proof_on_chain,
             proof_id,
             contract_hash,
             policy_hash,
@@ -441,11 +448,12 @@ async def check_blockchain_health() -> dict:
         Health status and connection details
     """
     try:
-        blockchain = create_blockchain_service()
-        
-        # Check connection
-        block_number = blockchain.get_current_block_number()
-        
+        def _health_check_sync():
+            blockchain = create_blockchain_service()
+            return blockchain, blockchain.get_current_block_number()
+
+        blockchain, block_number = await asyncio.to_thread(_health_check_sync)
+
         return {
             "status": "healthy",
             "network": "ethereum-sepolia",
@@ -501,7 +509,7 @@ async def public_verify_evidence(evidence_id: str) -> EvidencePublicVerification
             evidence_repository=evidence_records_repository,
         )
 
-        result = anchor_service.verify_evidence(evidence_id)
+        result = await anchor_service.verify_evidence(evidence_id)
 
         return EvidencePublicVerificationResult(
             evidence_id=evidence_id,

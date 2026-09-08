@@ -1,79 +1,15 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Anchor, CheckCircle2, Clock, FileText, Hash, Network, XCircle } from 'lucide-react'
-import { Contract, ethers } from 'ethers'
+import { Anchor, CheckCircle2, Clock, FileText, Hash, Layers, Network, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch } from '../../../../lib/api'
 import { hashEvidenceItem } from '../../../../lib/evidenceHash'
+import { readEvidenceAnchorFromEthereum, getEtherscanTransactionUrl } from '../../../../lib/ethereum'
+import { Skeleton } from '../../../../components/ui/skeleton'
 
-const ETHEREUM_SEPOLIA_RPC_URL = process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL ?? 'https://ethereum-sepolia-rpc.publicnode.com'
-const LEXPROOF_CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_LEXPROOF_CONTRACT_ADDRESS ?? '0x0000000000000000000000000000000000000000'
-const ETHEREUM_SEPOLIA_EXPLORER = 'https://sepolia.etherscan.io'
-
-const EVIDENCE_ANCHOR_ABI = [
-  'function getEvidenceAnchor(string) view returns (bytes32 evidenceHash, uint256 timestamp, address anchoredBy)',
-  'event EvidenceAnchored(string indexed recordId, bytes32 indexed evidenceHash, uint256 timestamp, address anchoredBy)',
-]
-
-export interface EthereumAnchorRead {
-  evidenceHash: string | null
-  timestamp: number | null
-  anchoredBy: string | null
-  transactionHash: string | null
-  blockNumber: number | null
-}
-
-export function getEvidenceAnchorContract(provider?: ethers.Provider | ethers.Signer): Contract {
-  const targetProvider = provider ?? new ethers.JsonRpcProvider(ETHEREUM_SEPOLIA_RPC_URL)
-  return new ethers.Contract(LEXPROOF_CONTRACT_ADDRESS, EVIDENCE_ANCHOR_ABI, targetProvider)
-}
-
-export async function readEvidenceAnchorFromEthereum(evidenceId: string): Promise<EthereumAnchorRead | null> {
-  try {
-    const provider = new ethers.JsonRpcProvider(ETHEREUM_SEPOLIA_RPC_URL)
-    const contract = getEvidenceAnchorContract(provider)
-    const [onChainHash, timestamp, anchoredBy] = await contract.getEvidenceAnchor(evidenceId)
-    if (!onChainHash || onChainHash === '0x0000000000000000000000000000000000000000000000000000000000000000') {
-      return null
-    }
-
-    // The transaction hash/block number are a display-only nicety (Etherscan link, block).
-    // Public RPC providers cap eth_getLogs to a bounded block range (e.g. 50k blocks), so
-    // this lookup is scoped to recent history and allowed to fail independently: a failure
-    // here must never turn a genuinely verified on-chain hash into a false "not found".
-    let matchingLog: { transactionHash: string; blockNumber: number } | null = null
-    try {
-      const latestBlock = await provider.getBlockNumber()
-      const fromBlock = Math.max(latestBlock - 45000, 0)
-      const logs = await contract.queryFilter(contract.filters.EvidenceAnchored(evidenceId), fromBlock, latestBlock)
-      const found = logs.find((log) => {
-        const args = (log as any).args as { evidenceHash?: string } | undefined
-        return args?.evidenceHash && ethers.hexlify(args.evidenceHash).toLowerCase() === ethers.hexlify(onChainHash).toLowerCase()
-      })
-      if (found) {
-        matchingLog = { transactionHash: found.transactionHash, blockNumber: Number(found.blockNumber) }
-      }
-    } catch (logError) {
-      console.warn('Unable to fetch anchoring transaction log for evidence', evidenceId, logError)
-    }
-
-    return {
-      evidenceHash: ethers.hexlify(onChainHash),
-      timestamp: Number(timestamp),
-      anchoredBy: anchoredBy ?? null,
-      transactionHash: matchingLog ? matchingLog.transactionHash : null,
-      blockNumber: matchingLog ? matchingLog.blockNumber : null,
-    }
-  } catch (error) {
-    console.warn('Unable to read Ethereum anchor for evidence', evidenceId, error)
-    return null
-  }
-}
-
-export function getEtherscanTransactionUrl(txHash: string): string {
-  return `${ETHEREUM_SEPOLIA_EXPLORER}/tx/${txHash}`
-}
+// The Ethereum operations are now in lib/ethereum.ts
+// This component just uses the exported functions
 
 interface EvidenceAnchor {
   evidence_id: string
@@ -84,6 +20,17 @@ interface EvidenceAnchor {
   anchored_at: string
   evidence_hash: string
   anchored_by?: string
+  // Hybrid Anchoring (proposed architecture, see hackathon-polish-roadmap.md #1).
+  // Real anchors created through this app are always "SINGLE_HASH"; a
+  // "MERKLE_BATCH" record only ever comes from the demo script
+  // (scripts/create_merkle_batch_demo_anchor.py) and is explicitly is_mock: true.
+  anchoring_method?: 'SINGLE_HASH' | 'MERKLE_BATCH'
+  is_mock?: boolean
+  batch_id?: string
+  batch_size?: number
+  merkle_root?: string
+  merkle_proof?: Array<{ position: 'left' | 'right'; hash: string }>
+  demo_note?: string
 }
 
 interface EvidenceComplianceRecord {
@@ -138,8 +85,17 @@ export default function AnchorProofButton({ evidenceId }: AnchorProofButtonProps
       if (status.anchored) {
         const response = await apiFetch(`/api/evidence/${evidenceId}/anchor`)
         if (!response.ok) throw new Error('Unable to load evidence anchor')
-        setAnchor(await response.json())
-        void verifyOnChain()
+        const anchorData: EvidenceAnchor = await response.json()
+        setAnchor(anchorData)
+        if (anchorData.is_mock || anchorData.anchoring_method === 'MERKLE_BATCH') {
+          setVerification({
+            verified: false,
+            status: 'SIMULATED',
+            message: 'Simulated batch anchor — not a live Ethereum transaction',
+          })
+        } else {
+          void verifyOnChain()
+        }
       } else {
         setVerification({
           verified: false,
@@ -253,7 +209,7 @@ export default function AnchorProofButton({ evidenceId }: AnchorProofButtonProps
   const verificationHasTxn = verification && verification.transactionHash
   const anchoredByValue = verification?.anchoredBy ?? anchor?.anchored_by ?? undefined
 
-  if (loading) return <div className="text-sm text-gray-500">Loading Evidence Anchor...</div>
+  if (loading) return <Skeleton className="h-24 w-full" />
 
   if (anchorError) {
     return (
@@ -284,19 +240,30 @@ export default function AnchorProofButton({ evidenceId }: AnchorProofButtonProps
             </button>
           </div>
         ) : (
-          <span className="inline-flex items-center gap-1 rounded-md bg-green-100 px-2 py-1 text-xs font-medium text-green-800">
-            <CheckCircle2 className="h-3 w-3" /> Anchored
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1 rounded-md bg-green-100 px-2 py-1 text-xs font-medium text-green-800">
+              <CheckCircle2 className="h-3 w-3" /> Anchored
+            </span>
+            {(anchor.is_mock || anchor.anchoring_method === 'MERKLE_BATCH') ? (
+              <span className="inline-flex items-center gap-1 rounded-md bg-purple-100 px-2 py-1 text-xs font-medium text-purple-800">
+                <Layers className="h-3 w-3" /> Simulated batch anchor (demo)
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
+                Single-hash anchor
+              </span>
+            )}
+          </div>
         )}
       </div>
 
       {anchor && (
-        <div className="space-y-2 text-sm">
+        <div className="space-y-3 text-sm">
           <div className="flex items-start gap-2"><Network className="mt-0.5 h-4 w-4 text-gray-500" /><span><strong>Network:</strong> Ethereum Sepolia</span></div>
           <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 text-gray-500" /><span><strong>Contract:</strong> <span className="break-all font-mono text-xs">{anchor.contract_address}</span></span></div>
           <div className="flex items-start gap-2"><Hash className="mt-0.5 h-4 w-4 text-gray-500" /><span><strong>Evidence Item Hash:</strong> <span className="break-all font-mono text-xs">{anchor.evidence_hash}</span></span></div>
           <div className="flex items-start gap-2"><Hash className="mt-0.5 h-4 w-4 text-gray-500" /><span><strong>Transaction:</strong> <span className="break-all font-mono text-xs">{anchor.transaction_hash}</span></span></div>
-          <div><strong>Block:</strong> {anchor.block_number}</div>
+          <div><strong>Block:</strong> {anchor.block_number ?? (anchor.is_mock ? 'Not applicable (simulated)' : 'Not available')}</div>
           {anchoredByValue && (
             <div>
               <strong>Anchored By:</strong>{' '}
@@ -304,28 +271,115 @@ export default function AnchorProofButton({ evidenceId }: AnchorProofButtonProps
             </div>
           )}
           <div className="flex items-start gap-2"><Clock className="mt-0.5 h-4 w-4 text-gray-500" /><span><strong>Timestamp:</strong> {new Date(anchor.anchored_at).toLocaleString()}</span></div>
-          <a href={getEtherscanTransactionUrl(anchor.transaction_hash)} target="_blank" rel="noreferrer" className="inline-flex items-center text-sm font-medium text-blue-700 hover:text-blue-900">View on Etherscan</a>
-          <button type="button" onClick={handleVerify} className="text-sm font-medium text-blue-700 hover:text-blue-900">Check On-chain Verification</button>
+          {(anchor.is_mock || anchor.anchoring_method === 'MERKLE_BATCH') && (
+            <div className="rounded-lg border-l-4 border-l-purple-500 bg-purple-50 p-3 text-purple-900">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide">
+                <Layers className="h-3.5 w-3.5" /> Hybrid Anchoring demo (simulated)
+              </div>
+              <p className="mt-1 text-xs text-purple-800">
+                {anchor.demo_note || 'This anchor illustrates a proposed batched (Merkle-root) anchoring architecture. It was never submitted to Ethereum.'}
+              </p>
+              <dl className="mt-2 grid gap-1 text-xs sm:grid-cols-2">
+                {anchor.batch_id && <div><dt className="font-semibold">Batch ID</dt><dd className="break-all font-mono">{anchor.batch_id}</dd></div>}
+                {typeof anchor.batch_size === 'number' && <div><dt className="font-semibold">Batch size</dt><dd>{anchor.batch_size} evidence items</dd></div>}
+                {anchor.merkle_root && <div className="sm:col-span-2"><dt className="font-semibold">Merkle root</dt><dd className="break-all font-mono">{anchor.merkle_root}</dd></div>}
+              </dl>
+            </div>
+          )}
+          <div className="flex items-center gap-3 pt-2">
+            {(anchor.is_mock || anchor.anchoring_method === 'MERKLE_BATCH') ? (
+              <span className="text-xs italic text-gray-500">No Etherscan link or live on-chain check — this anchor was never submitted to Ethereum.</span>
+            ) : (
+              <>
+                <a href={getEtherscanTransactionUrl(anchor.transaction_hash)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700">
+                  View on Etherscan
+                  <span>↗</span>
+                </a>
+                <button type="button" onClick={handleVerify} className="inline-flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700">
+                  Check On-chain Verification
+                </button>
+              </>
+            )}
+          </div>
         </div>
       )}
 
       {verification && (
-        <div className={verification.verified ? 'text-sm text-green-700' : verification.status === 'NOT_FOUND' ? 'text-sm text-yellow-700' : 'text-sm text-red-700'}>
-          <div className="mb-1 text-xs font-semibold uppercase tracking-wide">Verification status: {verification.status}</div>
-          <div className="flex items-center gap-2 font-medium">
-            {verification.verified ? <CheckCircle2 className="h-4 w-4" /> : verification.status === 'NOT_FOUND' ? <Clock className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+        <div className={`rounded-lg border-l-4 p-4 ${
+          verification.verified
+            ? 'border-l-green-600 bg-green-50'
+            : verification.status === 'SIMULATED'
+            ? 'border-l-purple-500 bg-purple-50'
+            : verification.status === 'NOT_FOUND'
+            ? 'border-l-amber-600 bg-amber-50'
+            : 'border-l-red-600 bg-red-50'
+        }`}>
+          <div className={`text-xs font-semibold uppercase tracking-wide ${
+            verification.verified
+              ? 'text-green-900'
+              : verification.status === 'SIMULATED'
+              ? 'text-purple-900'
+              : verification.status === 'NOT_FOUND'
+              ? 'text-amber-900'
+              : 'text-red-900'
+          }`}>
+            Verification status: {verification.status}
+          </div>
+          <div className={`mt-2 flex items-center gap-2 font-semibold ${
+            verification.verified
+              ? 'text-green-900'
+              : verification.status === 'SIMULATED'
+              ? 'text-purple-900'
+              : verification.status === 'NOT_FOUND'
+              ? 'text-amber-900'
+              : 'text-red-900'
+          }`}>
+            {verification.verified ? <CheckCircle2 className="h-5 w-5" /> : verification.status === 'SIMULATED' ? <Layers className="h-5 w-5" /> : verification.status === 'NOT_FOUND' ? <Clock className="h-5 w-5" /> : <XCircle className="h-5 w-5" />}
             {verification.message}
           </div>
           {verification.status === 'NOT_FOUND' && (
-            <div className="mt-1">This evidence has not yet been anchored to Ethereum.</div>
+            <div className={`mt-2 text-sm ${
+              verification.status === 'NOT_FOUND'
+              ? 'text-amber-800'
+              : 'text-red-800'
+            }`}>This evidence has not yet been anchored to Ethereum.</div>
           )}
-          {verification.localHash && <div className="mt-1 break-all font-mono text-xs">Local Evidence Item Hash: {verification.localHash}</div>}
-          {verification.ethereumHash && <div className="mt-1 break-all font-mono text-xs">Ethereum Evidence Hash: {verification.ethereumHash}</div>}
+          {verification.status === 'SIMULATED' && (
+            <div className="mt-2 text-sm text-purple-800">This anchor demonstrates a proposed batched anchoring architecture and was never submitted to Ethereum — there is nothing on-chain to independently verify.</div>
+          )}
+          {verification.localHash && <div className={`mt-2 break-all font-mono text-xs ${
+            verification.verified
+              ? 'text-green-800'
+              : verification.status === 'NOT_FOUND'
+              ? 'text-amber-800'
+              : 'text-red-800'
+          }`}>Local Evidence Item Hash: {verification.localHash}</div>}
+          {verification.ethereumHash && <div className={`mt-1 break-all font-mono text-xs ${
+            verification.verified
+              ? 'text-green-800'
+              : 'text-red-800'
+          }`}>Ethereum Evidence Hash: {verification.ethereumHash}</div>}
           {verificationHasTxn && verification.transactionHash && (
-            <div className="mt-2">
-              <div className="break-all font-mono text-xs">Tx: {verification.transactionHash}</div>
-              {verification.blockNumber && <div className="break-all font-mono text-xs">Block: {verification.blockNumber}</div>}
-              {verification.anchoredBy && <div className="break-all font-mono text-xs">Anchored By: {verification.anchoredBy}</div>}
+            <div className={`mt-2 border-t ${
+              verification.verified
+                ? 'border-t-green-200'
+                : 'border-t-red-200'
+            } pt-2`}>
+              <div className={`break-all font-mono text-xs ${
+                verification.verified
+                  ? 'text-green-800'
+                  : 'text-red-800'
+              }`}>Tx: {verification.transactionHash}</div>
+              {verification.blockNumber && <div className={`break-all font-mono text-xs ${
+                verification.verified
+                  ? 'text-green-800'
+                  : 'text-red-800'
+              }`}>Block: {verification.blockNumber}</div>}
+              {verification.anchoredBy && <div className={`break-all font-mono text-xs ${
+                verification.verified
+                  ? 'text-green-800'
+                  : 'text-red-800'
+              }`}>Anchored By: {verification.anchoredBy}</div>}
             </div>
           )}
         </div>

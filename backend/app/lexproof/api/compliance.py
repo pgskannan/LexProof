@@ -1,9 +1,9 @@
 """Compliance monitoring API endpoints for continuous legal compliance tracking."""
 
-from typing import List, Optional
-from fastapi import APIRouter, HTTPException, status
+from typing import Annotated, Any, List, Optional
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ..domains.compliance.models import (
     ComplianceMonitorService,
@@ -12,6 +12,8 @@ from ..domains.compliance.models import (
     ImpactLevel,
     ContractImpact,
 )
+from ..services.auth import get_current_user, load_org_member
+from ..services.audit import record_audit_event
 
 router = APIRouter(tags=["compliance"])
 
@@ -78,6 +80,47 @@ class ComplianceCommandCenterResponse(BaseModel):
 _compliance_service: Optional[ComplianceMonitorService] = None
 
 
+def _seed_demo_compliance_events(service: ComplianceMonitorService) -> None:
+    """Seed the Compliance Command Center with realistic demo monitoring
+    events.
+
+    ComplianceMonitorService keeps events in memory only (no repository is
+    wired up here) and starts empty, so on every fresh backend process the
+    Command Center page showed "No data available" -- unlike every other
+    section of the app, which has real seeded demo content. There is also no
+    UI anywhere that calls POST /compliance/simulate-change, so nothing could
+    ever populate this page short of a raw API call. Seeding two realistic
+    regulatory-change scenarios here (using the service's own existing
+    simulate/approve workflow, not synthetic response data) gives the page
+    real content consistent with the rest of the demo dataset, the same way
+    the app's other seeded contracts/passports/findings do.
+    """
+    gdpr_event = service.simulate_regulatory_change(
+        title="EU GDPR Cross-Border Data Transfer Amendment",
+        description=(
+            "Tightens requirements for cross-border transfers of personal data "
+            "outside the EU, requiring updated standard contractual clauses and "
+            "documented transfer impact assessments."
+        ),
+        jurisdiction="EU",
+        effective_date=datetime.now() + timedelta(days=45),
+        affected_topics=["GDPR", "cross-border data transfer", "data protection"],
+    )
+    service.approve_event(gdpr_event.id, approved=True)
+
+    service.simulate_regulatory_change(
+        title="California Consumer Privacy Act (CCPA) — Expanded Consumer Rights",
+        description=(
+            "Expands consumer opt-out and data-deletion rights and adds new "
+            "disclosure obligations for businesses processing California "
+            "residents' personal data."
+        ),
+        jurisdiction="US",
+        effective_date=datetime.now() + timedelta(days=90),
+        affected_topics=["CCPA", "data protection", "consumer privacy"],
+    )
+
+
 def get_compliance_service() -> ComplianceMonitorService:
     """Get or create compliance monitor service instance.
 
@@ -87,6 +130,7 @@ def get_compliance_service() -> ComplianceMonitorService:
     global _compliance_service
     if _compliance_service is None:
         _compliance_service = ComplianceMonitorService()
+        _seed_demo_compliance_events(_compliance_service)
     return _compliance_service
 
 
@@ -191,7 +235,7 @@ async def get_compliance_command_center() -> ComplianceCommandCenterResponse:
         events = service.get_all_events()
 
         # Calculate totals
-        total_contracts = 0
+        distinct_contract_ids: set[str] = set()
         total_affected = 0
         high_impact = 0
         medium_impact = 0
@@ -201,6 +245,7 @@ async def get_compliance_command_center() -> ComplianceCommandCenterResponse:
             total_affected += event.total_affected
 
             for contract in event.affected_contracts:
+                distinct_contract_ids.add(contract["contract_id"])
                 impact_level = contract["impact_level"]
                 if impact_level == "high":
                     high_impact += 1
@@ -208,6 +253,13 @@ async def get_compliance_command_center() -> ComplianceCommandCenterResponse:
                     medium_impact += 1
                 elif impact_level == "low":
                     low_impact += 1
+
+        # This service tracks contracts only via the ones referenced in
+        # monitoring events (it has no independent view of "every contract in
+        # the org" -- see _identify_affected_contracts's synthetic sample
+        # data), so "total contracts" is the distinct set seen across events
+        # rather than a hardcoded 0.
+        total_contracts = len(distinct_contract_ids)
 
         return ComplianceCommandCenterResponse(
             total_contracts=total_contracts,
@@ -336,7 +388,10 @@ async def get_monitoring_event(event_id: str) -> MonitoringEventResponse:
     ),
 )
 async def approve_monitoring_event(
-    event_id: str, approved: bool
+    event_id: str,
+    approved: bool,
+    user: dict[str, Any] = Depends(get_current_user),
+    x_org_id: Annotated[str | None, Header(alias="X-Org-Id")] = None,
 ) -> MonitoringEventResponse:
     """
     Approve or reject a monitoring event.
@@ -357,6 +412,22 @@ async def approve_monitoring_event(
     try:
         service = get_compliance_service()
         event = service.approve_event(event_id, approved)
+        org_id = None
+        if x_org_id and x_org_id.strip():
+            try:
+                org_id = load_org_member(x_org_id.strip(), user)["org_id"]
+            except HTTPException:
+                org_id = None
+        record_audit_event(
+            actor_id=str(user["uid"]),
+            actor_email=user.get("email"),
+            action="compliance.event_approved" if approved else "compliance.event_rejected",
+            resource_type="compliance_event",
+            resource_id=event.id,
+            resource_name=event.regulatory_change_title,
+            summary=f"{'Approved' if approved else 'Rejected'} compliance event \"{event.regulatory_change_title}\"",
+            org_id=org_id,
+        )
 
         return MonitoringEventResponse(
             id=event.id,

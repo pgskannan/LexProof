@@ -21,6 +21,11 @@ class AmendmentProposalRequest(BaseModel):
     regulatory_requirement: str
     jurisdiction: str
     amendment_reason: str
+    finding_id: Optional[str] = None
+    version_id: Optional[str] = None
+    evidence_id: Optional[str] = None
+    evidence_quote: Optional[str] = None
+    source_section: Optional[str] = None
 
 
 class AmendmentApprovalRequest(BaseModel):

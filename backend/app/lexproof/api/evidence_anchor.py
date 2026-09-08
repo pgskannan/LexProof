@@ -239,13 +239,14 @@ async def get_evidence_anchor(
         HTTPException: If anchor not found
     """
     try:
-        # Initialize service
-        anchor_service = get_ethereum_anchor_service(
-            settings=settings,
-            repository=repository
-        )
-
         # Retrieve anchor from repository
+        # (No blockchain service is constructed here - this route only ever reads
+        # the persisted anchor record from Firestore, but used to build a full
+        # EthereumAnchorService (and, inside it, a BlockchainService that can do
+        # real RPC I/O) and then never use the result. That's dead code, and on a
+        # page with several evidence items this route fires once per item
+        # concurrently - the wasted construction cost was serializing on the
+        # single event loop and stalling every other request behind it.)
         if not repository:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -313,7 +314,7 @@ async def verify_evidence_on_blockchain(
         )
 
         # Verify evidence
-        result = anchor_service.verify_evidence(
+        result = await anchor_service.verify_evidence(
             evidence_id=evidence_id,
         )
 

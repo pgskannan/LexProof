@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .models import (
@@ -163,7 +163,7 @@ class PassportService:
                 compliance_score=float(analysis_result.get('compliance_score', 0.0)),
                 policy_version=policy_version,
             evidence_count=count_legal_evidence_findings(evidence_items),
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             created_by=self.user_id,
             status=PassportStatus.CREATED,
             audit_events=[],
@@ -180,6 +180,12 @@ class PassportService:
                     "policy_version": policy_version,
                     "analysis_result": analysis_result,
                     "analysis_type": "risk_and_compliance",
+                    # Evidence captured at publish time so the integrity check
+                    # (backend/app/lexproof/domains/passport/integrity.py) can
+                    # recompute the evidence hash from a stable snapshot instead
+                    # of a live query, which would drift if evidence is appended
+                    # to this passport later (e.g. anchoring).
+                    "evidence_items": evidence_items,
                 },
             },
             )
@@ -231,7 +237,7 @@ class PassportService:
         # because they have been validated to be present in validate_passport_creation_analysis()
         risk_score = analysis_result['risk_score']
         compliance_score = analysis_result['compliance_score']
-        evidence_created_at = datetime.utcnow().isoformat()
+        evidence_created_at = datetime.now(timezone.utc).isoformat()
 
         # Create evidence items for each finding
         for i, finding in enumerate(findings, 1):
@@ -413,6 +419,21 @@ class PassportService:
             List of passport summaries
         """
         values = list(_passports.values())
+        known_ids = {item.passport_id for item in values}
+        if self.repository:
+            for stored in self.repository.stream():
+                passport_id = stored.get("passport_id") or stored.get("id")
+                if not passport_id or passport_id in known_ids:
+                    continue
+                if contract_id and stored.get("contract_id") != contract_id:
+                    continue
+                if not _is_visible_to_tenant(stored, self.tenant_id):
+                    continue
+                try:
+                    values.append(ContractPassport.model_validate(stored))
+                    known_ids.add(passport_id)
+                except Exception:
+                    logger.warning("Skipping malformed persisted passport %s", passport_id)
         if contract_id:
             values = [item for item in values if item.contract_id == contract_id]
         values = values[offset:offset + limit]
