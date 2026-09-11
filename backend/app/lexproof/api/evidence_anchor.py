@@ -8,6 +8,7 @@ SECURITY: Only hashes are stored on-chain. Never stores evidence content,
 PII, or sensitive data.
 """
 
+import asyncio
 from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -171,8 +172,16 @@ async def anchor_evidence_to_blockchain(
                 detail=f"User {user['uid']} is not authorized to anchor evidence {evidence_id}"
             )
 
-        # Initialize services
-        anchor_service = get_ethereum_anchor_service(
+        # Initialize services. get_ethereum_anchor_service() is a lazy singleton
+        # accessor: on its first call per process it constructs a real
+        # BlockchainService, which does blocking network I/O (connectivity
+        # check + an eth_chainId RPC call) -- run that construction on a worker
+        # thread so it can never stall the event loop (hardening item #2; see
+        # ethereum_anchor_service.py's get_ethereum_anchor_service for the full
+        # rationale). Every call after the first just returns the cached
+        # instance, so this is cheap on the common path too.
+        anchor_service = await asyncio.to_thread(
+            get_ethereum_anchor_service,
             settings=settings,
             repository=repository,
             evidence_repository=evidence_records_repository,
@@ -306,8 +315,11 @@ async def verify_evidence_on_blockchain(
         HTTPException: If verification fails
     """
     try:
-        # Initialize service
-        anchor_service = get_ethereum_anchor_service(
+        # Initialize service. See the matching comment in
+        # anchor_evidence_to_blockchain() above -- same lazy-singleton
+        # construction, same reason it must run off the event loop.
+        anchor_service = await asyncio.to_thread(
+            get_ethereum_anchor_service,
             settings=settings,
             repository=repository,
             evidence_repository=evidence_records_repository,

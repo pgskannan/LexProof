@@ -18,7 +18,12 @@ from ..services.version_comparison import VersionComparisonEngine
 from ..config import get_settings
 
 router = APIRouter(tags=["blockchain"])
-public_verify_router = APIRouter(tags=["public-verification"], prefix="/verify")
+# No prefix here -- this router is mounted as its own wildcard-CORS
+# sub-application at exactly "/api/verify" in main.py (the embeddable
+# public-verification widget needs a fully open CORS policy that the rest
+# of the API must not share), so the mount path itself supplies the
+# "/verify" segment and this router only needs its route's own suffix.
+public_verify_router = APIRouter(tags=["public-verification"])
 # Contract Time Machine Router
 time_machine_router = APIRouter(tags=["contract-time-machine"], prefix="/time-machine")
 
@@ -503,7 +508,17 @@ async def public_verify_evidence(evidence_id: str) -> EvidencePublicVerification
         settings = get_settings()
         anchor_repository = EvidenceAnchorRepository("evidence_anchors", settings=settings)
         evidence_records_repository = EvidenceRecordRepository(anchor_repository, settings=settings)
-        anchor_service = get_ethereum_anchor_service(
+        # get_ethereum_anchor_service() is a lazy singleton accessor: on its
+        # first call per process it constructs a real BlockchainService, which
+        # does blocking network I/O (connectivity check + an eth_chainId RPC
+        # call) -- run that construction on a worker thread so it can never
+        # stall the event loop, including on this public, unauthenticated
+        # endpoint (hardening item #2; see ethereum_anchor_service.py's
+        # get_ethereum_anchor_service for the full rationale). Every call
+        # after the first just returns the cached instance, so this is cheap
+        # on the common path too.
+        anchor_service = await asyncio.to_thread(
+            get_ethereum_anchor_service,
             settings=settings,
             repository=anchor_repository,
             evidence_repository=evidence_records_repository,
