@@ -65,6 +65,9 @@ def create_app() -> FastAPI:
             return preflight
 
         response = await call_next(request)
+        if request.url.path.startswith("/api/verify/"):
+            if "Access-Control-Allow-Credentials" in response.headers:
+                del response.headers["Access-Control-Allow-Credentials"]
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"

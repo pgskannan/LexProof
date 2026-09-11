@@ -54,6 +54,7 @@ def test_public_verify_get_allows_any_origin(patched_public_verifier):
 
     assert response.status_code == 200
     assert response.headers.get("access-control-allow-origin") == "*"
+    assert response.headers.get("access-control-allow-credentials") != "true"
 
 
 def test_public_verify_preflight_options_succeeds(patched_public_verifier):
@@ -68,6 +69,7 @@ def test_public_verify_preflight_options_succeeds(patched_public_verifier):
     assert response.status_code in (200, 204)
     assert response.headers.get("access-control-allow-origin") == "*"
     assert "GET" in response.headers.get("access-control-allow-methods", "")
+    assert response.headers.get("access-control-allow-credentials") != "true"
 
 
 def test_a_private_endpoint_does_not_get_wildcard_cors(patched_public_verifier):
