@@ -12,6 +12,7 @@ import {
 } from '../../../lib/counterparty'
 import { ClauseDiff } from '../../../components/ClauseDiff'
 import { Button } from '../../../components/ui/button'
+import { brandCssVars } from '../../../lib/branding'
 
 type Comment = {
   comment_id?: string
@@ -36,6 +37,9 @@ type ExternalView = {
   countersign_evidence_id?: string | null
   attestation_statement: string
   comments: Comment[]
+  org_name?: string | null
+  org_logo_url?: string | null
+  org_primary_color?: string | null
 }
 
 function errorMessage(status: number, detail: unknown, fallback: string) {
@@ -153,10 +157,31 @@ export default function CounterpartyPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 py-12 px-4 sm:px-6 lg:px-8">
+    <div
+      className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 py-12 px-4 sm:px-6 lg:px-8"
+      style={brandCssVars({ primary_color: view?.org_primary_color }) as React.CSSProperties}
+    >
       <div className="mx-auto max-w-4xl">
         <div className="mb-10 text-center">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-blue-700">LexProof</p>
+          {/* White-label (Task #109): the sending org's own logo/name is
+              shown here when they've set one -- LexProof stays credited as
+              the underlying verification/evidence platform, since the
+              cryptographic trust story (see IndependentVerificationPanel)
+              is intentionally never white-labeled away. */}
+          {view?.org_logo_url ? (
+            <div className="mb-4 flex flex-col items-center gap-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={view.org_logo_url}
+                alt={`${view.org_name || 'Organization'} logo`}
+                className="h-14 w-14 rounded-lg border border-gray-200 bg-white object-contain shadow-sm"
+              />
+              {view.org_name && <p className="text-lg font-semibold text-gray-900">{view.org_name}</p>}
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-gray-400">Secured by LexProof</p>
+            </div>
+          ) : (
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-blue-700">{view?.org_name || 'LexProof'}</p>
+          )}
           <h1 className="mt-2 text-4xl font-bold text-gray-900">Counterparty review</h1>
           <p className="mx-auto mt-3 max-w-2xl text-gray-600">
             You have been invited to review a proposed redline. You do not need a LexProof account. A

@@ -1,16 +1,29 @@
 'use client';
 
-export default function CompliancePolicies() {
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Compliance Policies</h1>
-        <p className="text-gray-600 mt-2">Manage compliance policies and rules</p>
-      </div>
+import { useRouter } from 'next/navigation';
+import { ScrollText } from 'lucide-react';
+import { PageHeader } from '../../../../../components/ui/page-header';
+import { PageContainer } from '../../../../../components/ui/container';
+import { EmptyState } from '../../../../../components/EmptyState';
 
-      <div className="bg-white rounded-lg shadow p-6">
-        <p className="text-gray-500">Policy management will be displayed here</p>
+// Phase 4: wrapped in the shared PageContainer/PageHeader/EmptyState. Not
+// part of the current build -- playbook policy positions are configured
+// today from Organization Settings, and regulation citations appear on the
+// Regulation Map.
+export default function CompliancePolicies() {
+  const router = useRouter();
+  return (
+    <PageContainer>
+      <PageHeader eyebrow="Compliance" title="Compliance Policies" description="Manage compliance policies and rules." />
+      <div className="mt-6">
+        <EmptyState
+          icon={<ScrollText className="h-6 w-6" />}
+          title="Not part of the current build"
+          description="Playbook policy positions are configured today from Organization Settings; regulation-level citations appear on the Regulation Map."
+          actionLabel="Go to Regulation Map"
+          onAction={() => router.push('/dashboard/compliance/regulations')}
+        />
       </div>
-    </div>
+    </PageContainer>
   );
 }

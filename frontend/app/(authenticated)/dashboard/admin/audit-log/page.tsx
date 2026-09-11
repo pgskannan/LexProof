@@ -7,6 +7,9 @@ import { useOrg } from '../../../../../components/OrgProvider'
 import { EmptyState } from '../../../../../components/EmptyState'
 import { Skeleton } from '../../../../../components/ui/skeleton'
 import { Badge } from '../../../../../components/ui/badge'
+import { Card } from '../../../../../components/ui/card'
+import { PageHeader } from '../../../../../components/ui/page-header'
+import { PageContainer } from '../../../../../components/ui/container'
 
 type AuditLogEntry = {
   id: string
@@ -71,44 +74,48 @@ export default function AuditLogPage() {
 
   if (orgLoading) {
     return (
-      <div className="space-y-4 p-8">
-        <Skeleton className="h-10 w-64" />
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-24 w-full" />
-      </div>
+      <PageContainer>
+        <div className="space-y-4">
+          <Skeleton className="h-10 w-64" />
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-24 w-full" />
+        </div>
+      </PageContainer>
     )
   }
 
   if (!currentOrg) {
     return (
-      <div className="p-8">
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-amber-900" role="status">
+      <PageContainer>
+        <div className="rounded-[var(--radius-lg,0.75rem)] border border-amber-200 bg-amber-50 p-6 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200" role="status">
           <h1 className="text-xl font-bold">No organization membership</h1>
           <p className="mt-2">Sign-in succeeded, but this account is not an active member of an organization.</p>
         </div>
-      </div>
+      </PageContainer>
     )
   }
 
   if (!canView) {
     return (
-      <div className="p-8">
-        <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-red-700" role="alert">
+      <PageContainer>
+        <div className="rounded-[var(--radius-lg,0.75rem)] border border-red-200 bg-red-50 p-6 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-400" role="alert">
           <h1 className="text-xl font-bold">403 — Admin or Auditor role required</h1>
           <p className="mt-2">You need the Admin or Auditor role in this organization to view the audit log. The API enforces this independently of this page.</p>
         </div>
-      </div>
+      </PageContainer>
     )
   }
 
   return (
-    <div className="space-y-6 p-8">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Audit log</h1>
-        <p className="mt-2 text-gray-600">Everything that happened in this organization, most recent first — contract uploads, AI analysis, redline decisions, and compliance approvals.</p>
-      </div>
+    <PageContainer>
+      <PageHeader
+        eyebrow="Organization"
+        title="Audit log"
+        description="Everything that happened in this organization, most recent first — contract uploads, AI analysis, redline decisions, and compliance approvals."
+      />
 
-      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      <div className="mt-6 space-y-6">
+      {error && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p>}
       {loading && (
         <div className="space-y-3">
           <Skeleton className="h-16 w-full" />
@@ -125,10 +132,10 @@ export default function AuditLogPage() {
       )}
 
       {!loading && entries.length > 0 && (
-        <div className="overflow-hidden rounded-lg bg-white shadow">
+        <Card className="overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="border-b border-gray-100 bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
+              <thead className="border-b border-gray-100 bg-gray-50 text-xs uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:bg-gray-700/40 dark:text-gray-400">
                 <tr>
                   <th className="px-4 py-3 font-medium">When</th>
                   <th className="px-4 py-3 font-medium">Action</th>
@@ -136,22 +143,23 @@ export default function AuditLogPage() {
                   <th className="px-4 py-3 font-medium">Actor</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-50">
+              <tbody className="divide-y divide-gray-50 dark:divide-gray-700">
                 {entries.map((entry) => (
-                  <tr key={entry.id} className="hover:bg-gray-50">
-                    <td className="whitespace-nowrap px-4 py-3 text-gray-500">{formatTimestamp(entry.created_at)}</td>
+                  <tr key={entry.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/40">
+                    <td className="whitespace-nowrap px-4 py-3 text-gray-500 dark:text-gray-400">{formatTimestamp(entry.created_at)}</td>
                     <td className="whitespace-nowrap px-4 py-3">
                       <Badge variant="secondary">{ACTION_LABELS[entry.action] || entry.action}</Badge>
                     </td>
-                    <td className="px-4 py-3 text-gray-900">{entry.summary}</td>
-                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-gray-500">{entry.actor_email || entry.actor_id}</td>
+                    <td className="px-4 py-3 text-gray-900 dark:text-gray-100">{entry.summary}</td>
+                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">{entry.actor_email || entry.actor_id}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </div>
+        </Card>
       )}
-    </div>
+      </div>
+    </PageContainer>
   )
 }

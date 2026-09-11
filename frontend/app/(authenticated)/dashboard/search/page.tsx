@@ -6,6 +6,9 @@ import { FileText, Loader2, Search as SearchIcon, Shield, ListChecks } from 'luc
 import { apiFetch } from '../../../../lib/api'
 import { EmptyState } from '../../../../components/EmptyState'
 import { Button } from '../../../../components/ui/button'
+import { Badge } from '../../../../components/ui/badge'
+import { PageHeader } from '../../../../components/ui/page-header'
+import { PageContainer } from '../../../../components/ui/container'
 
 type SearchResult = {
   type: 'contract' | 'finding' | 'passport'
@@ -62,21 +65,22 @@ export default function SearchPage() {
   }
 
   return (
-    <div className="space-y-6 p-2">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight text-slate-900">Search</h1>
-        <p className="mt-1 text-slate-600">Find contracts, findings, and legal passports by name or content.</p>
-      </div>
+    <PageContainer>
+      <PageHeader
+        eyebrow="LexProof"
+        title="Search"
+        description="Find contracts, findings, and legal passports by name or content."
+      />
 
-      <form onSubmit={onSubmit} className="flex gap-2">
+      <form onSubmit={onSubmit} className="mt-6 flex gap-2">
         <div className="relative flex-1">
-          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
           <input
             autoFocus
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search contracts, findings, passports…"
-            className="w-full rounded-lg border border-slate-300 py-2 pl-9 pr-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm focus:border-[var(--brand-primary,#2563eb)] focus:outline-none focus:ring-1 focus:ring-[var(--brand-primary,#2563eb)] dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
           />
         </div>
         <Button type="submit" disabled={loading || !query.trim()}>
@@ -84,7 +88,8 @@ export default function SearchPage() {
         </Button>
       </form>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      <div className="mt-6 space-y-6">
+      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
       {results === null && !loading && (
         <EmptyState
@@ -111,23 +116,22 @@ export default function SearchPage() {
                 key={`${result.type}-${result.id}`}
                 type="button"
                 onClick={() => router.push(result.url)}
-                className="flex w-full items-start gap-3 rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-blue-400 hover:bg-blue-50"
+                className="flex w-full items-start gap-3 rounded-[var(--radius-lg,0.75rem)] border border-gray-200 bg-white p-4 text-left shadow-[var(--shadow-sm)] hover:border-[var(--brand-primary,#3b82f6)] hover:bg-blue-50/60 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700/40"
               >
-                <Icon className="mt-0.5 h-5 w-5 shrink-0 text-blue-600" />
+                <Icon className="mt-0.5 h-5 w-5 shrink-0 text-[var(--brand-primary,#2563eb)]" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <p className="truncate font-semibold text-slate-900">{result.title}</p>
-                    <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                      {TYPE_LABEL[result.type]}
-                    </span>
+                    <p className="truncate font-semibold text-gray-900 dark:text-gray-100">{result.title}</p>
+                    <Badge variant="secondary" className="shrink-0">{TYPE_LABEL[result.type]}</Badge>
                   </div>
-                  {result.subtitle && <p className="mt-1 truncate text-xs text-slate-500">{result.subtitle}</p>}
+                  {result.subtitle && <p className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">{result.subtitle}</p>}
                 </div>
               </button>
             )
           })}
         </div>
       )}
-    </div>
+      </div>
+    </PageContainer>
   )
 }

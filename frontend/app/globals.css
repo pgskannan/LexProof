@@ -1,5 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:wght@400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @import 'tailwindcss';
+
+/* Dark mode is class-driven (a `dark` class on <html>, managed by
+   ThemeProvider), not just prefers-color-scheme -- so the in-app toggle
+   works regardless of OS setting. */
+@custom-variant dark (&:where(.dark, .dark *));
 
 :root {
   color-scheme: light;
@@ -68,103 +73,273 @@
   --bg-surface: #ffffff;
   --bg-surface-secondary: #f8fafc;
   --border-color: #e2e8f0;
+
+  /* ============================================================
+     DESIGN TOKENS -- Phase 1 foundation (2026-09-11)
+     Everything above this line is unchanged and preserved for
+     backward compatibility. Everything below is additive: a new,
+     documented token layer (typography, spacing, radius, shadow,
+     motion, and semantic color aliases) that Phase 2+ screens and
+     new components/ui/* primitives can build on. No existing var()
+     name above was renamed, removed, or reassigned.
+     ============================================================ */
+
+  /* Typography scale -- Inter throughout (headings included; see the
+     h1-h6 rules below), replacing the earlier serif-for-headings
+     treatment with one consistent enterprise sans-serif system. */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'Menlo', 'Monaco', 'Courier New', monospace;
+
+  --text-xs: 0.75rem;    /* 12px */
+  --text-sm: 0.875rem;   /* 14px */
+  --text-base: 1rem;     /* 16px */
+  --text-lg: 1.125rem;   /* 18px */
+  --text-xl: 1.25rem;    /* 20px */
+  --text-2xl: 1.5rem;    /* 24px */
+  --text-3xl: 1.875rem;  /* 30px */
+  --text-4xl: 2.25rem;   /* 36px */
+
+  --leading-tight: 1.2;
+  --leading-snug: 1.375;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.05em;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* Spacing -- a documented reference scale for custom/non-utility
+     CSS. Tailwind's own spacing utilities (p-4, gap-2, ...) remain
+     the default for component markup; these exist for the rare case
+     a component needs a raw CSS value (e.g. an inline style or an
+     SVG layout) that should still track the same 4px rhythm. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* Radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-full: 9999px;
+
+  /* Shadow -- elevation scale for light surfaces; overridden for
+     dark surfaces below. */
+  --shadow-xs: 0 1px 2px 0 rgb(15 23 42 / 0.04);
+  --shadow-sm: 0 1px 3px 0 rgb(15 23 42 / 0.08), 0 1px 2px -1px rgb(15 23 42 / 0.06);
+  --shadow-md: 0 4px 6px -1px rgb(15 23 42 / 0.08), 0 2px 4px -2px rgb(15 23 42 / 0.06);
+  --shadow-lg: 0 10px 15px -3px rgb(15 23 42 / 0.08), 0 4px 6px -4px rgb(15 23 42 / 0.06);
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+
+  /* Semantic state aliases -- additive names for the status colors
+     defined above (verified/tampered/pending, critical/high/medium/
+     low), so new code can reach for a semantic success/warning/
+     danger/info vocabulary without a breaking rename of the
+     existing, already-widely-referenced token names. */
+  --color-success: var(--color-verified);
+  --color-success-bg: var(--color-verified-bg);
+  --color-success-light: var(--color-verified-light);
+  --color-warning: var(--color-pending);
+  --color-warning-bg: var(--color-pending-bg);
+  --color-warning-light: var(--color-pending-light);
+  --color-danger: var(--color-tampered);
+  --color-danger-bg: var(--color-tampered-bg);
+  --color-danger-light: var(--color-tampered-light);
+  --color-info: var(--color-primary);
+  --color-info-bg: var(--color-primary-light);
 }
 
-html,
-body {
-  min-height: 100%;
+/* Dark theme: same variable set, different values. Applies whenever the
+   `dark` class is present on <html> (see ThemeProvider). Because body's
+   background/text and every heading already read these variables, this one
+   block re-themes the page canvas and base typography app-wide -- the
+   persistent chrome (Navigation) and shared components/ui/* primitives get
+   their own explicit dark: variants; individual page card surfaces (built
+   throughout this app with literal light-mode Tailwind classes like
+   bg-white) are not all individually reskinned yet. */
+.dark {
+  color-scheme: dark;
+
+  --color-primary-light: #1e3a8a;
+  --color-accent-light: #78350f;
+
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-tertiary: #64748b;
+
+  --bg-surface: #1e293b;
+  --bg-surface-secondary: #0f172a;
+  --border-color: #334155;
+
+  /* Design tokens -- Phase 1 foundation, dark-mode overrides.
+     The *-bg/*-light status-color tokens below were previously
+     light-mode-only (their .dark override was missing); they're
+     filled in here so the token system itself is complete, even
+     though today's components mostly reach for literal Tailwind
+     classes rather than these vars -- see components/ui/* for the
+     concrete dark-mode fix applied to Badge in this same pass. */
+  --color-verified-bg: #052e21;
+  --color-verified-light: #065f46;
+  --color-tampered-bg: #2c0b0b;
+  --color-tampered-light: #7f1d1d;
+  --color-pending-bg: #2c1a05;
+  --color-pending-light: #78350f;
+  --color-critical-bg: #2c0b0b;
+  --color-critical-light: #7f1d1d;
+  --color-high-bg: #2a1206;
+  --color-high-light: #7c2d12;
+  --color-medium-bg: #2c1a05;
+  --color-medium-light: #78350f;
+  --color-low-bg: #052e21;
+  --color-low-light: #065f46;
+
+  /* Shadows read less well on dark surfaces at light-mode opacity --
+     deeper, tighter values here read as elevation rather than haze. */
+  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.24);
+  --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.3), 0 1px 2px -1px rgb(0 0 0 / 0.24);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.24);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.3), 0 4px 6px -4px rgb(0 0 0 / 0.24);
 }
 
-html {
-  scroll-behavior: smooth;
-}
+/* Phase 2 fix (2026-09-11): everything below is now wrapped in Tailwind's
+   own `base` layer instead of sitting as unlayered plain CSS. This matters
+   because of a real, previously-existing bug this session's visual
+   inspection caught: per the CSS Cascade Layers spec, unlayered rules
+   ALWAYS beat layered rules regardless of selector specificity -- so with
+   this block unlayered, the h1-h6 font-size rules below were silently
+   winning over ANY Tailwind text-size utility (text-3xl, text-lg, ...)
+   applied directly to a heading anywhere in the app, no matter how
+   specific that utility class was. That's not a hypothetical: many
+   existing pages already write e.g. `<h1 className="text-3xl ...">`
+   expecting 30px and were, in every one of those places, actually
+   rendering at this file's unconditional 36px `--text-4xl` instead --
+   invisibly, because nothing ever rendered the two side by side to catch
+   it. Moving these rules into `@layer base` (Tailwind's documented home
+   for element-default styling) restores the standard, expected precedence
+   -- a utility class on an element now correctly wins over these base
+   defaults -- without changing a single value below. No existing screen's
+   markup changes; screens that already specify their own text-size
+   utility on a heading will now render at the size they always asked for. */
+@layer base {
+  html,
+  body {
+    min-height: 100%;
+  }
 
-body {
-  margin: 0;
-  padding: 0;
-  background: var(--bg-surface-secondary);
-  color: var(--text-primary);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
-}
+  html {
+    scroll-behavior: smooth;
+  }
 
-/* Typography Scale */
-h1, h2, h3, h4, h5, h6 {
-  font-family: 'Source Serif 4', 'Georgia', serif;
-  font-weight: 600;
-  line-height: 1.2;
-  margin: 0;
-  color: var(--text-primary);
-}
+  body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg-surface-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--leading-normal);
+  }
 
-h1 {
-  font-size: 2.25rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
+  /* Typography Scale -- Inter throughout, including headings (previously
+     headings used a serif family; unified to one enterprise sans-serif
+     system per the design-system brief). Sizes/weights/tracking are
+     otherwise unchanged from before this pass, so no heading anywhere in
+     the app visibly reflows from this alone -- only the typeface changes;
+     see the layering note above for the separate, real sizing fix. */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-sans);
+    font-weight: var(--font-weight-semibold);
+    line-height: var(--leading-tight);
+    margin: 0;
+    color: var(--text-primary);
+  }
 
-h2 {
-  font-size: 1.875rem;
-  letter-spacing: -0.015em;
-}
+  h1 {
+    font-size: var(--text-4xl);
+    font-weight: var(--font-weight-bold);
+    letter-spacing: var(--tracking-tight);
+  }
 
-h3 {
-  font-size: 1.5rem;
-  letter-spacing: -0.01em;
-}
+  h2 {
+    font-size: var(--text-3xl);
+    letter-spacing: -0.015em;
+  }
 
-h4 {
-  font-size: 1.125rem;
-}
+  h3 {
+    font-size: var(--text-2xl);
+    letter-spacing: -0.01em;
+  }
 
-h5 {
-  font-size: 1rem;
-  font-weight: 600;
-}
+  h4 {
+    font-size: var(--text-lg);
+  }
 
-h6 {
-  font-size: 0.875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
+  h5 {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-semibold);
+  }
 
-p {
-  margin: 0;
-  color: var(--text-primary);
-}
+  h6 {
+    font-size: var(--text-sm);
+    font-weight: var(--font-weight-semibold);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+  }
 
-button,
-input,
-textarea,
-select {
-  font: inherit;
-}
+  p {
+    margin: 0;
+    color: var(--text-primary);
+  }
 
-/* Code & Monospace */
-code,
-pre {
-  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-}
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
 
-code {
-  font-size: 0.875em;
-}
+  /* Code & Monospace */
+  code,
+  pre {
+    font-family: var(--font-mono);
+  }
 
-/* Links */
-a {
-  color: var(--color-primary);
-  text-decoration: none;
-  transition: color 200ms ease;
-}
+  code {
+    font-size: 0.875em;
+  }
 
-a:hover {
-  color: var(--color-primary-dark);
-}
+  /* Links */
+  a {
+    color: var(--color-primary);
+    text-decoration: none;
+    transition: color 200ms ease;
+  }
 
-a:visited {
-  color: #7c3aed;
+  a:hover {
+    color: var(--color-primary-dark);
+  }
+
+  a:visited {
+    color: #7c3aed;
+  }
 }
 
 @media print {

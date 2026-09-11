@@ -1,16 +1,28 @@
 'use client';
 
-export default function RiskAnalysis() {
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Risk Analysis</h1>
-        <p className="text-gray-600 mt-2">Detailed risk assessment for all contracts</p>
-      </div>
+import { useRouter } from 'next/navigation';
+import { Gauge } from 'lucide-react';
+import { PageHeader } from '../../../../../components/ui/page-header';
+import { PageContainer } from '../../../../../components/ui/container';
+import { EmptyState } from '../../../../../components/EmptyState';
 
-      <div className="bg-white rounded-lg shadow p-6">
-        <p className="text-gray-500">Risk analysis results will be displayed here</p>
+// Phase 4: wrapped in the shared PageContainer/PageHeader/EmptyState. Not
+// part of the current build -- portfolio-wide risk is available today on
+// the Dashboard's Risk Overview, and per-contract risk on Reports.
+export default function RiskAnalysis() {
+  const router = useRouter();
+  return (
+    <PageContainer>
+      <PageHeader eyebrow="AI Analysis" title="Risk Analysis" description="Detailed risk assessment for all contracts." />
+      <div className="mt-6">
+        <EmptyState
+          icon={<Gauge className="h-6 w-6" />}
+          title="Not part of the current build"
+          description="Portfolio-wide risk is available today on the Dashboard's Risk Overview, and per-contract risk detail on Reports."
+          actionLabel="Go to Dashboard"
+          onAction={() => router.push('/dashboard')}
+        />
       </div>
-    </div>
+    </PageContainer>
   );
 }

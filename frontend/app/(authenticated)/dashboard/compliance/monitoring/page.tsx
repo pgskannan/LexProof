@@ -1,16 +1,28 @@
 'use client';
 
-export default function ComplianceMonitoring() {
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Compliance Monitoring</h1>
-        <p className="text-gray-600 mt-2">Continuous compliance monitoring dashboard</p>
-      </div>
+import { useRouter } from 'next/navigation';
+import { Activity } from 'lucide-react';
+import { PageHeader } from '../../../../../components/ui/page-header';
+import { PageContainer } from '../../../../../components/ui/container';
+import { EmptyState } from '../../../../../components/EmptyState';
 
-      <div className="bg-white rounded-lg shadow p-6">
-        <p className="text-gray-500">Monitoring dashboard will be displayed here</p>
+// Phase 4: wrapped in the shared PageContainer/PageHeader/EmptyState. Not
+// part of the current build -- live regulatory monitoring events are
+// available today on the Compliance Command Center.
+export default function ComplianceMonitoring() {
+  const router = useRouter();
+  return (
+    <PageContainer>
+      <PageHeader eyebrow="Compliance" title="Compliance Monitoring" description="Continuous compliance monitoring dashboard." />
+      <div className="mt-6">
+        <EmptyState
+          icon={<Activity className="h-6 w-6" />}
+          title="Not part of the current build"
+          description="Live regulatory-change monitoring is available today on the Compliance Command Center."
+          actionLabel="Go to Compliance Command Center"
+          onAction={() => router.push('/compliance-command-center')}
+        />
       </div>
-    </div>
+    </PageContainer>
   );
 }
