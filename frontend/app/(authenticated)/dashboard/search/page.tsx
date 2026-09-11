@@ -7,6 +7,7 @@ import { apiFetch } from '../../../../lib/api'
 import { EmptyState } from '../../../../components/EmptyState'
 import { Button } from '../../../../components/ui/button'
 import { Badge } from '../../../../components/ui/badge'
+import { DataTable } from '../../../../components/ui/data-table'
 import { PageHeader } from '../../../../components/ui/page-header'
 import { PageContainer } from '../../../../components/ui/container'
 
@@ -108,28 +109,76 @@ export default function SearchPage() {
       )}
 
       {results !== null && results.length > 0 && (
-        <div className="space-y-2">
-          {results.map((result) => {
-            const Icon = TYPE_ICON[result.type]
-            return (
-              <button
-                key={`${result.type}-${result.id}`}
-                type="button"
-                onClick={() => router.push(result.url)}
-                className="flex w-full items-start gap-3 rounded-[var(--radius-lg,0.75rem)] border border-gray-200 bg-white p-4 text-left shadow-[var(--shadow-sm)] hover:border-[var(--brand-primary,#3b82f6)] hover:bg-blue-50/60 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700/40"
-              >
-                <Icon className="mt-0.5 h-5 w-5 shrink-0 text-[var(--brand-primary,#2563eb)]" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <p className="truncate font-semibold text-gray-900 dark:text-gray-100">{result.title}</p>
-                    <Badge variant="secondary" className="shrink-0">{TYPE_LABEL[result.type]}</Badge>
+        results.length <= 5 ? (
+          <div className="space-y-2">
+            {results.map((result) => {
+              const Icon = TYPE_ICON[result.type]
+              return (
+                <button
+                  key={`${result.type}-${result.id}`}
+                  type="button"
+                  onClick={() => router.push(result.url)}
+                  className="flex w-full items-start gap-3 rounded-[var(--radius-lg,0.75rem)] border border-gray-200 bg-white p-4 text-left shadow-[var(--shadow-sm)] hover:border-[var(--brand-primary,#3b82f6)] hover:bg-blue-50/60 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700/40"
+                >
+                  <Icon className="mt-0.5 h-5 w-5 shrink-0 text-[var(--brand-primary,#2563eb)]" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="truncate font-semibold text-gray-900 dark:text-gray-100">{result.title}</p>
+                      <Badge variant="secondary" className="shrink-0">{TYPE_LABEL[result.type]}</Badge>
+                    </div>
+                    {result.subtitle && <p className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">{result.subtitle}</p>}
                   </div>
-                  {result.subtitle && <p className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">{result.subtitle}</p>}
-                </div>
-              </button>
-            )
-          })}
-        </div>
+                </button>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-[var(--radius-lg,0.75rem)] border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+            <DataTable
+              columns={[
+                {
+                  key: 'type',
+                  header: 'Type',
+                  className: 'w-[120px] whitespace-nowrap',
+                  render: (result: SearchResult) => <Badge variant="secondary">{TYPE_LABEL[result.type]}</Badge>,
+                },
+                {
+                  key: 'title',
+                  header: 'Title',
+                  className: 'min-w-[260px]',
+                  render: (result: SearchResult) => (
+                    <div>
+                      <p className="truncate font-medium text-gray-900 dark:text-gray-100">{result.title}</p>
+                      {result.subtitle && <p className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">{result.subtitle}</p>}
+                    </div>
+                  ),
+                },
+                {
+                  key: 'reference',
+                  header: 'Reference',
+                  className: 'min-w-[180px] whitespace-nowrap',
+                  render: (result: SearchResult) => (
+                    <span className="font-mono text-[11px] text-gray-500 dark:text-gray-400">{result.contract_id || result.id}</span>
+                  ),
+                },
+                {
+                  key: 'action',
+                  header: 'Action',
+                  className: 'text-right whitespace-nowrap',
+                  render: (result: SearchResult) => (
+                    <Button type="button" variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); router.push(result.url); }}>
+                      Open
+                    </Button>
+                  ),
+                },
+              ]}
+              data={results}
+              rowKey={(result) => `${result.type}-${result.id}`}
+              pageSize={10}
+              onRowClick={(result) => router.push(result.url)}
+            />
+          </div>
+        )
       )}
       </div>
     </PageContainer>

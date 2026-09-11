@@ -7,6 +7,10 @@ import type { OrgMember } from '../../../../../lib/org'
 import { useOrg } from '../../../../../components/OrgProvider'
 import { Badge } from '../../../../../components/ui/badge'
 import { Button } from '../../../../../components/ui/button'
+import { Card, CardContent } from '../../../../../components/ui/card'
+import { DataTable } from '../../../../../components/ui/data-table'
+import { PageHeader } from '../../../../../components/ui/page-header'
+import { PageContainer } from '../../../../../components/ui/container'
 import { EmptyState } from '../../../../../components/EmptyState'
 import { Skeleton } from '../../../../../components/ui/skeleton'
 
@@ -99,67 +103,73 @@ export default function AdminMembersPage() {
 
   if (orgLoading) {
     return (
-      <div className="space-y-4 p-8">
-        <Skeleton className="h-10 w-64" />
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-24 w-full" />
-      </div>
+      <PageContainer>
+        <div className="space-y-4">
+          <Skeleton className="h-10 w-64" />
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-24 w-full" />
+        </div>
+      </PageContainer>
     )
   }
   if (!currentOrg) {
     return (
-      <div className="p-8">
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-amber-900" role="status">
+      <PageContainer>
+        <div className="rounded-[var(--radius-lg,0.75rem)] border border-amber-200 bg-amber-50 p-6 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200" role="status">
           <h1 className="text-xl font-bold">No organization membership</h1>
           <p className="mt-2">Sign-in succeeded, but this account is not an active member of an organization. Run <code className="font-mono">python scripts/migrate_org_workflow.py --email you@example.com</code> from the backend directory.</p>
         </div>
-      </div>
+      </PageContainer>
     )
   }
   if (!isAdmin) {
     return (
-      <div className="p-8">
-        <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-red-700" role="alert">
+      <PageContainer>
+        <div className="rounded-[var(--radius-lg,0.75rem)] border border-red-200 bg-red-50 p-6 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-400" role="alert">
           <h1 className="text-xl font-bold">403 — Admin only</h1>
           <p className="mt-2">You need the Admin role in this organization to manage members. The API enforces this independently of this page.</p>
         </div>
-      </div>
+      </PageContainer>
     )
   }
 
   return (
-    <div className="space-y-6 p-8">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Organization members</h1>
-        <p className="mt-2 text-gray-600">Invite colleagues by email and assign one or more of the five fixed roles. Backend membership checks are the authorization source of truth.</p>
-      </div>
+    <PageContainer>
+      <PageHeader
+        eyebrow="Organization"
+        title="Organization members"
+        description="Invite colleagues by email and assign one or more of the five fixed roles. Backend membership checks are the authorization source of truth."
+      />
 
-      <div className="rounded-lg bg-white p-6 shadow">
-        <h2 className="text-lg font-semibold text-gray-900">Invite by email</h2>
-        <div className="mt-4 flex flex-col gap-4 lg:flex-row lg:items-end">
-          <label className="block flex-1 text-sm font-medium text-gray-700">
-            Email
-            <input value={email} onChange={(event) => setEmail(event.target.value)} className="mt-2 block w-full rounded border border-gray-300 px-3 py-2 font-normal" placeholder="counsel@example.com" />
-          </label>
-          <div className="flex flex-wrap gap-3">
-            {ALL_ROLES.map((role) => (
-              <label key={role} className="flex items-center gap-2 text-sm text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={inviteRoles.includes(role)}
-                  onChange={(event) => setInviteRoles((current) => event.target.checked ? [...current, role] : current.filter((item) => item !== role))}
-                />
-                {ROLE_LABELS[role]}
-              </label>
-            ))}
+      <div className="mt-6 space-y-6">
+      <Card>
+        <CardContent>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Invite by email</h2>
+          <div className="mt-4 flex flex-col gap-4 lg:flex-row lg:items-end">
+            <label className="block flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
+              Email
+              <input value={email} onChange={(event) => setEmail(event.target.value)} className="mt-2 block w-full rounded border border-gray-300 px-3 py-2 font-normal dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100" placeholder="counsel@example.com" />
+            </label>
+            <div className="flex flex-wrap gap-3">
+              {ALL_ROLES.map((role) => (
+                <label key={role} className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={inviteRoles.includes(role)}
+                    onChange={(event) => setInviteRoles((current) => event.target.checked ? [...current, role] : current.filter((item) => item !== role))}
+                  />
+                  {ROLE_LABELS[role]}
+                </label>
+              ))}
+            </div>
+            <Button disabled={busyId === 'invite' || !email.trim() || inviteRoles.length === 0} onClick={() => void invite()}>
+              {busyId === 'invite' ? 'Inviting...' : 'Invite'}
+            </Button>
           </div>
-          <Button disabled={busyId === 'invite' || !email.trim() || inviteRoles.length === 0} onClick={() => void invite()}>
-            {busyId === 'invite' ? 'Inviting...' : 'Invite'}
-          </Button>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
-      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p>}
       {loading && (
         <div className="space-y-3">
           <Skeleton className="h-28 w-full" />
@@ -173,45 +183,87 @@ export default function AdminMembersPage() {
         />
       )}
 
-      <div className="space-y-3">
-        {members.map((member) => (
-          <div key={member.user_id} className="rounded-lg bg-white p-5 shadow">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="font-semibold text-gray-900">{member.display_name || member.email || member.user_id}</p>
-                <p className="mt-1 font-mono text-xs text-gray-500">{member.email || member.user_id}</p>
-              </div>
-              <Badge variant={member.status === 'active' ? 'verified' : 'pending'}>{member.status}</Badge>
-            </div>
-            <div className="mt-4 flex flex-wrap gap-3">
-              {ALL_ROLES.map((role) => {
-                const checked = (member.roles || []).includes(role)
-                return (
-                  <label key={role} className="flex items-center gap-2 text-sm text-gray-700">
-                    <input
-                      type="checkbox"
-                      disabled={busyId === member.user_id || member.status === 'deactivated'}
-                      checked={checked}
-                      onChange={(event) => {
-                        const next = event.target.checked
-                          ? [...(member.roles || []), role]
-                          : (member.roles || []).filter((item) => item !== role)
-                        void saveRoles(member, next)
-                      }}
-                    />
-                    {ROLE_LABELS[role]}
-                  </label>
-                )
-              })}
-            </div>
-            {member.status !== 'deactivated' && (
-              <Button variant="outline" className="mt-4" disabled={busyId === member.user_id} onClick={() => void deactivate(member)}>
-                Deactivate
-              </Button>
-            )}
-          </div>
-        ))}
+      {members.length > 0 && (
+        <div className="overflow-hidden rounded-[var(--radius-lg,0.75rem)] border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+          <DataTable
+            columns={[
+              {
+                key: 'member',
+                header: 'Member',
+                className: 'min-w-[220px] w-[28%]',
+                render: (member: OrgMember) => (
+                  <div>
+                    <p className="truncate font-semibold text-gray-900 dark:text-gray-100">{member.display_name || member.email || member.user_id}</p>
+                    <p className="mt-0.5 truncate font-mono text-[11px] text-gray-500 dark:text-gray-400">{member.email || member.user_id}</p>
+                  </div>
+                ),
+              },
+              {
+                key: 'role',
+                header: 'Role',
+                className: 'whitespace-nowrap',
+                render: (member: OrgMember) => (
+                  <span className="text-sm text-gray-700 dark:text-gray-300">{(member.roles || []).length ? (member.roles || []).join(', ') : '—'}</span>
+                ),
+              },
+              {
+                key: 'status',
+                header: 'Status',
+                className: 'whitespace-nowrap',
+                render: (member: OrgMember) => (
+                  <Badge variant={member.status === 'active' ? 'verified' : member.status === 'deactivated' ? 'secondary' : 'pending'}>{member.status}</Badge>
+                ),
+              },
+              {
+                key: 'permissions',
+                header: 'Permissions',
+                className: 'min-w-[260px]',
+                render: (member: OrgMember) => (
+                  <div className="flex max-w-[260px] flex-wrap gap-2">
+                    {ALL_ROLES.map((role) => {
+                      const checked = (member.roles || []).includes(role)
+                      return (
+                        <label key={role} className="flex items-center gap-1.5 rounded border border-gray-200 bg-gray-50 px-2 py-1 text-[11px] text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={busyId === member.user_id || member.status === 'deactivated'}
+                            onChange={(event) => {
+                              const next = event.target.checked
+                                ? [...(member.roles || []), role]
+                                : (member.roles || []).filter((item) => item !== role)
+                              void saveRoles(member, next)
+                            }}
+                          />
+                          {ROLE_LABELS[role]}
+                        </label>
+                      )
+                    })}
+                  </div>
+                ),
+              },
+              {
+                key: 'action',
+                header: 'Actions',
+                className: 'text-right whitespace-nowrap',
+                render: (member: OrgMember) => (
+                  <div className="flex justify-end">
+                    {member.status !== 'deactivated' && (
+                      <Button variant="outline" size="sm" disabled={busyId === member.user_id} onClick={(event) => { event.stopPropagation(); void deactivate(member); }}>
+                        Deactivate
+                      </Button>
+                    )}
+                  </div>
+                ),
+              },
+            ]}
+            data={members}
+            rowKey={(member) => member.user_id}
+            pageSize={10}
+          />
+        </div>
+      )}
       </div>
-    </div>
+    </PageContainer>
   )
 }
