@@ -210,15 +210,30 @@ async def anchor_evidence_to_blockchain(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=str(e)
             )
+        if "pending" in str(e).lower() or "confirmation unavailable" in str(e).lower() or "temporarily unavailable" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Ethereum anchoring is temporarily unavailable: {str(e)}"
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+    except RuntimeError as e:
+        if "pending" in str(e).lower() or "confirmation unavailable" in str(e).lower() or "temporarily unavailable" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Ethereum anchoring is temporarily unavailable: {str(e)}"
+            ) from e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error anchoring evidence to Ethereum: {str(e)}"
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error anchoring evidence to Ethereum: {str(e)}"
-        )
+        ) from e
 
 
 @router.get(

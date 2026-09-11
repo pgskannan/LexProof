@@ -173,6 +173,33 @@ def test_unauthorized_evidence_prevents_ethereum_anchor():
                     mock_anchor_service.assert_not_called(), "EthereumAnchorService should NOT be called for unauthorized evidence"
 
 
+def test_blockchain_pending_transaction_returns_503():
+    """Transient blockchain submission failures should surface as a retryable 503."""
+    app = create_app()
+
+    with patch('app.lexproof.api.evidence_anchor.get_current_user', return_value={"uid": "user-1"}):
+        with patch('app.lexproof.api.evidence_anchor.get_evidence_repository') as mock_repo:
+            with patch('app.lexproof.api.evidence_anchor.get_evidence_records_repository') as mock_evidence_repo:
+                with patch('app.lexproof.api.evidence_anchor.get_ethereum_anchor_service') as mock_anchor_service:
+                    mock_evidence_repo.return_value.get.return_value = evidence_record(owner_id="user-1", evidence_id="evidence-1")
+                    app.dependency_overrides[get_current_user] = lambda: {"uid": "user-1"}
+                    app.dependency_overrides[original_get_evidence_repository] = lambda: mock_repo.return_value
+                    app.dependency_overrides[original_get_evidence_records_repository] = lambda: mock_evidence_repo.return_value
+                    mock_anchor_service.return_value.anchor_evidence = AsyncMock(
+                        side_effect=RuntimeError("Transaction pending: 0xabc")
+                    )
+
+                    client = TestClient(app)
+                    response = client.post(
+                        "/api/evidence/evidence-1/anchor",
+                        json={"evidence_id": "evidence-1"},
+                        headers={"Authorization": "Bearer valid-token"}
+                    )
+
+                    assert response.status_code == 503, f"Expected 503, got {response.status_code}: {response.json()}"
+                    assert "temporarily unavailable" in response.json()["detail"].lower()
+
+
 def test_authorized_evidence_calls_anchor_service():
     """Verify that authorized evidence DOES call the anchor service."""
     app = create_app()
