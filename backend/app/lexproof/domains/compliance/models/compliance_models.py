@@ -466,6 +466,7 @@ class AmendmentRequest(BaseModel):
     evidence_id: Optional[str] = Field(None, description="Related evidence identifier")
     evidence_quote: Optional[str] = Field(None, description="Supporting evidence quote")
     source_section: Optional[str] = Field(None, description="Source section for the finding")
+    org_id: Optional[str] = Field(None, description="Owning organization")
 
 
 class ProposedAmendment(BaseModel):
@@ -489,6 +490,7 @@ class ProposedAmendment(BaseModel):
     evidence_id: Optional[str] = Field(None, description="Related evidence identifier")
     evidence_quote: Optional[str] = Field(None, description="Supporting evidence quote")
     source_section: Optional[str] = Field(None, description="Source section for the finding")
+    org_id: Optional[str] = Field(None, description="Owning organization")
 
     class Config:
         """Pydantic configuration."""

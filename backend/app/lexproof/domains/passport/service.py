@@ -264,6 +264,16 @@ class PassportService:
                     "evidence_quote": finding.get('evidence_quote', ''),
                     "source_section": finding.get('source_section', ''),
                     "recommendation": finding.get('recommendation', ''),
+                    # Hardening item #6 (Polish Legal Passport as centerpiece):
+                    # the AI analysis prompt already asks for specific
+                    # regulatory citations per finding (see vertex_ai.py's
+                    # schema / version_analysis.py's prompt), and
+                    # regulation_map.py already aggregates this field at the
+                    # portfolio level -- but it was never copied onto the
+                    # evidence item itself, so the Legal Passport page (which
+                    # reads evidence, not raw findings) had no way to show
+                    # which regulations a piece of evidence relates to.
+                    "regulatory_citations": finding.get('regulatory_citations', []),
                 },
                 "owner_id": self.user_id,
                 "contract_id": contract_id,
@@ -371,6 +381,8 @@ class PassportService:
             Passport if found, None otherwise
         """
         passport = _passports.get(passport_id)
+        if passport is not None and passport.created_by != self.tenant_id:
+            passport = None
         if passport is None and self.repository:
             stored = self.repository.get(passport_id)
             if stored and _is_visible_to_tenant(stored, self.tenant_id):
@@ -418,7 +430,7 @@ class PassportService:
         Returns:
             List of passport summaries
         """
-        values = list(_passports.values())
+        values = [passport for passport in _passports.values() if passport.created_by == self.tenant_id]
         known_ids = {item.passport_id for item in values}
         if self.repository:
             for stored in self.repository.stream():

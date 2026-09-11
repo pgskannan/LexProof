@@ -54,6 +54,21 @@ class EvidenceService:
         if self.is_evidence_anchored(evidence_id):
             raise ValueError(f"Anchored evidence cannot be modified: {evidence_id}")
 
+    def _get_owned_evidence(self, evidence_id: str) -> EvidenceItem | None:
+        evidence_item = self.evidence_items.get(evidence_id)
+        if evidence_item is not None:
+            return evidence_item
+        if not self.repository:
+            return None
+        record = self.repository.get(evidence_id)
+        if not record:
+            return None
+        if self.owner_id and record.get("owner_id") and record.get("owner_id") != self.owner_id:
+            return None
+        evidence_item = EvidenceItem.model_validate(record)
+        self.evidence_items[evidence_id] = evidence_item
+        return evidence_item
+
     def passport_exists(self, passport_id: str) -> bool:
         if self.passport_repository is None:
             return True
@@ -133,13 +148,7 @@ class EvidenceService:
         Returns:
             Evidence item if found, None otherwise
         """
-        evidence_item = self.evidence_items.get(evidence_id)
-
-        if not evidence_item and self.repository:
-            record = self.repository.get(evidence_id)
-            if record:
-                evidence_item = EvidenceItem.model_validate(record)
-                self.evidence_items[evidence_id] = evidence_item
+        evidence_item = self._get_owned_evidence(evidence_id)
 
         if evidence_item:
             return EvidenceItemResponse.model_validate(evidence_item)
@@ -247,13 +256,7 @@ class EvidenceService:
         Returns:
             Updated evidence item if found, None otherwise
         """
-        evidence_item = self.evidence_items.get(evidence_id)
-
-        if not evidence_item and self.repository:
-            record = self.repository.get(evidence_id)
-            if record:
-                evidence_item = EvidenceItem.model_validate(record)
-                self.evidence_items[evidence_id] = evidence_item
+        evidence_item = self._get_owned_evidence(evidence_id)
 
         if not evidence_item:
             logger.warning(f"Evidence item not found: {evidence_id}")
@@ -293,7 +296,7 @@ class EvidenceService:
         Returns:
             True if deleted, False if not found
         """
-        if evidence_id in self.evidence_items:
+        if self._get_owned_evidence(evidence_id) is not None:
             self._ensure_evidence_is_mutable(evidence_id)
             del self.evidence_items[evidence_id]
             if self.repository:
@@ -301,7 +304,7 @@ class EvidenceService:
             logger.info(f"Successfully deleted evidence item {evidence_id}")
             return True
 
-        if self.repository and self.repository.get(evidence_id):
+        if self._get_owned_evidence(evidence_id) is not None:
             self._ensure_evidence_is_mutable(evidence_id)
             self.repository.delete(evidence_id)
             logger.info(f"Successfully deleted evidence item {evidence_id}")
@@ -324,13 +327,7 @@ class EvidenceService:
         Returns:
             Verified evidence item if found, None otherwise
         """
-        evidence_item = self.evidence_items.get(evidence_id)
-
-        if not evidence_item and self.repository:
-            record = self.repository.get(evidence_id)
-            if record:
-                evidence_item = EvidenceItem.model_validate(record)
-                self.evidence_items[evidence_id] = evidence_item
+        evidence_item = self._get_owned_evidence(evidence_id)
 
         if not evidence_item:
             logger.warning(f"Evidence item not found: {evidence_id}")

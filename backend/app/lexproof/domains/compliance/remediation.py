@@ -13,6 +13,9 @@ from .models import (
     AuditTrailEntry,
     ProposedAmendment,
 )
+from ...repositories.firestore import FirestoreRepository
+from ...services.organizations import OrganizationService, get_organization_service
+from ...services.roles import OrgRole, has_any_role
 
 
 class RemediationService:
@@ -28,6 +31,8 @@ class RemediationService:
         policy_evaluator: Optional[Any] = None,
         passport_creator: Optional[Any] = None,
         proof_anchorer: Optional[Any] = None,
+        contracts: Optional[FirestoreRepository] = None,
+        organizations: Optional[OrganizationService] = None,
     ) -> None:
         self.analysis_engine = analysis_engine
         self.policy_evaluator = policy_evaluator
@@ -38,8 +43,10 @@ class RemediationService:
         self._approvals: Dict[str, AmendmentApproval] = {}
         self._audit: Dict[str, List[AuditTrailEntry]] = {}
         self._published_versions: Dict[str, Dict[str, Any]] = {}
+        self.contracts = contracts or FirestoreRepository("contracts")
+        self.organizations = organizations or get_organization_service()
 
-    def request_amendment(self, request: AmendmentRequest) -> ProposedAmendment:
+    def request_amendment(self, request: AmendmentRequest, *, created_by: str | None = None, org_id: str | None = None) -> ProposedAmendment:
         """Generate a proposal; this method never changes or publishes a contract."""
         request_id = str(uuid4())
         proposal_id = str(uuid4())
@@ -59,17 +66,31 @@ class RemediationService:
             risk_reduction="Expected reduction after re-analysis; not yet verified.",
             compliance_improvement="Expected improvement after policy evaluation; not yet verified.",
             created_at=datetime.now(timezone.utc),
-            created_by="gemini",
+            created_by=created_by or "gemini",
             finding_id=request.finding_id,
             version_id=request.version_id,
             evidence_id=request.evidence_id,
             evidence_quote=request.evidence_quote,
             source_section=request.source_section,
+            org_id=org_id,
         )
         self._requests[request_id] = request
         self._proposals[proposal_id] = proposal
         self._record(request.event_id, request.contract_id, "ai_recommendation", "AI generated proposed amendment")
         return proposal
+
+    def _authorize_approval(self, proposal: ProposedAmendment, approver_id: str) -> None:
+        contract = self.contracts.get(proposal.contract_id)
+        if not contract:
+            raise PermissionError("Contract not found")
+        org_id = proposal.org_id or contract.get("org_id")
+        if not org_id:
+            raise PermissionError("Approval requires an organization-scoped contract")
+        member = self.organizations.get_active_member(org_id, approver_id)
+        if not member or not has_any_role(member.get("roles"), (OrgRole.ADMIN.value, OrgRole.APPROVER.value)):
+            raise PermissionError("You are not authorized to approve this amendment")
+        if proposal.created_by == approver_id:
+            raise PermissionError("The proposal creator cannot approve their own amendment")
 
     def approve_and_reproof(
         self,
@@ -78,11 +99,15 @@ class RemediationService:
         approved_by: str,
         approval_notes: Optional[str] = None,
         rejection_reason: Optional[str] = None,
+        approver_id: str | None = None,
     ) -> Dict[str, Any]:
         """Apply the amendment workflow only after explicit human approval."""
         proposal = self._proposals.get(proposal_id)
         if proposal is None:
             raise ValueError(f"Amendment proposal {proposal_id} not found")
+        if approver_id is not None:
+            self._authorize_approval(proposal, approver_id)
+            approved_by = approver_id
         if not approved:
             approval = self._save_approval(proposal, False, approved_by, approval_notes, rejection_reason)
             self._record(proposal.event_id, proposal.contract_id, "human_approval", "Amendment rejected")
