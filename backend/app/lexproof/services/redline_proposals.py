@@ -237,6 +237,15 @@ class ProposalService:
             "decision": normalized_decision,
             "reviewer_id": reviewer_id,
             "comment": comment,
+            # Roles the reviewer held in this org at decision time -- already
+            # computed above for the permission check; surfaced here so
+            # api/redline_proposals.py's cross-cutting audit_log event (Phase
+            # 3E) can record actor role(s) without a second org-membership
+            # lookup. Workflow-instance history already records the
+            # equivalent "actor_roles_at_time" for every transition
+            # (services/workflow_engine.py) -- this just lets the
+            # complementary flat audit surface carry the same detail.
+            "reviewer_roles": list(roles),
             "created_at": now,
             "updated_at": now,
         }

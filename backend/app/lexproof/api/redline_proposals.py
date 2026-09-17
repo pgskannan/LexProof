@@ -160,7 +160,7 @@ def create_redline_proposal(
     user: dict[str, Any] = Depends(get_current_user),
 ):
     try:
-        return _service().create(
+        result = _service().create(
             contract_id,
             request.source_version_id,
             request.finding_id,
@@ -172,6 +172,19 @@ def create_redline_proposal(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except RedlineProposalError as error:
         raise _handle_error(error) from error
+    record_audit_event(
+        actor_id=str(user["uid"]),
+        actor_email=user.get("email"),
+        action="redline.created",
+        resource_type="redline_proposal",
+        resource_id=result.get("proposal_id"),
+        resource_name=f"Finding {result.get('finding_id', '')}",
+        contract_id=result.get("contract_id"),
+        summary=f"Created redline proposal for contract {result.get('contract_id', '')}",
+        org_id=result.get("org_id"),
+        metadata={"finding_id": result.get("finding_id"), "source_version_id": result.get("source_version_id")},
+    )
+    return result
 
 
 @router.get("/{contract_id}/redline-proposals", response_model=list[RedlineProposalResponse])
@@ -238,6 +251,11 @@ def review_redline_proposal(
         contract_id=result.get("contract_id"),
         summary=f"{result['decision'].title()} redline proposal for contract {result.get('contract_id', '')}",
         org_id=(proposal or {}).get("org_id"),
+        metadata={
+            "comment": result.get("comment"),
+            "workflow_instance_id": (proposal or {}).get("workflow_instance_id"),
+            "actor_roles": result.get("reviewer_roles"),
+        },
     )
     return result
 

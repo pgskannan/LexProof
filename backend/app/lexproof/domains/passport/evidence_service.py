@@ -21,6 +21,7 @@ from .models import (
     EvidenceStatus,
     EvidenceType,
 )
+from .authorization import is_visible_via_contract
 from .utils.evidence import count_legal_evidence_findings, filter_legal_evidence_findings
 from .utils.hashing import (
     hash_evidence_item,
@@ -34,13 +35,18 @@ logger = logging.getLogger(__name__)
 class EvidenceService:
     """Service for managing evidence items."""
 
-    def __init__(self, repository: Optional[FirestoreRepository] = None, owner_id: Optional[str] = None, passport_repository: Optional[FirestoreRepository] = None, anchor_repository: Optional[FirestoreRepository] = None):
+    def __init__(self, repository: Optional[FirestoreRepository] = None, owner_id: Optional[str] = None, passport_repository: Optional[FirestoreRepository] = None, anchor_repository: Optional[FirestoreRepository] = None, contracts_repository: Optional[FirestoreRepository] = None):
         """Initialize EvidenceService."""
         self.evidence_items: Dict[str, EvidenceItem] = {}
         self.repository = repository
         self.owner_id = owner_id
         self.passport_repository = passport_repository
         self.anchor_repository = anchor_repository
+        # Optional: enables org-aware read visibility for evidence records
+        # tied to an org-owned contract (see .authorization). Not supplied
+        # -> falls back to the original strict owner_id-only rule, same as
+        # before Phase 3H.2.
+        self.contracts_repository = contracts_repository
 
     def is_evidence_anchored(self, evidence_id: str) -> bool:
         """Return whether a confirmed anchor exists for the evidence ID."""
@@ -69,11 +75,78 @@ class EvidenceService:
         self.evidence_items[evidence_id] = evidence_item
         return evidence_item
 
+    def _resolve_contract_id(self, record: Dict[str, Any]) -> Optional[str]:
+        """Find the Contract id associated with an evidence/passport record.
+
+        Evidence items created via version_analysis/PassportService already
+        carry contract_id directly; a passport record always carries its own
+        contract_id (required field). Fall back to looking the passport up
+        by passport_id for older/partial evidence records that don't.
+        """
+        contract_id = record.get("contract_id")
+        if contract_id:
+            return contract_id
+        if self.passport_repository is not None:
+            passport = self.passport_repository.get(record.get("passport_id"))
+            if passport:
+                return passport.get("contract_id")
+        return None
+
+    def _is_visible(self, record: Dict[str, Any]) -> bool:
+        """Org-aware read visibility, reusing the Contract domain's own
+        visibility rule (see .authorization.is_visible_via_contract).
+
+        Phase 3H.2 (P1-A): this is used only for READ paths (get_evidence_item,
+        get_evidence_by_passport, passport_exists) -- mutation paths
+        (update/delete/verify, via _get_owned_evidence below) are unchanged
+        and remain strictly owner-scoped; broadening those was not part of
+        the confirmed root cause and is out of scope for this fix.
+        """
+        if not self.owner_id:
+            return True
+        return is_visible_via_contract(
+            owner_id=record.get("owner_id"),
+            tenant_id=self.owner_id,
+            contract_id=self._resolve_contract_id(record),
+            contracts_repository=self.contracts_repository,
+        )
+
+    def _get_visible_evidence(self, evidence_id: str) -> EvidenceItem | None:
+        """Like _get_owned_evidence, but for reads: uses org-aware
+        visibility (_is_visible) instead of the strict owner-only check.
+
+        Deliberately does NOT populate self.evidence_items on a fresh
+        repository fetch. That cache is what _get_owned_evidence's mutation
+        callers (update/delete/verify) trust on a cache hit *without*
+        re-checking ownership -- before this fix it was only ever populated
+        by the strict owner-only check, so a cache hit implied ownership. If
+        this method wrote org-visible-but-not-owned records into the same
+        cache, a non-owner org member could read an evidence item first and
+        then have a later mutation call on the same service instance
+        silently succeed off the cached entry, bypassing the owner check
+        entirely. A cache HIT is still safe to return as-is: it can only be
+        there because something already passed the strict owner check (or
+        this same caller created it).
+        """
+        evidence_item = self.evidence_items.get(evidence_id)
+        if evidence_item is not None:
+            return evidence_item
+        if not self.repository:
+            return None
+        record = self.repository.get(evidence_id)
+        if not record:
+            return None
+        if not self._is_visible(record):
+            return None
+        return EvidenceItem.model_validate(record)
+
     def passport_exists(self, passport_id: str) -> bool:
         if self.passport_repository is None:
             return True
         record = self.passport_repository.get(passport_id)
-        return bool(record and (not self.owner_id or not record.get("owner_id") or record.get("owner_id") == self.owner_id))
+        if not record:
+            return False
+        return self._is_visible(record)
 
     async def create_evidence_item(
         self,
@@ -148,7 +221,7 @@ class EvidenceService:
         Returns:
             Evidence item if found, None otherwise
         """
-        evidence_item = self._get_owned_evidence(evidence_id)
+        evidence_item = self._get_visible_evidence(evidence_id)
 
         if evidence_item:
             return EvidenceItemResponse.model_validate(evidence_item)
@@ -189,15 +262,15 @@ class EvidenceService:
             # backfill writes) onto a worker thread so it can't stall the loop.
             repository = self.repository
             passport_repository = self.passport_repository
-            owner_id = self.owner_id
             is_evidence_anchored = self.is_evidence_anchored
+            is_visible = self._is_visible
 
             def _scan_and_backfill() -> list[dict[str, Any]]:
                 matched: list[dict[str, Any]] = []
                 for record in repository.stream():
                     if record.get("passport_id") != passport_id:
                         continue
-                    if owner_id and record.get("owner_id") and record.get("owner_id") != owner_id:
+                    if not is_visible(record):
                         continue
                     if not record.get("created_at") and passport_repository:
                         passport = passport_repository.get(passport_id)

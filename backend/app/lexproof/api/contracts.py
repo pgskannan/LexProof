@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile,
 from pydantic import BaseModel
 
 from ..services.auth import get_current_user, load_org_member
-from ..services.organizations import get_organization_service
+from ..services.organizations import contract_owner_or_org_admin, get_organization_service
 from ..config import get_settings
 from ..domains.passport.api.router import configure_passport_service
 from ..repositories.cloud_storage import CloudStorageRepository
@@ -412,7 +412,7 @@ async def create_version(
     contract = contracts.get(contract_id)
     if not contract:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found")
-    if contract.get("owner_id") != uid:
+    if not contract_owner_or_org_admin(contract, uid):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to create a version")
     try:
         return create_contract_version(
@@ -563,7 +563,7 @@ async def analyze_contract(contract_id: str, user: dict[str, Any] = Depends(get_
     uid = str(user["uid"])
     contracts, versions, _ = _repositories()
     contract = contracts.get(contract_id)
-    if not contract or contract.get("owner_id") != uid:
+    if not contract or not contract_owner_or_org_admin(contract, uid):
         raise HTTPException(status_code=404, detail="Contract not found")
     result = await _version_analysis_service(contracts, versions).analyze_version(
         contract_id,

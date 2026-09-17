@@ -19,6 +19,8 @@ from ..services.blockchain import BlockchainService, create_blockchain_service
 from ..repositories.firestore import FirestoreRepository
 from ..config import LexProofSettings, get_settings
 from ..domains.passport.utils.hashing import hash_evidence_item
+from .analysis_safety import sanitize_analysis_error
+from .audit import record_audit_event
 
 logger = logging.getLogger(__name__)
 HASH_PATTERN = re.compile(r"^(?:0x)?[0-9a-fA-F]{64}$")
@@ -63,6 +65,10 @@ class EthereumAnchorService:
     async def anchor_evidence(
         self,
         evidence_id: str,
+        *,
+        actor_id: Optional[str] = None,
+        org_id: Optional[str] = None,
+        version_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Anchor an evidence record to Ethereum.
@@ -75,6 +81,15 @@ class EthereumAnchorService:
 
         Args:
             evidence_id: Evidence record identifier
+            actor_id: Signed-in user id, or omitted for a system/background
+                caller (recorded as "system") -- used only for the
+                cross-cutting audit trail below (Phase 3F), never for any
+                authorization or idempotency decision in this method.
+            org_id: The contract's organization, when the caller already has
+                it on hand (e.g. version_analysis.py already fetched the
+                contract) -- avoids a second lookup purely for audit context.
+            version_id: The contract version document id, when the caller
+                has it, for the same audit-context purpose.
         Returns:
             Dictionary containing blockchain proof details
 
@@ -90,18 +105,66 @@ class EthereumAnchorService:
         passport_id = evidence.get("passport_id")
         self._validate_record_id(passport_id)
         evidence_hash = hash_evidence_item(evidence)
+
+        # Everything this audit trail (Phase 3F) needs to correlate an event
+        # back to the LexProof object and blockchain state, gathered once.
+        # record_audit_event() is best-effort and never raises (see
+        # services/audit.py and _record_anchor_audit_event below), so nothing
+        # here can change this method's business outcome or its idempotency
+        # guarantees -- it only makes each step already happening below
+        # observable in the org-scoped audit_log.
+        audit_context: Dict[str, Any] = {
+            "actor_id": actor_id or "system",
+            "org_id": org_id,
+            "contract_id": evidence.get("contract_id"),
+            "metadata_base": {
+                "evidence_hash": evidence_hash,
+                "contract_version": evidence.get("contract_version"),
+                "version_id": version_id,
+                "passport_id": passport_id,
+            },
+        }
+        self._record_anchor_audit_event(
+            "blockchain.anchor_initiated",
+            evidence_id,
+            audit_context,
+            summary=f"Ethereum anchoring initiated for evidence {evidence_id}",
+        )
+
         existing = self.repository.get(evidence_id)
         if existing:
             if existing.get("evidence_hash", "").lower() != evidence_hash.lower():
                 raise ValueError("Evidence already has a different Ethereum anchor")
+            # Idempotent path: nothing new was submitted or confirmed -- the
+            # audit record must say so explicitly rather than implying a new
+            # transaction happened (Phase 3F Step 2).
+            self._record_anchor_audit_event(
+                "blockchain.anchor_reused",
+                evidence_id,
+                audit_context,
+                summary=f"Ethereum anchor already existed for evidence {evidence_id}; reused, no new transaction submitted",
+                extra_metadata={
+                    "transaction_hash": existing.get("transaction_hash"),
+                    "block_number": existing.get("block_number"),
+                    "blockchain_network": existing.get("blockchain_network"),
+                },
+            )
             return existing
 
         # Check Ethereum for existing anchor (recovery path for distributed failures)
-        recovered = await self._recover_from_chain_if_anchored(evidence_id, passport_id, evidence_hash)
+        recovered = await self._recover_from_chain_if_anchored(
+            evidence_id, passport_id, evidence_hash, audit_context=audit_context,
+        )
         if recovered is not None:
             return recovered
 
         # No Ethereum anchor exists yet, submit a new transaction.
+        self._record_anchor_audit_event(
+            "blockchain.anchor_submitted",
+            evidence_id,
+            audit_context,
+            summary=f"Ethereum transaction submitted for evidence {evidence_id}",
+        )
         try:
             tx_hash, block_number, anchored_timestamp = await asyncio.to_thread(
                 self.blockchain.anchor_evidence, evidence_id, bytes.fromhex(evidence_hash)
@@ -115,7 +178,9 @@ class EthereumAnchorService:
             # against the now-updated contract state. Re-check Ethereum once more
             # before giving up: if the anchor is there now, this was that race and
             # we should recover the now-confirmed anchor instead of failing.
-            recovered = await self._recover_from_chain_if_anchored(evidence_id, passport_id, evidence_hash)
+            recovered = await self._recover_from_chain_if_anchored(
+                evidence_id, passport_id, evidence_hash, audit_context=audit_context,
+            )
             if recovered is not None:
                 logger.warning(
                     "Ethereum anchor submission for evidence_id=%s failed (%s) but a matching "
@@ -123,6 +188,17 @@ class EthereumAnchorService:
                     evidence_id, exc,
                 )
                 return recovered
+            # Genuine failure -- no anchor exists anywhere (Firestore or
+            # chain). Record it before re-raising so the exact business
+            # outcome (submission failed, nothing was confirmed) is
+            # unchanged and observable.
+            self._record_anchor_audit_event(
+                "blockchain.anchor_failed",
+                evidence_id,
+                audit_context,
+                summary=f"Ethereum anchoring failed for evidence {evidence_id}",
+                extra_metadata={"error": sanitize_analysis_error(exc)},
+            )
             raise
 
         blockchain_proof = {
@@ -144,11 +220,27 @@ class EthereumAnchorService:
             "anchoring_method": "SINGLE_HASH",
         }
         self._create_anchor(evidence_id, blockchain_proof)
+        self._record_anchor_audit_event(
+            "blockchain.anchor_confirmed",
+            evidence_id,
+            audit_context,
+            summary=f"Ethereum transaction confirmed for evidence {evidence_id}",
+            extra_metadata={
+                "transaction_hash": tx_hash,
+                "block_number": block_number,
+                "blockchain_network": blockchain_proof["blockchain_network"],
+            },
+        )
 
         return blockchain_proof
 
     async def _recover_from_chain_if_anchored(
-        self, evidence_id: str, passport_id: str, evidence_hash: str
+        self,
+        evidence_id: str,
+        passport_id: str,
+        evidence_hash: str,
+        *,
+        audit_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Check Ethereum for an anchor matching evidence_hash and recover it if found.
 
@@ -201,6 +293,21 @@ class EthereumAnchorService:
             )
 
         self._create_anchor(evidence_id, blockchain_proof)
+        if audit_context is not None:
+            # Chain already had this anchor (a prior submission's Firestore
+            # write was lost, or a race with another caller) -- a real
+            # transaction exists, but *this call* submitted nothing new.
+            self._record_anchor_audit_event(
+                "blockchain.anchor_recovered",
+                evidence_id,
+                audit_context,
+                summary=f"Ethereum anchor recovered from chain for evidence {evidence_id} (no new transaction submitted)",
+                extra_metadata={
+                    "transaction_hash": blockchain_proof.get("transaction_hash"),
+                    "block_number": blockchain_proof.get("block_number"),
+                    "blockchain_network": blockchain_proof.get("blockchain_network"),
+                },
+            )
         return blockchain_proof
 
     async def verify_evidence(
@@ -282,6 +389,10 @@ class EthereumAnchorService:
         self,
         evidence_id: str,
         transaction_hash: str,
+        *,
+        actor_id: Optional[str] = None,
+        org_id: Optional[str] = None,
+        version_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Persist metadata for an already-confirmed transaction without sending."""
         self._validate_record_id(evidence_id)
@@ -293,12 +404,34 @@ class EthereumAnchorService:
         passport_id = evidence.get("passport_id")
         self._validate_record_id(passport_id)
         evidence_hash = hash_evidence_item(evidence)
+        audit_context: Dict[str, Any] = {
+            "actor_id": actor_id or "system",
+            "org_id": org_id,
+            "contract_id": evidence.get("contract_id"),
+            "metadata_base": {
+                "evidence_hash": evidence_hash,
+                "contract_version": evidence.get("contract_version"),
+                "version_id": version_id,
+                "passport_id": passport_id,
+            },
+        }
         existing = self.repository.get(evidence_id)
         if existing:
             if existing.get("evidence_hash", "").lower() != evidence_hash.lower():
                 raise ValueError("Evidence already has a different Ethereum anchor")
             if existing.get("transaction_hash", "").lower() != transaction_hash.lower():
                 raise ValueError("Evidence already has a different Ethereum anchor")
+            self._record_anchor_audit_event(
+                "blockchain.anchor_reused",
+                evidence_id,
+                audit_context,
+                summary=f"Ethereum anchor already existed for evidence {evidence_id}; reused, no new transaction submitted",
+                extra_metadata={
+                    "transaction_hash": existing.get("transaction_hash"),
+                    "block_number": existing.get("block_number"),
+                    "blockchain_network": existing.get("blockchain_network"),
+                },
+            )
             return existing
 
         tx_hash, block_number, anchored_timestamp = await asyncio.to_thread(
@@ -319,7 +452,50 @@ class EthereumAnchorService:
             "anchoring_method": "SINGLE_HASH",
         }
         self._create_anchor(evidence_id, blockchain_proof)
+        self._record_anchor_audit_event(
+            "blockchain.anchor_recovered",
+            evidence_id,
+            audit_context,
+            summary=f"Ethereum anchor recovered from a known transaction for evidence {evidence_id} (no new transaction submitted)",
+            extra_metadata={
+                "transaction_hash": tx_hash,
+                "block_number": block_number,
+                "blockchain_network": blockchain_proof["blockchain_network"],
+            },
+        )
         return blockchain_proof
+
+    def _record_anchor_audit_event(
+        self,
+        action: str,
+        evidence_id: str,
+        audit_context: Dict[str, Any],
+        *,
+        summary: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Cross-cutting audit_log entry for one step of the blockchain
+        anchoring lifecycle (Phase 3F) -- the same org-scoped surface Phase
+        3E wired up for the Reviewer/Approver workflow (services/audit.py).
+
+        record_audit_event() is best-effort and never raises, so a failure
+        here can never change anchoring's own success/failure outcome or its
+        idempotency guarantees (Phase 3F Step 4) -- it only makes an
+        already-happening step observable. Only the evidence hash,
+        transaction hash, block number and network are ever recorded: never
+        a private key, credential, or raw provider configuration.
+        """
+        metadata = {**audit_context["metadata_base"], **(extra_metadata or {})}
+        record_audit_event(
+            actor_id=audit_context["actor_id"],
+            action=action,
+            resource_type="evidence_anchor",
+            resource_id=evidence_id,
+            summary=summary,
+            contract_id=audit_context["contract_id"],
+            org_id=audit_context["org_id"],
+            metadata=metadata,
+        )
 
     def _create_anchor(self, evidence_id: str, blockchain_proof: Dict[str, Any]) -> None:
         """Persist anchor metadata without allowing replacement or deletion."""

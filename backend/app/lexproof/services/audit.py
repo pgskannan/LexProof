@@ -15,11 +15,14 @@ VersionAnalysisService._create_notification for in-app notifications).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from ..repositories.firestore import FirestoreRepository
+
+logger = logging.getLogger(__name__)
 
 RepositoryFactory = Callable[[str], FirestoreRepository]
 
@@ -59,5 +62,24 @@ def record_audit_event(
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        # Best-effort by design (see module docstring): an audit-write
+        # failure must never fail the business operation that triggered it.
+        # But "never fail loudly" previously meant "never fail visibly either"
+        # -- silently swallowing the exception left no trace anywhere that an
+        # audit record was lost, which undermines the audit trail's own
+        # purpose (Phase 3G). Log through the same logger/level convention
+        # already used for this exact pattern elsewhere (e.g.
+        # VersionAnalysisService._create_notification,
+        # ChatNotificationService's delivery-record write) -- only safe
+        # identifiers and the exception itself, never the audit payload
+        # (summary/metadata can contain contract text or PII-adjacent detail).
+        logger.warning(
+            "Audit event write failed: action=%s resource_type=%s resource_id=%s org_id=%s: %s",
+            action,
+            resource_type,
+            resource_id,
+            org_id,
+            exc,
+            exc_info=True,
+        )

@@ -10,7 +10,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from ..repositories.firestore import FirestoreRepository
-from .roles import normalize_roles
+from .roles import OrgRole, normalize_roles
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +296,28 @@ class OrganizationService:
         return member
 
     def list_members(self, org_id: str) -> list[dict[str, Any]]:
+        """List all members of an org, joined with each member's live
+        `users/{user_id}` record for email/display_name.
+
+        Phase 3H.5 (P1-B fix): a membership document's own `email` field is
+        only ever written at membership-creation time (create_org,
+        invite_member/_upsert_member, ensure_member) and reconciled later
+        only via sync_signed_in_user()'s invite-acceptance loop -- which
+        requires a matching organization_invites record. A membership
+        created directly (e.g. by a seed/demo script) rather than through
+        invite_member() has no such invite record, so its stored `email`
+        can silently go stale forever even after the user's real sign-in
+        updates their authoritative `users/{user_id}.email` (which
+        sync_signed_in_user() DOES keep current on every sign-in). Prefer
+        that live, authoritative user email here and fall back to the
+        membership doc's own stored email only when no user record (or no
+        email on it) exists yet -- e.g. an invited-but-not-yet-signed-in
+        member. This is read-only: it changes what this listing reports,
+        not any stored data, so it can't create duplicate memberships,
+        doesn't touch roles/status, and doesn't affect authorization
+        (get_member/get_active_member, used for auth decisions, are
+        unchanged and still keyed by user_id).
+        """
         self.get_org(org_id)
         members = []
         for record in self.members(org_id).stream():
@@ -306,7 +328,7 @@ class OrganizationService:
                     **record,
                     "user_id": user_id,
                     "org_id": org_id,
-                    "email": record.get("email") or (user or {}).get("email"),
+                    "email": (user or {}).get("email") or record.get("email"),
                     "display_name": (user or {}).get("display_name"),
                 }
             )
@@ -570,3 +592,33 @@ def refresh_custom_claims(user_id: str, org_id: str, roles: list[str]) -> None:
 
 def get_organization_service() -> OrganizationService:
     return OrganizationService()
+
+
+def contract_owner_or_org_admin(contract: dict[str, Any], user_id: str) -> bool:
+    """True if `user_id` is the contract's real owner, or an active Admin of
+    the contract's organization.
+
+    Several owner-gated contract actions (analyze, create a new version)
+    historically used a bare `contract.get("owner_id") == user_id` check,
+    independent of the organization/role model enforced everywhere else
+    (api/contracts.py::_is_visible_to_user, and the owner-or-admin rule
+    services/redline_proposals.py already applies to proposal creation and
+    editing). That meant a legitimate org Admin could see a contract but not
+    act on it if they were not the original uploader -- Phase 1/2 audit P1.
+
+    This mirrors the already-established owner-or-admin rule instead of
+    inventing a new one: the actual owner may always act; within an
+    organization, an active Admin may also act on any contract in that same
+    org; a non-owner, non-admin member (Reviewer/Approver/Auditor/
+    Contract Owner-role-but-not-actual-owner) is still rejected; a member of
+    a different organization or a non-member is rejected; and a contract
+    with no org_id (legacy data) keeps the strict, owner-only behavior it
+    always had.
+    """
+    if contract.get("owner_id") == user_id:
+        return True
+    org_id = contract.get("org_id")
+    if not org_id:
+        return False
+    member = get_organization_service().get_active_member(str(org_id), user_id)
+    return bool(member and OrgRole.ADMIN.value in (member.get("roles") or []))

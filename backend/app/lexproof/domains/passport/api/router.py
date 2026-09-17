@@ -92,6 +92,13 @@ def get_read_passport_service(user: Dict[str, Any]) -> PassportService:
         user_id=str(user["uid"]),
         tenant_id=str(user["uid"]),
         repository=FirestoreRepository("legal_passports"),
+        # Phase 3H.2 (P1-A): lets PassportService resolve a passport's
+        # associated Contract's org_id and apply the same org-aware read
+        # visibility Contract endpoints already use (see
+        # ..authorization.is_visible_via_contract). Built fresh here, like
+        # `repository` above, rather than shared as a module-level
+        # singleton, so both stay patchable the same way in tests.
+        contracts_repository=FirestoreRepository("contracts"),
     )
 
 
@@ -118,6 +125,7 @@ def get_create_passport_service(user: Dict[str, Any]) -> PassportService:
         user_id=str(user["uid"]),
         tenant_id=str(user["uid"]),
         repository=repository,
+        contracts_repository=FirestoreRepository("contracts"),
     )
 
 
@@ -308,6 +316,11 @@ async def get_evidence_service(user: Dict[str, Any] = Depends(get_current_user))
         owner_id=str(user["uid"]),
         passport_repository=_evidence_service.passport_repository,
         anchor_repository=_evidence_service.anchor_repository,
+        # See the matching comment in get_read_passport_service above: built
+        # fresh per request rather than shared off the _evidence_service
+        # template, so it stays patchable the same way the other
+        # FirestoreRepository(...) calls in this module already are.
+        contracts_repository=FirestoreRepository("contracts"),
     )
 
 
@@ -485,14 +498,26 @@ async def verify_passport_integrity_endpoint(
             # single /verify call, not as a rare edge case. Push the blocking
             # scan onto a worker thread so it can't stall the loop.
             repository = evidence_service.repository
-            owner_id = evidence_service.owner_id
+            # Phase 3H.5 (P2 fix): this fallback used to gate on a bare
+            # owner_id comparison, so an authorized org member (anyone
+            # other than the exact owner_id on the evidence record) was
+            # silently denied evidence here even though the normal Evidence
+            # read paths (get_evidence_item, get_evidence_by_passport) grant
+            # them access via the shared org-aware visibility rule. Reuse
+            # that exact same rule -- EvidenceService._is_visible, which
+            # wraps .authorization.is_visible_via_contract -- instead of
+            # re-implementing a second, inconsistent authorization check
+            # here. Legacy/orgless records (no contract_id resolvable, or no
+            # contracts_repository) fall through to the same strict
+            # owner-only rule as before.
+            is_visible = evidence_service._is_visible
 
             def _scan_evidence_for_passport() -> list[dict[str, Any]]:
                 return [
                     record
                     for record in repository.stream()
                     if record.get("passport_id") == passport_id_value
-                    and (not owner_id or not record.get("owner_id") or record.get("owner_id") == owner_id)
+                    and is_visible(record)
                 ]
 
             evidence_items = await asyncio.to_thread(_scan_evidence_for_passport)

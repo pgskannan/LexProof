@@ -1,6 +1,8 @@
 """Unit tests for the cross-cutting audit log: the write helper and the
 org-scoped, Admin/Auditor-gated read endpoint."""
 
+import logging
+
 from fastapi.testclient import TestClient
 
 from app.lexproof.api import audit_log as audit_log_api
@@ -189,3 +191,147 @@ def test_record_audit_event_never_raises():
         resource_type="contract",
         summary="Uploaded contract",
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3G: audit-write failures must be observable, not silently swallowed.
+# ---------------------------------------------------------------------------
+
+AUDIT_LOGGER_NAME = "app.lexproof.services.audit"
+
+
+def test_record_audit_event_success_logs_nothing(caplog):
+    """1. Normal audit write still succeeds, and produces no warning log --
+    logging must only ever fire on the failure path."""
+    FakeRepository.stores = {"audit_log": {}}
+    with caplog.at_level(logging.WARNING, logger=AUDIT_LOGGER_NAME):
+        record_audit_event(
+            FakeRepository,
+            actor_id="user-1",
+            action="contract.uploaded",
+            resource_type="contract",
+            resource_id="c1",
+            summary="Uploaded contract",
+            org_id="org-a",
+        )
+    assert caplog.records == []
+    assert len(list(FakeRepository("audit_log").stream())) == 1
+
+
+def test_record_audit_event_failure_does_not_raise_to_caller():
+    """2. A simulated audit-write failure must not raise -- the calling
+    business operation continues exactly as before Phase 3G."""
+
+    def broken_factory(collection: str):
+        raise RuntimeError("Firestore is down")
+
+    record_audit_event(
+        broken_factory,
+        actor_id="user-1",
+        action="redline.approved",
+        resource_type="redline_proposal",
+        resource_id="proposal-1",
+        summary="Approved redline proposal",
+        org_id="org-a",
+    )
+
+
+def test_record_audit_event_failure_produces_a_log_entry(caplog):
+    """3. A simulated audit-write failure now produces exactly one log
+    entry, at WARNING (the same level the codebase already uses for this
+    best-effort pattern -- see _create_notification / chat notifications),
+    where it was previously silently swallowed."""
+
+    def broken_factory(collection: str):
+        raise RuntimeError("Firestore is down")
+
+    with caplog.at_level(logging.WARNING, logger=AUDIT_LOGGER_NAME):
+        record_audit_event(
+            broken_factory,
+            actor_id="user-1",
+            action="redline.approved",
+            resource_type="redline_proposal",
+            resource_id="proposal-1",
+            summary="Approved redline proposal",
+            org_id="org-a",
+        )
+
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.WARNING
+
+
+def test_audit_failure_log_identifies_the_failure_sufficiently(caplog):
+    """4. The log entry carries enough safe context (action, resource type/
+    id, org id, and the real exception) to diagnose which audit write
+    failed and why, without dumping the audit payload itself."""
+
+    def broken_factory(collection: str):
+        raise RuntimeError("Firestore is down")
+
+    with caplog.at_level(logging.WARNING, logger=AUDIT_LOGGER_NAME):
+        record_audit_event(
+            broken_factory,
+            actor_id="user-1",
+            action="redline.approved",
+            resource_type="redline_proposal",
+            resource_id="proposal-42",
+            summary="Approved redline proposal for contract c1",
+            org_id="org-a",
+        )
+
+    message = caplog.records[0].getMessage()
+    assert "redline.approved" in message
+    assert "redline_proposal" in message
+    assert "proposal-42" in message
+    assert "org-a" in message
+    assert "Firestore is down" in message
+
+
+def test_audit_failure_log_does_not_expose_sensitive_payload(caplog):
+    """5. Sensitive values (summary text, metadata) are never logged -- only
+    the safe identifiers above and the exception itself."""
+
+    def broken_factory(collection: str):
+        raise RuntimeError("Firestore is down")
+
+    sensitive_summary = "Reviewed contract clause: SSN 123-45-6789, wire routing 021000021"
+    sensitive_metadata = {
+        "api_key": "sk-super-secret-token-abcdef",
+        "clause_text": "Confidential payment terms: $1,000,000 due net 10",
+    }
+
+    with caplog.at_level(logging.WARNING, logger=AUDIT_LOGGER_NAME):
+        record_audit_event(
+            broken_factory,
+            actor_id="user-1",
+            action="redline.approved",
+            resource_type="redline_proposal",
+            resource_id="proposal-42",
+            summary=sensitive_summary,
+            org_id="org-a",
+            metadata=sensitive_metadata,
+        )
+
+    message = caplog.records[0].getMessage()
+    assert "123-45-6789" not in message
+    assert "021000021" not in message
+    assert "sk-super-secret-token" not in message
+    assert "Confidential payment terms" not in message
+    assert sensitive_summary not in message
+
+
+def test_existing_call_shapes_with_only_required_fields_still_succeed(caplog):
+    """6. Existing callers remain unaffected: a call using only the required
+    fields (several real call sites omit resource_id/contract_id/org_id/
+    metadata) still succeeds and, on the success path, still logs nothing."""
+    FakeRepository.stores = {"audit_log": {}}
+    with caplog.at_level(logging.WARNING, logger=AUDIT_LOGGER_NAME):
+        record_audit_event(
+            FakeRepository,
+            actor_id="user-1",
+            action="passport.created",
+            resource_type="legal_passport",
+            summary="AI analysis complete",
+        )
+    assert caplog.records == []
+    assert len(list(FakeRepository("audit_log").stream())) == 1

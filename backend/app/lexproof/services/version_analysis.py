@@ -27,7 +27,7 @@ from .analysis_prompt import (
 from .analysis_safety import sanitize_analysis_error as _sanitize_analysis_error
 from .notification_prefs import get_notification_preferences
 from .ethereum_anchor_service import get_ethereum_anchor_service
-from .organizations import DEFAULT_PLAYBOOK_CLAUSES
+from .organizations import DEFAULT_PLAYBOOK_CLAUSES, contract_owner_or_org_admin
 from .vertex_ai import VertexAIError, VertexGeminiProvider
 
 logger = logging.getLogger(__name__)
@@ -165,12 +165,12 @@ class VersionAnalysisService:
         contract = self.contracts.get(contract_id)
         if not contract:
             raise HTTPException(status_code=404, detail="Contract not found")
-        if contract.get("owner_id") != user_id:
+        if not contract_owner_or_org_admin(contract, user_id):
             raise HTTPException(status_code=403, detail="You are not authorized to analyze this contract")
         version = self.versions.get(version_id)
         if not version:
             raise HTTPException(status_code=404, detail="Contract version not found")
-        if version.get("contract_id") != contract_id or version.get("owner_id") != user_id:
+        if version.get("contract_id") != contract_id or not contract_owner_or_org_admin(contract, user_id):
             raise HTTPException(status_code=403, detail="You are not authorized to analyze this contract version")
         if contract.get("current_version_id") != version_id:
             raise HTTPException(status_code=409, detail="Only the current published version can be analyzed")
@@ -332,7 +332,18 @@ class VersionAnalysisService:
                 )
                 try:
                     for evidence_item in persisted_evidence:
-                        await anchor_service.anchor_evidence(evidence_item["evidence_id"])
+                        # Phase 3F: pass through the real actor/tenant/version
+                        # context already in scope on this request so the
+                        # blockchain lifecycle audit events emitted inside
+                        # anchor_evidence() are attributable and org-scoped,
+                        # not just "system". Purely additive -- none of these
+                        # keyword args affect anchoring behavior or idempotency.
+                        await anchor_service.anchor_evidence(
+                            evidence_item["evidence_id"],
+                            actor_id=user_id,
+                            org_id=contract.get("org_id"),
+                            version_id=version_id,
+                        )
                 except Exception as exc:
                     # Log the real underlying cause (RPC error, on-chain revert reason, hash
                     # mismatch, etc.) before it is converted into the generic response below.

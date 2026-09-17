@@ -85,7 +85,7 @@ class FakeAnchorService:
         self.repository = repository
         self.evidence_repository = evidence_repository
 
-    async def anchor_evidence(self, evidence_id):
+    async def anchor_evidence(self, evidence_id, **kwargs):
         FakeAnchorService.calls += 1
         evidence = self.evidence_repository.get(evidence_id)
         evidence_hash = __import__("app.lexproof.domains.passport.utils.hashing", fromlist=["hash_evidence_item"]).hash_evidence_item(evidence)
@@ -99,7 +99,7 @@ class FakeAnchorService:
 
 
 class FailingAnchorService(FakeAnchorService):
-    async def anchor_evidence(self, evidence_id):
+    async def anchor_evidence(self, evidence_id, **kwargs):
         raise RuntimeError("anchor failed")
 
 
@@ -119,7 +119,7 @@ class FailOnceAnchorService(FakeAnchorService):
     failed = False
     attempts = 0
 
-    async def anchor_evidence(self, evidence_id):
+    async def anchor_evidence(self, evidence_id, **kwargs):
         type(self).attempts += 1
         if not self.failed and type(self).attempts == 2:
             self.failed = True
@@ -127,7 +127,7 @@ class FailOnceAnchorService(FakeAnchorService):
             evidence_hash = __import__("app.lexproof.domains.passport.utils.hashing", fromlist=["hash_evidence_item"]).hash_evidence_item(evidence)
             self.repository.set(evidence_id, {"evidence_hash": evidence_hash})
             raise RuntimeError("failure after one Ethereum anchor")
-        return await super().anchor_evidence(evidence_id)
+        return await super().anchor_evidence(evidence_id, **kwargs)
 
 
 def seed_data():

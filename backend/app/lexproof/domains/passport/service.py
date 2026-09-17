@@ -30,6 +30,7 @@ from .utils.hashing import (
     generate_passport_id,
     generate_evidence_id,
 )
+from .authorization import is_visible_via_contract
 from .validation import validate_passport_creation_analysis
 from .utils.evidence import count_legal_evidence_findings
 from typing import Awaitable, Callable
@@ -59,6 +60,7 @@ class PassportService:
         tenant_id: str,
         audit_sink: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
         repository: Optional[FirestoreRepository] = None,
+        contracts_repository: Optional[FirestoreRepository] = None,
     ):
         """Initialize PassportService.
 
@@ -76,6 +78,30 @@ class PassportService:
         self.tenant_id = tenant_id
         self.audit_sink = audit_sink
         self.repository = repository
+        # Optional: enables org-aware visibility (see .authorization). When
+        # not supplied (e.g. tests that never touch the repository-backed
+        # path), visibility falls back to the original owner-only rule --
+        # identical to this service's pre-3H.2 behavior.
+        self.contracts_repository = contracts_repository
+
+    def _is_visible(self, record: Dict[str, Any]) -> bool:
+        """Org-aware visibility for a persisted passport record.
+
+        Reuses the Contract domain's own read-visibility rule (see
+        .authorization.is_visible_via_contract) instead of the plain
+        owner-only check this service used before Phase 3H.2. Passport
+        records without a contracts_repository configured (e.g. tests that
+        construct PassportService directly for pure in-memory scenarios) or
+        without a resolvable org-owned Contract fall back to the original,
+        unchanged owner-only rule (see the module-level _is_visible_to_tenant above, kept for
+        backward compatibility).
+        """
+        return is_visible_via_contract(
+            owner_id=record.get("owner_id"),
+            tenant_id=self.tenant_id,
+            contract_id=record.get("contract_id"),
+            contracts_repository=self.contracts_repository,
+        )
 
     async def create_passport(
         self,
@@ -387,7 +413,7 @@ class PassportService:
             passport = None
         if passport is None and self.repository:
             stored = self.repository.get(passport_id)
-            if stored and _is_visible_to_tenant(stored, self.tenant_id):
+            if stored and self._is_visible(stored):
                 passport = ContractPassport.model_validate(stored)
         return ContractPassportResponse.model_validate(passport) if passport else None
 
@@ -411,7 +437,7 @@ class PassportService:
         if self.repository:
             for stored in self.repository.stream():
                 if stored.get("contract_id") == contract_id and stored.get("contract_version") == contract_version:
-                    if not _is_visible_to_tenant(stored, self.tenant_id):
+                    if not self._is_visible(stored):
                         continue
                     return ContractPassportResponse.model_validate(stored)
         return None
@@ -441,7 +467,7 @@ class PassportService:
                     continue
                 if contract_id and stored.get("contract_id") != contract_id:
                     continue
-                if not _is_visible_to_tenant(stored, self.tenant_id):
+                if not self._is_visible(stored):
                     continue
                 try:
                     values.append(ContractPassport.model_validate(stored))
