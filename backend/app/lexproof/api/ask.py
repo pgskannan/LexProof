@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -14,8 +14,14 @@ from ..services.vertex_ai import VertexAIError
 router = APIRouter(prefix="/orgs/{org_id}", tags=["ask"])
 
 
+class AskHistoryTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
+    history: list[AskHistoryTurn] = Field(default_factory=list, max_length=20)
 
 
 class AskCitation(BaseModel):
@@ -41,8 +47,9 @@ async def ask_contracts(
     body: AskRequest,
     member: dict[str, Any] = Depends(get_current_org_member),
 ):
+    history = [turn.model_dump() for turn in body.history]
     try:
-        result = await _service().ask(org_id, body.question, str(member["uid"]))
+        result = await _service().ask(org_id, body.question, str(member["uid"]), history=history)
     except VertexAIError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return result

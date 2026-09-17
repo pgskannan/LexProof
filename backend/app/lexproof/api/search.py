@@ -12,6 +12,7 @@ the caller's uid).
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -67,59 +68,71 @@ async def search(
     if not query:
         return []
 
-    results: list[SearchResult] = []
+    # The three collection scans below go through the real, synchronous
+    # Firestore SDK client. Called directly inside this async endpoint (which
+    # the command palette now calls on every keystroke), a full scan of each
+    # collection would run on the event loop's own thread and block every
+    # other concurrent request on it -- the same status-and-plan.md "§2c"
+    # class of hang already fixed in evidence_service.py. Push the whole scan
+    # onto a worker thread so it can't stall the loop.
+    def _scan() -> list[SearchResult]:
+        found: list[SearchResult] = []
 
-    contracts = FirestoreRepository("contracts")
-    for record in contracts.stream():
-        if not _visible(record, uid):
-            continue
-        name = _contract_name(record)
-        if not _matches(query, name, record.get("id"), record.get("contract_id")):
-            continue
-        contract_id = record.get("id") or record.get("contract_id")
-        results.append(SearchResult(
-            type="contract",
-            id=str(contract_id),
-            title=str(name),
-            subtitle=f"Status: {record.get('status') or 'unknown'}",
-            contract_id=str(contract_id) if contract_id else None,
-            url=f"/dashboard/contracts/{contract_id}",
-        ))
+        contracts = FirestoreRepository("contracts")
+        for record in contracts.stream():
+            if not _visible(record, uid):
+                continue
+            name = _contract_name(record)
+            if not _matches(query, name, record.get("id"), record.get("contract_id")):
+                continue
+            contract_id = record.get("id") or record.get("contract_id")
+            found.append(SearchResult(
+                type="contract",
+                id=str(contract_id),
+                title=str(name),
+                subtitle=f"Status: {record.get('status') or 'unknown'}",
+                contract_id=str(contract_id) if contract_id else None,
+                url=f"/dashboard/contracts/{contract_id}",
+            ))
 
-    findings = FirestoreRepository("risk_findings")
-    for record in findings.stream():
-        if not _visible(record, uid):
-            continue
-        if not _matches(query, record.get("title"), record.get("description"), record.get("evidence_quote")):
-            continue
-        finding_id = record.get("finding_id") or record.get("id")
-        contract_id = record.get("contract_id")
-        results.append(SearchResult(
-            type="finding",
-            id=str(finding_id),
-            title=str(record.get("title") or "Untitled finding"),
-            subtitle=str(record.get("severity") or "").upper(),
-            contract_id=str(contract_id) if contract_id else None,
-            url=f"/dashboard/contracts/{contract_id}" if contract_id else "/dashboard/findings",
-        ))
+        findings = FirestoreRepository("risk_findings")
+        for record in findings.stream():
+            if not _visible(record, uid):
+                continue
+            if not _matches(query, record.get("title"), record.get("description"), record.get("evidence_quote")):
+                continue
+            finding_id = record.get("finding_id") or record.get("id")
+            contract_id = record.get("contract_id")
+            found.append(SearchResult(
+                type="finding",
+                id=str(finding_id),
+                title=str(record.get("title") or "Untitled finding"),
+                subtitle=str(record.get("severity") or "").upper(),
+                contract_id=str(contract_id) if contract_id else None,
+                url=f"/dashboard/contracts/{contract_id}" if contract_id else "/dashboard/findings",
+            ))
 
-    passports = FirestoreRepository("legal_passports")
-    for record in passports.stream():
-        if not _visible(record, uid):
-            continue
-        passport_id = record.get("passport_id") or record.get("id")
-        contract_id = record.get("contract_id")
-        name = _contract_name(record)
-        if not _matches(query, name, passport_id, contract_id):
-            continue
-        results.append(SearchResult(
-            type="passport",
-            id=str(passport_id),
-            title=str(name),
-            subtitle=f"Passport {passport_id}",
-            contract_id=str(contract_id) if contract_id else None,
-            url=f"/legal-passport?contractId={contract_id}&contractVersion={record.get('contract_version') or 1}",
-        ))
+        passports = FirestoreRepository("legal_passports")
+        for record in passports.stream():
+            if not _visible(record, uid):
+                continue
+            passport_id = record.get("passport_id") or record.get("id")
+            contract_id = record.get("contract_id")
+            name = _contract_name(record)
+            if not _matches(query, name, passport_id, contract_id):
+                continue
+            found.append(SearchResult(
+                type="passport",
+                id=str(passport_id),
+                title=str(name),
+                subtitle=f"Passport {passport_id}",
+                contract_id=str(contract_id) if contract_id else None,
+                url=f"/legal-passport?contractId={contract_id}&contractVersion={record.get('contract_version') or 1}",
+            ))
+
+        return found
+
+    results = await asyncio.to_thread(_scan)
 
     def _rank(result: SearchResult) -> tuple[int, str]:
         # Exact/prefix matches on the title surface above substring matches.

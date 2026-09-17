@@ -165,25 +165,41 @@ class EthereumAnchorService:
             raise ValueError(
                 f"Evidence already has a different Ethereum anchor with hash {on_chain.get('evidence_hash', 'unknown')}"
             )
-        # Ethereum has the anchor, recover and persist metadata using the event log's
-        # actual transaction hash rather than the evidence hash itself.
-        tx_hash_value = await asyncio.to_thread(
-            self.blockchain.get_anchor_transaction_hash, evidence_id, on_chain["evidence_hash"]
-        )
-        tx_hash, block_number, anchored_timestamp = await asyncio.to_thread(
-            self.blockchain.recover_confirmed_transaction, tx_hash_value
-        )
         blockchain_proof = {
             "evidence_id": evidence_id,
             "passport_id": passport_id,
             "blockchain_network": "ethereum-sepolia",
             "contract_address": self.blockchain.contract_address,
-            "transaction_hash": tx_hash,
-            "block_number": block_number,
-            "anchored_at": datetime.fromtimestamp(anchored_timestamp, timezone.utc).isoformat(),
+            "transaction_hash": None,
+            "block_number": None,
+            "anchored_at": datetime.fromtimestamp(on_chain["anchored_at"], timezone.utc).isoformat(),
             "evidence_hash": evidence_hash,
             "anchoring_method": "SINGLE_HASH",
         }
+
+        # Prefer the authoritative on-chain anchor data returned by getEvidenceAnchor()
+        # for recovery. Transaction-log lookup is only a best-effort enrichment step
+        # for local metadata; if that lookup fails, we still have a verified matching
+        # anchor and should persist it locally instead of failing the whole analysis.
+        try:
+            tx_hash_value = await asyncio.to_thread(
+                self.blockchain.get_anchor_transaction_hash, evidence_id, on_chain["evidence_hash"]
+            )
+            tx_hash, block_number, anchored_timestamp = await asyncio.to_thread(
+                self.blockchain.recover_confirmed_transaction, tx_hash_value
+            )
+            blockchain_proof["transaction_hash"] = tx_hash
+            blockchain_proof["block_number"] = block_number
+            blockchain_proof["anchored_at"] = datetime.fromtimestamp(anchored_timestamp, timezone.utc).isoformat()
+        except Exception as exc:
+            logger.warning(
+                "Could not enrich recovered anchor metadata for evidence_id=%s using transaction log lookup; "
+                "persisting verified on-chain anchor data only: %s",
+                evidence_id,
+                exc,
+                exc_info=True,
+            )
+
         self._create_anchor(evidence_id, blockchain_proof)
         return blockchain_proof
 

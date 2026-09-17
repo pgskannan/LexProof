@@ -23,7 +23,8 @@ from ..domains.passport.evidence_service import EvidenceService
 from ..domains.passport.models import EvidenceItemCreate, EvidenceStatus, EvidenceType
 from ..domains.passport.utils.hashing import compute_sha256_hash
 from ..repositories.firestore import EvidenceAnchorRepository, EvidenceRecordRepository, FirestoreRepository
-from .organizations import OrganizationService, get_organization_service
+from .esignature import ESignatureError, ESignatureProvider, get_esignature_provider
+from .organizations import OrganizationError, OrganizationService, get_organization_service
 from .roles import OrgRole, has_any_role
 
 logger = logging.getLogger(__name__)
@@ -166,6 +167,10 @@ def _public_link(record: dict[str, Any], *, include_token: bool = False) -> dict
         "countersigned_at": record.get("countersigned_at"),
         "countersign_evidence_id": record.get("countersign_evidence_id"),
         "comment_count": len(record.get("comments") or []),
+        "esignature_provider": record.get("esignature_provider"),
+        "esignature_status": record.get("esignature_status"),
+        "esignature_envelope_id": record.get("esignature_envelope_id"),
+        "esignature_sign_url": record.get("esignature_sign_url"),
     }
     if include_token:
         payload["token"] = token
@@ -187,6 +192,7 @@ class CounterpartyLinkService:
         organizations: OrganizationService | None = None,
         evidence_service_factory: Callable[[str], EvidenceService] | None = None,
         limiter: TokenRateLimiter | None = None,
+        esignature_provider: ESignatureProvider | None = None,
     ) -> None:
         self.links = links or FirestoreRepository(COLLECTION)
         self.contracts = contracts or FirestoreRepository("contracts")
@@ -197,6 +203,7 @@ class CounterpartyLinkService:
         self.organizations = organizations or get_organization_service()
         self._evidence_service_factory = evidence_service_factory
         self.limiter = limiter or rate_limiter
+        self.esignature_provider = esignature_provider or get_esignature_provider()
 
     def _evidence_service(self, owner_id: str) -> EvidenceService:
         if self._evidence_service_factory:
@@ -328,6 +335,24 @@ class CounterpartyLinkService:
             }
             for item in (record.get("comments") or [])
         ]
+        # White-label branding (Task #109): the counterparty is an outside
+        # party viewing this org's own scoped link, so showing that org's
+        # name/logo/color here is exactly the intended audience for
+        # branding -- not an over-exposure. Best-effort only: a deleted or
+        # unreadable org falls back to no branding rather than breaking the
+        # page the counterparty is trying to view.
+        org_name: str | None = None
+        org_logo_url: str | None = None
+        org_primary_color: str | None = None
+        org_id = record.get("org_id")
+        if org_id:
+            try:
+                org_name = self.organizations.get_org(org_id).get("name")
+                branding = self.organizations.get_org_settings(org_id)
+                org_logo_url = branding.get("logo_url")
+                org_primary_color = branding.get("primary_color")
+            except OrganizationError:
+                pass
         return {
             "contract_name": contract.get("name") or contract.get("contract_name") or "Contract",
             "contract_version": record.get("contract_version"),
@@ -344,6 +369,9 @@ class CounterpartyLinkService:
             "countersign_evidence_id": record.get("countersign_evidence_id"),
             "attestation_statement": ATTESTATION_STATEMENT,
             "comments": comments,
+            "org_name": org_name,
+            "org_logo_url": org_logo_url,
+            "org_primary_color": org_primary_color,
         }
 
     def add_comment(self, token: str, body: str) -> dict[str, Any]:
@@ -423,6 +451,189 @@ class CounterpartyLinkService:
             "passport_id": evidence.passport_id,
             "created_at": evidence.created_at.isoformat() if evidence.created_at else now,
         }
+
+    def _find_link_by_token_id(self, org_id: str, contract_id: str, token_id: str) -> dict[str, Any]:
+        records: list[dict[str, Any]] = []
+        if hasattr(self.links, "query"):
+            try:
+                records = self.links.query(equal={"org_id": org_id, "contract_id": contract_id, "token_id": token_id})
+            except Exception:
+                records = []
+        if not records:
+            records = [
+                item
+                for item in self.links.stream()
+                if item.get("org_id") == org_id
+                and item.get("contract_id") == contract_id
+                and item.get("token_id") == token_id
+            ]
+        if not records:
+            raise LinkNotFoundError(f"Counterparty link not found: {token_id}")
+        return records[0]
+
+    async def send_for_esignature(self, org_id: str, contract_id: str, token_id: str, actor_id: str) -> dict[str, Any]:
+        """Route an already-approved redline to the counterparty for a real
+        e-signature, instead of (or ahead of) the in-app typed-name
+        countersignature flow. Re-entrant: calling this again for a link
+        that already has an envelope just returns its current status
+        rather than sending a duplicate request."""
+        self._require_creator(org_id, actor_id)
+        self._require_org_contract(org_id, contract_id)
+        link = self._find_link_by_token_id(org_id, contract_id, token_id)
+        if link.get("countersign_evidence_id") or link.get("countersigned"):
+            raise LinkAlreadyCountersignedError("This link has already been countersigned")
+        existing_envelope_id = link.get("esignature_envelope_id")
+        if existing_envelope_id:
+            envelope = await self.esignature_provider.get_envelope_status(existing_envelope_id)
+            return await self._sync_esignature_status(link, envelope)
+        proposal = self.proposals.get(link.get("redline_proposal_id") or "") or {}
+        contract = self.contracts.get(contract_id) or {}
+        document_title = (
+            f"{contract.get('name') or contract.get('contract_name') or contract_id} "
+            f"\u2014 {proposal.get('title') or 'Redline'}"
+        )
+        document_text = (
+            "REDLINE FOR SIGNATURE\n\n"
+            f"Original clause:\n{proposal.get('original_text') or ''}\n\n"
+            f"Proposed replacement:\n{proposal.get('proposed_text') or ''}\n\n"
+            f"By signing, {link.get('counterparty_name')} agrees to be bound by the proposed clause above.\n\n/sig/"
+        )
+        envelope = await self.esignature_provider.create_envelope(
+            document_title=document_title,
+            document_text=document_text,
+            signer_name=link.get("counterparty_name") or "",
+            signer_email=link.get("counterparty_email") or "",
+            metadata={
+                "token_id": token_id,
+                "contract_id": contract_id,
+                "org_id": org_id,
+                "redline_proposal_id": link.get("redline_proposal_id"),
+            },
+        )
+        self.links.set(
+            link["id"],
+            {
+                "esignature_provider": self.esignature_provider.name,
+                "esignature_envelope_id": envelope["envelope_id"],
+                "esignature_status": envelope["status"],
+                "esignature_sign_url": envelope.get("sign_url"),
+                "esignature_sent_at": envelope.get("created_at"),
+            },
+            merge=True,
+        )
+        logger.info(
+            "e-signature envelope requested org_id=%s token_id=%s provider=%s envelope_id=%s",
+            org_id,
+            token_id,
+            self.esignature_provider.name,
+            envelope["envelope_id"],
+        )
+        return {**envelope, "link_token_id": token_id}
+
+    async def get_esignature_status(self, org_id: str, contract_id: str, token_id: str, actor_id: str) -> dict[str, Any]:
+        self._require_creator(org_id, actor_id)
+        self._require_org_contract(org_id, contract_id)
+        link = self._find_link_by_token_id(org_id, contract_id, token_id)
+        envelope_id = link.get("esignature_envelope_id")
+        if not envelope_id:
+            return {"provider": None, "status": None, "envelope_id": None}
+        envelope = await self.esignature_provider.get_envelope_status(envelope_id)
+        return await self._sync_esignature_status(link, envelope)
+
+    async def simulate_esignature_completion(
+        self,
+        org_id: str,
+        contract_id: str,
+        token_id: str,
+        actor_id: str,
+        *,
+        decline: bool = False,
+        decline_reason: str | None = None,
+    ) -> dict[str, Any]:
+        self._require_creator(org_id, actor_id)
+        self._require_org_contract(org_id, contract_id)
+        if self.esignature_provider.name != "stub":
+            raise ESignatureError("Simulating completion is only available for the stub e-signature provider")
+        link = self._find_link_by_token_id(org_id, contract_id, token_id)
+        envelope_id = link.get("esignature_envelope_id")
+        if not envelope_id:
+            raise ESignatureError("No e-signature envelope has been sent for this link")
+        envelope = await self.esignature_provider.simulate_completion(envelope_id, decline=decline, decline_reason=decline_reason)
+        return await self._sync_esignature_status(link, envelope)
+
+    async def _sync_esignature_status(self, link: dict[str, Any], envelope: dict[str, Any]) -> dict[str, Any]:
+        self.links.set(link["id"], {"esignature_status": envelope.get("status")}, merge=True)
+        if envelope.get("status") == "completed" and not (link.get("countersign_evidence_id") or link.get("countersigned")):
+            evidence = await self._record_esignature_evidence(link, envelope)
+            self.links.set(
+                link["id"],
+                {
+                    "countersigned": True,
+                    "countersign_evidence_id": evidence.evidence_id,
+                    "countersigned_at": envelope.get("completed_at") or _now_iso(),
+                },
+                merge=True,
+            )
+        return envelope
+
+    async def _record_esignature_evidence(self, link: dict[str, Any], envelope: dict[str, Any]) -> Any:
+        signed_name = envelope.get("signer_name") or link.get("counterparty_name") or ""
+        timestamp = envelope.get("completed_at") or _now_iso()
+        payload = {
+            "token_id": link.get("token_id"),
+            "contract_version": link.get("contract_version"),
+            "redline_proposal_id": link.get("redline_proposal_id"),
+            "counterparty_name": signed_name,
+            "timestamp": timestamp,
+            "esignature_provider": envelope.get("provider"),
+            "esignature_envelope_id": envelope.get("envelope_id"),
+        }
+        payload_hash = compute_sha256_hash(payload)
+        passport = self._resolve_passport(link)
+        if not passport:
+            raise CounterpartyLinkError(
+                "This contract version does not yet have a Legal Passport, so this e-signature cannot be recorded as evidence"
+            )
+        passport_id = passport.get("passport_id") or passport.get("id")
+        contract = self.contracts.get(link["contract_id"]) or {}
+        owner_id = contract.get("owner_id") or link.get("created_by") or "counterparty"
+        evidence_service = self._evidence_service(str(owner_id))
+        created = await evidence_service.create_evidence_item(
+            passport_id,
+            EvidenceItemCreate(
+                passport_id=passport_id,
+                evidence_type=EvidenceType.COUNTERPARTY_COUNTERSIGNATURE,
+                title=f"E-signature completed \u2014 {signed_name}",
+                description=(
+                    f"{signed_name} signed this redline via {envelope.get('provider')} e-signature. "
+                    "The completed signature is cryptographically recorded as evidence on this contract's Legal Passport."
+                ),
+                content=json.dumps(payload, sort_keys=True, ensure_ascii=False),
+                content_type="application/json",
+                evidence_status=EvidenceStatus.VALID,
+                contract_reference=link.get("redline_proposal_id"),
+                source=f"esignature_{envelope.get('provider')}",
+                source_id=envelope.get("envelope_id"),
+                metadata={
+                    "token_id": link.get("token_id"),
+                    "redline_proposal_id": link.get("redline_proposal_id"),
+                    "contract_id": link.get("contract_id"),
+                    "contract_version": link.get("contract_version"),
+                    "counterparty_name": signed_name,
+                    "esignature_provider": envelope.get("provider"),
+                    "esignature_envelope_id": envelope.get("envelope_id"),
+                    "payload_hash": payload_hash,
+                },
+            ),
+            user=None,
+        )
+        if evidence_service.repository:
+            extra = {
+                "contract_id": link.get("contract_id"),
+                "contract_version": link.get("contract_version"),
+            }
+            evidence_service.repository.set(created.evidence_id, extra, merge=True)
+        return created
 
     def _claim_countersign(self, document_id: str, record: dict[str, Any]) -> dict[str, Any]:
         def apply(transaction: Any) -> dict[str, Any]:

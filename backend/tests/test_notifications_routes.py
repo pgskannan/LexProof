@@ -88,3 +88,68 @@ def test_mark_all_read(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {"updated": 1}
     assert client.get("/api/notifications/unread-count").json() == {"count": 0}
+
+
+# --- Notification preferences ---------------------------------------------
+
+from tests.fakes import FakeRepository  # noqa: E402
+
+
+def make_prefs_client(monkeypatch, uid: str = "user-1"):
+    FakeRepository.stores = {"notification_preferences": {}}
+    monkeypatch.setattr(notifications_api, "FirestoreRepository", FakeRepository)
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: {"uid": uid}
+    return TestClient(app)
+
+
+def test_preferences_require_authentication():
+    response = TestClient(create_app()).get("/api/notifications/preferences")
+    assert response.status_code == 401
+
+
+def test_get_preferences_defaults_to_in_app_on_email_off(monkeypatch):
+    client = make_prefs_client(monkeypatch)
+    response = client.get("/api/notifications/preferences")
+    assert response.status_code == 200
+    assert response.json() == {
+        "in_app_analysis_complete": True,
+        "in_app_analysis_failed": True,
+        "email_analysis_complete": False,
+        "email_analysis_failed": False,
+    }
+
+
+def test_update_preferences_persists_and_round_trips(monkeypatch):
+    client = make_prefs_client(monkeypatch)
+    response = client.patch(
+        "/api/notifications/preferences",
+        json={"in_app_analysis_complete": False, "email_analysis_failed": True},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["in_app_analysis_complete"] is False
+    assert body["email_analysis_failed"] is True
+    # Untouched fields keep their defaults.
+    assert body["in_app_analysis_failed"] is True
+    assert body["email_analysis_complete"] is False
+
+    # And persists across a fresh GET.
+    reread = client.get("/api/notifications/preferences")
+    assert reread.json() == body
+
+
+def test_update_preferences_scoped_per_user(monkeypatch):
+    FakeRepository.stores = {"notification_preferences": {}}
+    monkeypatch.setattr(notifications_api, "FirestoreRepository", FakeRepository)
+    app = create_app()
+
+    app.dependency_overrides[get_current_user] = lambda: {"uid": "user-a"}
+    client_a = TestClient(app)
+    client_a.patch("/api/notifications/preferences", json={"in_app_analysis_complete": False})
+
+    app.dependency_overrides[get_current_user] = lambda: {"uid": "user-b"}
+    client_b = TestClient(app)
+    response_b = client_b.get("/api/notifications/preferences")
+    # user-b never changed anything, so still sees the default.
+    assert response_b.json()["in_app_analysis_complete"] is True

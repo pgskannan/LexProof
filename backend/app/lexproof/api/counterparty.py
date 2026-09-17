@@ -22,6 +22,7 @@ from ..services.counterparty_links import (
     LinkRevokedError,
     get_counterparty_link_service,
 )
+from ..services.esignature import ESignatureError
 
 internal_router = APIRouter(prefix="/orgs/{org_id}/contracts/{contract_id}/counterparty-links", tags=["counterparty-links"])
 external_router = APIRouter(prefix="/external", tags=["counterparty-links"])
@@ -43,6 +44,11 @@ class ExternalCountersignRequest(BaseModel):
     typed_name: str
     attestation_accepted: bool
     attestation: str | None = None
+
+
+class SimulateEsignatureRequest(BaseModel):
+    decline: bool = False
+    decline_reason: str | None = None
 
 
 def _service() -> CounterpartyLinkService:
@@ -70,6 +76,8 @@ def _http_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     if isinstance(error, CounterpartyLinkError):
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
+    if isinstance(error, ESignatureError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
 
 
@@ -105,6 +113,58 @@ def list_counterparty_links(
     try:
         return _service().list_links(org_id, contract_id, str(member["uid"]), redline_proposal_id)
     except (PermissionError, CounterpartyLinkError) as error:
+        raise _http_error(error) from error
+
+
+@internal_router.post("/{token_id}/esignature", status_code=status.HTTP_201_CREATED)
+async def send_counterparty_esignature(
+    org_id: str,
+    contract_id: str,
+    token_id: str,
+    member: dict[str, Any] = Depends(get_current_org_member),
+):
+    """Route this link's redline to its counterparty for a real e-signature
+    (DocuSign once configured, a zero-credential stub until then)."""
+    try:
+        return await _service().send_for_esignature(org_id, contract_id, token_id, str(member["uid"]))
+    except (PermissionError, CounterpartyLinkError, ESignatureError) as error:
+        raise _http_error(error) from error
+
+
+@internal_router.get("/{token_id}/esignature")
+async def get_counterparty_esignature_status(
+    org_id: str,
+    contract_id: str,
+    token_id: str,
+    member: dict[str, Any] = Depends(get_current_org_member),
+):
+    try:
+        return await _service().get_esignature_status(org_id, contract_id, token_id, str(member["uid"]))
+    except (PermissionError, CounterpartyLinkError, ESignatureError) as error:
+        raise _http_error(error) from error
+
+
+@internal_router.post("/{token_id}/esignature/simulate")
+async def simulate_counterparty_esignature(
+    org_id: str,
+    contract_id: str,
+    token_id: str,
+    request: SimulateEsignatureRequest,
+    member: dict[str, Any] = Depends(get_current_org_member),
+):
+    """Stub-provider-only: stand in for the signer actually completing (or
+    declining) the envelope, since there is no real DocuSign callback to
+    wait for in this environment."""
+    try:
+        return await _service().simulate_esignature_completion(
+            org_id,
+            contract_id,
+            token_id,
+            str(member["uid"]),
+            decline=request.decline,
+            decline_reason=request.decline_reason,
+        )
+    except (PermissionError, CounterpartyLinkError, ESignatureError) as error:
         raise _http_error(error) from error
 
 

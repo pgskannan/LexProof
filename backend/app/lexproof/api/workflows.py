@@ -17,6 +17,7 @@ from ..services.workflow_engine import (
     WorkflowTransitionError,
     get_workflow_engine,
 )
+from ..services.workflow_escalation import get_workflow_escalation_service
 
 router = APIRouter(prefix="/orgs/{org_id}", tags=["workflows"])
 
@@ -99,6 +100,32 @@ def create_workflow_definition(
         )
     except WorkflowError as error:
         raise _handle(error) from error
+
+
+@router.get("/workflow-instances/overdue")
+def list_overdue_workflow_instances(
+    org_id: str,
+    member: dict[str, Any] = Depends(get_current_org_member),
+):
+    """In-progress workflow instances (redline reviews, and future workflow
+    types) that have passed their current state's SLA due date."""
+    return get_workflow_engine().list_overdue_instances(org_id)
+
+
+@router.post("/workflow-instances/escalate")
+def escalate_overdue_workflow_instances(
+    org_id: str,
+    member: dict[str, Any] = Depends(get_current_org_member),
+):
+    """Sweep this org for overdue instances and notify the roles each one's
+    current state names for escalation (idempotent -- already-escalated
+    instances are skipped). Safe for any active member to trigger: it does
+    not expose anything list_overdue_workflow_instances doesn't already show,
+    it just also sends the notification. Intended to be called opportunistically
+    when a reviewer opens their pending-approvals screen, and/or by an external
+    scheduler hitting this same endpoint on a timer."""
+    escalated = get_workflow_escalation_service().sweep_org(org_id)
+    return {"escalated": escalated, "count": len(escalated)}
 
 
 @router.get("/workflow-instances")

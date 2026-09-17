@@ -61,5 +61,14 @@ class FakeRepository:
             records = records[:limit]
         return records
 
+    def get_many(self, document_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Batched point reads, mirroring FirestoreRepository.get_many()."""
+        wanted = {str(document_id) for document_id in document_ids}
+        return {
+            key: {"id": key, **value}
+            for key, value in self.stores.setdefault(self.collection, {}).items()
+            if key in wanted
+        }
+
     def run_transaction(self, callback: Callable[[Any], T]) -> T:
         return callback(None)

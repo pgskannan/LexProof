@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -56,6 +56,20 @@ class ContractPassport(BaseModel):
     # Status
     status: PassportStatus = Field(
         default=PassportStatus.PENDING, description="Passport status"
+    )
+
+    # Real, measured AI processing time (hardening item #3): the actual elapsed
+    # wall-clock time of the Gemini analysis call that produced this passport's
+    # analysis_result, timed directly around that call in version_analysis.py.
+    # Deliberately NOT derived from broader lifecycle timestamps (contract
+    # version created_at vs. passport created_at), which can include upload
+    # delay, developer debugging/restarts, or re-analysis gaps and therefore
+    # overstate or understate true AI processing time. None for passports
+    # created before this field existed, or on the rare idempotent path where
+    # an existing analysis_snapshot was reused instead of calling Gemini again.
+    ai_analysis_duration_ms: Optional[float] = Field(
+        default=None,
+        description="Measured wall-clock duration (ms) of the actual Gemini analysis call",
     )
 
     # Audit trail
@@ -139,6 +153,7 @@ class ContractPassportResponse(BaseModel):
     created_at: datetime
     created_by: str
     status: PassportStatus
+    ai_analysis_duration_ms: Optional[float] = None
     audit_events: List[Dict[str, Any]]
     metadata: Dict[str, Any]
 
@@ -164,6 +179,7 @@ class ContractPassportSummary(BaseModel):
     evidence_count: int
     created_at: datetime
     status: PassportStatus
+    ai_analysis_duration_ms: Optional[float] = None
 
     class Config:
         """Pydantic configuration for serialization."""

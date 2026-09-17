@@ -7,7 +7,9 @@ from starlette.responses import PlainTextResponse
 from .api import blockchain_router, public_verify_router, time_machine_router, compliance_router, remediation_router, contracts_router, evidence_anchor_router, findings_router
 from .api.search import router as search_router
 from .api.notifications import router as notifications_router
+from .api.ui_preferences import router as ui_preferences_router
 from .api.audit_log import router as audit_log_router
+from .api.saved_views import router as saved_views_router
 from .api.redline_proposals import proposal_router, router as redline_proposals_router
 from .api.auth import get_current_user
 from .config import get_settings
@@ -18,6 +20,9 @@ from .api.workflows import router as workflows_router
 from .api.ask import router as ask_router
 from .api.counterparty import external_router as counterparty_external_router
 from .api.counterparty import internal_router as counterparty_internal_router
+from .api.portfolio import router as portfolio_router
+from .api.chat_notifications import router as chat_notifications_router
+from .api.evaluation import router as evaluation_router
 
 
 def create_app() -> FastAPI:
@@ -110,7 +115,9 @@ def create_app() -> FastAPI:
     app.include_router(findings_router, prefix="/api")
     app.include_router(search_router, prefix="/api")
     app.include_router(notifications_router, prefix="/api")
+    app.include_router(ui_preferences_router, prefix="/api")
     app.include_router(audit_log_router, prefix="/api")
+    app.include_router(saved_views_router, prefix="/api")
     app.include_router(redline_proposals_router, prefix="/api")
     app.include_router(proposal_router, prefix="/api")
     app.include_router(organizations_router, prefix="/api")
@@ -118,6 +125,9 @@ def create_app() -> FastAPI:
     app.include_router(ask_router, prefix="/api")
     app.include_router(counterparty_internal_router, prefix="/api")
     app.include_router(counterparty_external_router, prefix="/api")
+    app.include_router(portfolio_router, prefix="/api")
+    app.include_router(chat_notifications_router, prefix="/api")
+    app.include_router(evaluation_router, prefix="/api")
     return app
 
 

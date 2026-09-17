@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import asyncio
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -28,7 +27,9 @@ from .workflow_engine import (
     WorkflowPermissionError,
     WorkflowSeparationOfDutiesError,
     get_workflow_engine,
+    is_overdue as is_workflow_overdue,
 )
+from .published_version_status import project_published_version_status, project_published_version_status_batch
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,9 @@ class ProposalService:
         proposals: FirestoreRepository | None = None,
         reviews: FirestoreRepository | None = None,
         publication_audits: FirestoreRepository | None = None,
+        passports: FirestoreRepository | None = None,
+        evidence_records: FirestoreRepository | None = None,
+        evidence_anchors: FirestoreRepository | None = None,
         analysis_service: VersionAnalysisService | None = None,
         organizations: OrganizationService | None = None,
         workflow: WorkflowEngine | None = None,
@@ -69,6 +73,9 @@ class ProposalService:
         self.proposals = proposals or FirestoreRepository("redline_proposals")
         self.reviews = reviews or FirestoreRepository("redline_reviews")
         self.publication_audits = publication_audits or FirestoreRepository("redline_publication_audits")
+        self.passports = passports or FirestoreRepository("legal_passports")
+        self.evidence_records = evidence_records or FirestoreRepository("evidence_records")
+        self.evidence_anchors = evidence_anchors or FirestoreRepository("evidence_anchors")
         self.analysis_service = analysis_service
         self.organizations = organizations or get_organization_service()
         self.workflow = workflow or get_workflow_engine()
@@ -143,16 +150,45 @@ class ProposalService:
             {"workflow_instance_id": instance["instance_id"], "status": proposal["status"]},
             merge=True,
         )
-        return proposal
+        return self._with_review(proposal)
 
     def list(self, contract_id: str, user_id: str, version_id: str | None = None, finding_id: str | None = None) -> list[dict[str, Any]]:
         self._require_contract_member(contract_id, user_id)
-        return [
-            self._with_review(proposal)
-            for proposal in self.proposals.stream()
+        proposals = [
+            proposal for proposal in self.proposals.stream()
             if proposal.get("contract_id") == contract_id
             and (version_id is None or proposal.get("source_version_id") == version_id)
             and (finding_id is None or proposal.get("finding_id") == finding_id)
+        ]
+        reviews_by_proposal = {
+            item.get("proposal_id"): item
+            for item in self.reviews.stream()
+            if item.get("proposal_id")
+        }
+        published_version_ids = {
+            item.get("published_version_id")
+            for item in proposals
+            if item.get("published_version_id")
+        }
+        passport_snapshot = list(self.passports.stream()) if published_version_ids else []
+        evidence_snapshot = list(self.evidence_records.stream()) if published_version_ids else []
+        anchor_snapshot = list(self.evidence_anchors.stream()) if published_version_ids else []
+        finding_snapshot = list(self.findings.stream()) if published_version_ids else []
+        status_by_version = project_published_version_status_batch(
+            [item for item in self.versions.stream() if item.get("contract_id") == contract_id],
+            proposals,
+            passport_snapshot,
+            evidence_snapshot,
+            anchor_snapshot,
+            finding_snapshot,
+        )
+        return [
+            self._with_review(
+                proposal,
+                review=reviews_by_proposal.get(proposal.get("proposal_id")),
+                status=status_by_version.get(proposal.get("published_version_id")),
+            )
+            for proposal in proposals
         ]
 
     def get(self, proposal_id: str, user_id: str) -> dict[str, Any]:
@@ -249,7 +285,7 @@ class ProposalService:
                     {"status": merged["status"], "workflow_instance_id": instance["instance_id"]},
                     merge=True,
                 )
-        return merged
+        return self._with_review(merged)
 
     def publish(self, proposal_id: str, publisher_id: str) -> dict[str, Any]:
         proposal = self.proposals.get(proposal_id)
@@ -328,28 +364,30 @@ class ProposalService:
                 "workflow publish transition failed for proposal_id=%s instance_id=%s (publish itself already committed): %s",
                 proposal_id, instance["instance_id"], exc,
             )
-        analysis_status = "not_attempted"
-        if self.analysis_service:
-            try:
-                asyncio.run(
-                    self.analysis_service.analyze_version(
-                        proposal["contract_id"],
-                        new_version["id"],
-                        publisher_id,
-                        anchor_evidence=True,
-                    )
-                )
-                analysis_status = "complete"
-            except Exception as exc:
-                logger.warning(
-                    "Post-publish analysis/anchoring failed for proposal_id=%s, "
-                    "published_version_id=%s (publish itself already committed): %s",
-                    proposal_id, new_version["id"], exc,
-                )
-                analysis_status = "failed"
+        # Everything above this line is the durable "publish" commit: a new
+        # contract version now exists, the proposal is marked PUBLISHED, and
+        # the publication audit record is written. From here on is slow,
+        # best-effort post-publish work (Gemini analysis + Ethereum evidence
+        # anchoring) that must NEVER make an already-successful publish look
+        # like a failure to the user who clicked the button.
+        #
+        # This used to run inline via asyncio.run(self.analysis_service.
+        # analyze_version(...)) before returning, which blocked this method
+        # (and the HTTP request calling it) on the slow analysis+anchoring
+        # call. If that request timed out or the connection dropped while
+        # this was still running, the frontend's catch block surfaced
+        # "Unable to publish proposal" even though the publish had already
+        # fully committed (hardening item #1: publish success/error
+        # semantic separation). Instead, mark the proposal's analysis as
+        # PENDING and let the caller schedule run_post_publish_analysis()
+        # below as a FastAPI background task -- the same commit-fast/
+        # verify-later pattern already used for blockchain proof anchoring
+        # in api/blockchain.py's anchor_proof_to_blockchain().
+        analysis_status = "pending" if self.analysis_service else "not_attempted"
         self.proposals.set(proposal_id, {"analysis_status": analysis_status}, merge=True)
         return {
             "proposal_id": proposal_id,
+            "contract_id": proposal.get("contract_id"),
             "status": "PUBLISHED",
             "source_version_id": source_version_id,
             "published_version_id": new_version["id"],
@@ -357,6 +395,59 @@ class ProposalService:
             "published_at": published_at,
             "analysis_status": analysis_status,
         }
+
+    async def run_post_publish_analysis(
+        self,
+        proposal_id: str,
+        contract_id: str,
+        version_id: str,
+        publisher_id: str,
+    ) -> None:
+        """Best-effort post-publish analysis + evidence anchoring.
+
+        Intended to be scheduled as a FastAPI BackgroundTasks callback *after*
+        the publish() HTTP response has already been sent, so it can take as
+        long as it needs without the publishing user's request ever waiting
+        on it or timing out because of it. Never raises: a failure here only
+        updates analysis_status to "failed" so the UI can show an honest,
+        non-alarming "processing"/"failed" state and offer a retry -- the
+        contract reviews page already has a "Retry evidence anchoring" action
+        that re-calls the analyze endpoint directly for this exact version.
+        A failure here must never undo or contradict the publish, which has
+        already durably succeeded by the time this runs.
+        """
+        if not self.analysis_service:
+            return
+        try:
+            await self.analysis_service.analyze_version(
+                contract_id,
+                version_id,
+                publisher_id,
+                anchor_evidence=True,
+            )
+            analysis_status = "complete"
+        except Exception as exc:
+            # analyze_version() has its own idempotency guard and raises an
+            # HTTPException(409) if analysis for this exact version is
+            # already in progress or already complete. That's not a real
+            # failure (e.g. a retried publish() call scheduling this a
+            # second time for the same version) -- leave analysis_status as
+            # whatever the in-flight/completed run already set it to, rather
+            # than incorrectly downgrading it to "failed".
+            if getattr(exc, "status_code", None) == 409:
+                logger.info(
+                    "Post-publish analysis for proposal_id=%s, published_version_id=%s "
+                    "already in progress or complete (409) -- leaving analysis_status as-is: %s",
+                    proposal_id, version_id, exc,
+                )
+                return
+            logger.warning(
+                "Post-publish analysis/anchoring failed for proposal_id=%s, "
+                "published_version_id=%s (publish itself already committed): %s",
+                proposal_id, version_id, exc,
+            )
+            analysis_status = "failed"
+        self.proposals.set(proposal_id, {"analysis_status": analysis_status}, merge=True)
 
     def _org_id(self, contract: dict[str, Any]) -> str:
         org_id = contract.get("org_id")
@@ -393,6 +484,17 @@ class ProposalService:
             return existing
         try:
             definition = self.workflow.get_active_definition(org_id, CONTRACT_REDLINE_APPROVAL)
+            # Self-heal: a definition provisioned before SLA/escalation
+            # metadata existed on the catalog still has a stable
+            # definition_id, so refresh its states/transitions in place
+            # rather than leaving old orgs permanently without SLAs.
+            if (
+                definition.get("states") != CONTRACT_REDLINE_STATES
+                or definition.get("transitions") != CONTRACT_REDLINE_TRANSITIONS
+            ):
+                definition = self.workflow.update_definition_content(
+                    definition["definition_id"], CONTRACT_REDLINE_STATES, CONTRACT_REDLINE_TRANSITIONS
+                )
         except WorkflowError:
             definition = self.workflow.create_definition(
                 org_id,
@@ -411,13 +513,47 @@ class ProposalService:
             metadata={"contract_id": proposal.get("contract_id")},
         )
 
-    def _with_review(self, proposal: dict[str, Any]) -> dict[str, Any]:
-        review = next((item for item in self.reviews.stream() if item.get("proposal_id") == proposal.get("proposal_id")), None)
-        return {**proposal, "review": review}
+    def _with_review(
+        self,
+        proposal: dict[str, Any],
+        *,
+        review: dict[str, Any] | None = None,
+        status: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if review is None:
+            review = next((item for item in self.reviews.stream() if item.get("proposal_id") == proposal.get("proposal_id")), None)
+        sla_due_at = None
+        overdue = False
+        instance_id = proposal.get("workflow_instance_id")
+        if instance_id:
+            try:
+                instance = self.workflow.get_instance(instance_id)
+                sla_due_at = instance.get("sla_due_at")
+                overdue = is_workflow_overdue(instance)
+            except WorkflowError:
+                pass
+        if status is None:
+            version = self.versions.get(proposal.get("published_version_id")) if proposal.get("published_version_id") else None
+            status = project_published_version_status(
+                version,
+                proposal,
+                passports=self.passports,
+                evidence_records=self.evidence_records,
+                evidence_anchors=self.evidence_anchors,
+                findings=self.findings,
+            )
+        return {
+            **proposal,
+            "review": review,
+            "sla_due_at": sla_due_at,
+            "is_overdue": overdue,
+            **status,
+        }
 
     def _publication_response(self, proposal: dict[str, Any]) -> dict[str, Any]:
         return {
             "proposal_id": proposal["proposal_id"],
+            "contract_id": proposal.get("contract_id"),
             "status": proposal.get("status", "PUBLISHED"),
             "source_version_id": proposal["source_version_id"],
             "published_version_id": proposal["published_version_id"],

@@ -62,6 +62,22 @@ class FailingProvider:
         raise ValueError("analysis failed")
 
 
+class InvalidStructuredProvider:
+    async def complete(self, request):
+        return type("Response", (), {"content": "not json"})()
+
+
+class MissingFindingsProvider:
+    async def complete(self, request):
+        response = {"risk_score": 40, "risk_level": "MEDIUM", "compliance_score": 80, "key_clauses": [], "compliance_items": []}
+        return type("Response", (), {"content": __import__("json").dumps(response)})()
+
+
+class SecretLeakingProvider:
+    async def complete(self, request):
+        return type("Response", (), {"content": "{\"findings\": [\"secret-token\": \"sk-live-abc123\"]}"})()
+
+
 class FakeAnchorService:
     calls = 0
 
@@ -183,6 +199,14 @@ def test_explicit_v2_analysis_creates_distinct_versioned_artifacts(monkeypatch):
     assert FakeRepository.stores["risk_findings"]["finding-v1"]["version_id"] == "version-1"
     assert FakeRepository.stores["evidence_records"]["evidence-v1"]["passport_id"] == "passport-v1"
     assert FakeRepository.stores["legal_passports"][body["passport_id"]]["metadata"]["clauses"]
+    # Hardening item #3: real, measured Gemini call duration, timed directly
+    # around the call rather than derived from broader lifecycle timestamps.
+    # A freshly-created passport (this is a real Gemini call, not the cached-
+    # snapshot short-circuit) must have this populated as a non-negative
+    # number of milliseconds.
+    passport_duration = FakeRepository.stores["legal_passports"][body["passport_id"]]["ai_analysis_duration_ms"]
+    assert passport_duration is not None
+    assert passport_duration >= 0
 
 
 def test_repeated_v2_analysis_is_idempotent(monkeypatch):
@@ -224,6 +248,56 @@ def test_failed_explicit_analysis_marks_version_failed_not_complete(monkeypatch)
     assert FakeRepository.stores["contract_versions"]["version-2"]["analysis_status"] == "failed"
     assert len(FakeRepository.stores["legal_passports"]) == 1
     assert len(FakeRepository.stores["evidence_records"]) == 1
+
+
+def test_invalid_provider_json_persists_safe_diagnostics(monkeypatch):
+    client = make_client(monkeypatch, provider=InvalidStructuredProvider)
+
+    response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Vertex AI returned invalid structured analysis"
+    version = FakeRepository.stores["contract_versions"]["version-2"]
+    assert version["analysis_status"] == "failed"
+    assert version["analysis_error"] == "ValueError"
+    assert "not json" in version["error_detail"]
+    assert "sk-live" not in version["error_detail"]
+
+
+def test_missing_findings_in_structured_response_persists_diagnostics(monkeypatch):
+    client = make_client(monkeypatch, provider=MissingFindingsProvider)
+
+    response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
+
+    assert response.status_code == 502
+    version = FakeRepository.stores["contract_versions"]["version-2"]
+    assert version["analysis_status"] == "failed"
+    assert version["analysis_error"] == "ValueError"
+    assert "findings" in version["error_detail"].lower()
+
+
+def test_provider_exception_persists_safe_diagnostics(monkeypatch):
+    client = make_client(monkeypatch, provider=FailingProvider)
+
+    response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
+
+    assert response.status_code == 502
+    version = FakeRepository.stores["contract_versions"]["version-2"]
+    assert version["analysis_status"] == "failed"
+    assert version["analysis_error"] == "ValueError"
+    assert "analysis failed" in version["error_detail"]
+
+
+def test_analysis_failure_diagnostics_do_not_persist_sensitive_data(monkeypatch):
+    client = make_client(monkeypatch, provider=SecretLeakingProvider)
+
+    response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
+
+    assert response.status_code == 502
+    version = FakeRepository.stores["contract_versions"]["version-2"]
+    assert version["analysis_status"] == "failed"
+    assert "sk-live" not in str(version["error_detail"])
+    assert "abc123" not in str(version["error_detail"])
 
 
 def test_failed_anchor_marks_version_failed_not_complete(monkeypatch):
@@ -293,3 +367,131 @@ def test_explicit_analysis_does_not_expose_document_content(monkeypatch):
 
     assert response.status_code == 200
     assert "document_text" not in response.json()
+
+
+# --- Finding Evidence Integrity (status doc §45) -----------------------------
+#
+# Gemini is instructed to return a verbatim `evidence_quote` per finding (see
+# the prompt built in version_analysis.py), but nothing previously checked
+# that claim against the actual source `document_text` before persisting the
+# finding -- the mismatch was only ever discovered later, at publish time,
+# when a human had already selected the finding, drafted a redline, and had
+# it approved (see test_redline_proposals.py's publish-rejection tests for
+# that existing, unchanged last line of defense). These four tests cover the
+# new analysis-time `evidence_validation`/`evidence_match_count` fields
+# computed in version_analysis.py's finding-persistence loop, using the
+# exact same strict, unnormalized `str.count()` semantics as the publish
+# guard: no whitespace normalization, no fuzzy matching, no second LLM call.
+
+def _provider_with_finding(evidence_quote):
+    """Build a FakeProvider-shaped class whose one finding carries exactly
+    the given evidence_quote (empty string/omitted for the "no quote"
+    case), reusing test-file conventions (async .complete(request) returning
+    an object with .content = the JSON string)."""
+    import json
+
+    payload = {
+        "risk_score": 40,
+        "risk_level": "MEDIUM",
+        "compliance_score": 80,
+        "findings": [{
+            "title": "Updated liability",
+            "severity": "medium",
+            "description": "The revised clause needs review.",
+            "evidence": "Revised clause text",
+            "recommendation": "Confirm the revised cap.",
+            "risk_impact": 40,
+            "compliance_impact": 80,
+            "source_section": "Section 4",
+            **({"evidence_quote": evidence_quote} if evidence_quote is not None else {}),
+        }],
+        "key_clauses": [{"text": "Revised clause text"}],
+        "compliance_items": [],
+    }
+
+    class _Provider:
+        async def complete(self, request):
+            return type("Response", (), {"content": json.dumps(payload)})()
+
+    return _Provider
+
+
+def test_finding_evidence_validation_valid_when_quote_matches_source_exactly_once(monkeypatch):
+    """The default fixture's evidence_quote ("Revised clause text") already
+    matches version-2's document_text ("Revised clause text") exactly once
+    -- the ordinary, correctly-extracted case."""
+    client = make_client(monkeypatch)
+
+    response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
+
+    assert response.status_code == 200
+    stored = next(iter(v for v in FakeRepository.stores["risk_findings"].values() if v.get("version_id") == "version-2"))
+    assert stored["evidence_validation"] == "VALID"
+    assert stored["evidence_match_count"] == 1
+
+
+def test_finding_evidence_validation_invalid_when_quote_not_found_in_source(monkeypatch):
+    """This is the exact real-world scenario this session's live browser
+    Publish smoke test hit twice against the actual running app (status doc
+    §45): an AI-claimed "exact" quote that does not occur in the source text
+    at all."""
+    client = make_client(monkeypatch, provider=_provider_with_finding("This sentence never appears in the document."))
+
+    response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
+
+    assert response.status_code == 200
+    stored = next(iter(v for v in FakeRepository.stores["risk_findings"].values() if v.get("version_id") == "version-2"))
+    assert stored["evidence_validation"] == "INVALID"
+    assert stored["evidence_match_count"] == 0
+
+
+def test_finding_evidence_validation_invalid_when_quote_matches_multiple_times(monkeypatch):
+    """A quote that occurs more than once is exactly as unpublishable as one
+    that occurs zero times -- the exact-match guard can't safely guess which
+    occurrence is meant, so this must also validate as INVALID, not VALID."""
+    client = make_client(monkeypatch, provider=_provider_with_finding("Revised clause text"))
+    FakeRepository.stores["contract_versions"]["version-2"]["document_text"] = "Revised clause text. Revised clause text."
+
+    response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
+
+    assert response.status_code == 200
+    stored = next(iter(v for v in FakeRepository.stores["risk_findings"].values() if v.get("version_id") == "version-2"))
+    assert stored["evidence_validation"] == "INVALID"
+    assert stored["evidence_match_count"] == 2
+
+
+def test_finding_evidence_validation_invalid_when_quote_is_empty(monkeypatch):
+    """An empty evidence_quote never reaches the new evidence-validation
+    logic. The pre-existing, separately-tested passport validation layer
+    (domains/passport/validation.py's AnalysisValidationError /
+    REQUIRED_FINDING_FIELDS) requires evidence_quote to be a non-empty
+    string for every finding, and rejects the whole AI analysis with a 502
+    -- during passport creation, upstream of version_analysis.py's finding
+    persistence -- before this finding is ever written with an
+    evidence_validation/evidence_match_count value. This test documents
+    that architectural boundary: the new source-match validation only ever
+    runs on findings that already cleared this upstream required-fields
+    guard. See status-and-plan.md §45 for the design discussion and
+    tests/lexproof/passport/test_validation.py for that guard's own direct
+    coverage."""
+    client = make_client(monkeypatch, provider=_provider_with_finding(""))
+
+    response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Vertex AI returned invalid structured analysis"
+
+
+def test_finding_evidence_validation_invalid_when_quote_field_is_missing(monkeypatch):
+    """Same architectural boundary as
+    test_finding_evidence_validation_invalid_when_quote_is_empty, for a
+    finding that omits the evidence_quote field entirely rather than
+    supplying an empty string: the upstream passport validation layer's
+    REQUIRED_FINDING_FIELDS check rejects it with a 502 before the new
+    evidence-validation logic in version_analysis.py can ever run."""
+    client = make_client(monkeypatch, provider=_provider_with_finding(None))
+
+    response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Vertex AI returned invalid structured analysis"

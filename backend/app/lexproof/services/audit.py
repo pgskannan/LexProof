@@ -34,6 +34,7 @@ def record_audit_event(
     actor_email: Optional[str] = None,
     resource_id: Optional[str] = None,
     resource_name: Optional[str] = None,
+    contract_id: Optional[str] = None,
     org_id: Optional[str] = None,
     metadata: Optional[dict[str, Any]] = None,
 ) -> None:
@@ -51,6 +52,7 @@ def record_audit_event(
                 "resource_type": resource_type,
                 "resource_id": resource_id,
                 "resource_name": resource_name,
+                "contract_id": contract_id,
                 "summary": summary,
                 "org_id": org_id,
                 "metadata": metadata or {},

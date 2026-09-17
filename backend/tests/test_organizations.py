@@ -125,3 +125,50 @@ def test_settings_reject_out_of_range_expiry(monkeypatch):
     client, _service = make_client(monkeypatch, "admin-1")
     response = client.patch(f"/api/orgs/{ORG_ID}/settings", json={"default_link_expiry_days": 999})
     assert response.status_code == 422
+
+
+def test_get_playbook_returns_seeded_default(monkeypatch):
+    client, _service = make_client(monkeypatch, "admin-1")
+    response = client.get(f"/api/orgs/{ORG_ID}/playbook")
+    assert response.status_code == 200
+    clauses = response.json()["clauses"]
+    assert len(clauses) >= 1
+    assert all("clause_type" in clause and "standard_position" in clause for clause in clauses)
+    assert any(clause["clause_type"] == "Limitation of Liability" for clause in clauses)
+
+
+def test_non_admin_member_can_read_but_not_write_playbook(monkeypatch):
+    client, _service = make_client(monkeypatch, "reviewer-1", "reviewer@example.com")
+    read = client.get(f"/api/orgs/{ORG_ID}/playbook")
+    assert read.status_code == 200
+    write = client.put(
+        f"/api/orgs/{ORG_ID}/playbook",
+        json={"clauses": [{"clause_type": "Custom", "standard_position": "No unilateral changes."}]},
+    )
+    assert write.status_code == 403
+
+
+def test_admin_can_customize_playbook_and_it_persists(monkeypatch):
+    client, service = make_client(monkeypatch, "admin-1")
+    response = client.put(
+        f"/api/orgs/{ORG_ID}/playbook",
+        json={"clauses": [{"clause_type": "Data Privacy", "standard_position": "GDPR/CCPA-compliant processing only."}]},
+    )
+    assert response.status_code == 200
+    assert response.json()["clauses"] == [{"clause_type": "Data Privacy", "standard_position": "GDPR/CCPA-compliant processing only."}]
+
+    refetched = client.get(f"/api/orgs/{ORG_ID}/playbook")
+    assert refetched.json()["clauses"] == [{"clause_type": "Data Privacy", "standard_position": "GDPR/CCPA-compliant processing only."}]
+    assert service.get_playbook(ORG_ID) == [{"clause_type": "Data Privacy", "standard_position": "GDPR/CCPA-compliant processing only."}]
+
+
+def test_playbook_rejects_incomplete_clause(monkeypatch):
+    client, _service = make_client(monkeypatch, "admin-1")
+    response = client.put(f"/api/orgs/{ORG_ID}/playbook", json={"clauses": [{"clause_type": "", "standard_position": "x"}]})
+    assert response.status_code == 400
+
+
+def test_playbook_rejects_empty_clause_list(monkeypatch):
+    client, _service = make_client(monkeypatch, "admin-1")
+    response = client.put(f"/api/orgs/{ORG_ID}/playbook", json={"clauses": []})
+    assert response.status_code == 422

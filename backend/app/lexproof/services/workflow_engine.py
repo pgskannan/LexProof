@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -64,6 +64,39 @@ def _state_by_id(definition: dict[str, Any], state_id: str) -> dict[str, Any] | 
 
 def _transition_by_id(definition: dict[str, Any], transition_id: str) -> dict[str, Any] | None:
     return next((item for item in definition.get("transitions") or [] if item.get("id") == transition_id), None)
+
+
+def _sla_due_at(definition: dict[str, Any], state_id: str, from_iso: str) -> str | None:
+    """An optional ``sla_hours`` on a state means "an instance should not sit in
+    this state longer than this many hours" -- compute the resulting due
+    timestamp, or None when the state has no SLA configured."""
+    state = _state_by_id(definition, state_id) or {}
+    hours = state.get("sla_hours")
+    if not hours:
+        return None
+    try:
+        from_dt = datetime.fromisoformat(from_iso)
+    except (TypeError, ValueError):
+        return None
+    return (from_dt + timedelta(hours=float(hours))).isoformat()
+
+
+def is_overdue(instance: dict[str, Any]) -> bool:
+    """True when an in-progress instance has passed its current state's SLA
+    due date. Terminal/cancelled instances and states with no SLA configured
+    are never overdue."""
+    if instance.get("status") != INSTANCE_IN_PROGRESS:
+        return False
+    due = instance.get("sla_due_at")
+    if not due:
+        return False
+    try:
+        due_dt = datetime.fromisoformat(due)
+    except (TypeError, ValueError):
+        return False
+    if due_dt.tzinfo is None:
+        due_dt = due_dt.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) > due_dt
 
 
 def validate_definition(states: list[dict[str, Any]], transitions: list[dict[str, Any]]) -> None:
@@ -212,6 +245,9 @@ class WorkflowEngine:
             "created_at": now,
             "updated_at": now,
             "metadata": metadata or {},
+            "state_entered_at": now,
+            "sla_due_at": _sla_due_at(definition, initial["id"], now),
+            "escalated_at": None,
         }
         self.instances.set(instance_id, instance)
         logger.info(
@@ -322,6 +358,9 @@ class WorkflowEngine:
                 "available_roles": _available_roles(definition, to_state),
                 "updated_at": now,
                 "updated_by": actor_id,
+                "state_entered_at": now,
+                "sla_due_at": _sla_due_at(definition, to_state, now),
+                "escalated_at": None,
             }
             event_id = str(uuid4())
             event = {
@@ -407,6 +446,69 @@ class WorkflowEngine:
         page = records[start:start + page_size]
         next_cursor = page[-1]["instance_id"] if len(page) == page_size and start + page_size < len(records) else None
         return {"items": page, "next_cursor": next_cursor}
+
+
+    def update_definition_content(
+        self,
+        definition_id: str,
+        states: list[dict[str, Any]],
+        transitions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Refresh a definition's states/transitions in place -- same
+        definition_id and version, so in-flight instances (which reference
+        this definition_id directly) are unaffected. Used to pick up
+        additive annotation changes -- e.g. newly configured SLA hours or
+        escalation roles -- on a definition that was already provisioned for
+        an org, without spawning an ever-growing chain of versions for
+        metadata-only edits."""
+        validate_definition(states, transitions)
+        definition = self.get_definition(definition_id)
+        updates = {"states": states, "transitions": transitions, "updated_at": _now()}
+        self.definitions.set(definition_id, updates, merge=True)
+        return {**definition, **updates}
+
+    def list_overdue_instances(self, org_id: str) -> list[dict[str, Any]]:
+        """Every in-progress instance in this org that has passed its
+        current state's SLA due date."""
+        page = self.list_instances(org_id, status=INSTANCE_IN_PROGRESS, limit=MAX_PAGE_SIZE)
+        return [item for item in page["items"] if is_overdue(item)]
+
+    def escalate_overdue(
+        self,
+        org_id: str,
+        *,
+        notify: Callable[[dict[str, Any], dict[str, Any], list[str]], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Find overdue instances that have not yet been escalated, mark
+        each escalated (idempotent -- an already-escalated instance is
+        skipped until its next transition resets the flag), and invoke
+        ``notify(instance, definition, escalate_to_roles)`` for each one
+        whose current state names roles to escalate to. This engine stays
+        generic: it has no idea what a notification is, only that the
+        caller-supplied callback should be told who to tell."""
+        escalated: list[dict[str, Any]] = []
+        for instance in self.list_overdue_instances(org_id):
+            if instance.get("escalated_at"):
+                continue
+            definition = self.get_definition(instance["definition_id"])
+            state = _state_by_id(definition, instance["current_state"]) or {}
+            roles = list(state.get("escalate_to_roles") or [])
+            now = _now()
+            self.instances.set(instance["instance_id"], {"escalated_at": now}, merge=True)
+            instance = {**instance, "escalated_at": now}
+            if roles and notify:
+                try:
+                    notify(instance, definition, roles)
+                except Exception:
+                    logger.warning(
+                        "escalation notify callback failed instance_id=%s", instance["instance_id"], exc_info=True,
+                    )
+            escalated.append(instance)
+            logger.info(
+                "workflow instance escalated org_id=%s instance_id=%s state=%s roles=%s",
+                org_id, instance["instance_id"], instance["current_state"], roles,
+            )
+        return escalated
 
 
 def get_workflow_engine() -> WorkflowEngine:

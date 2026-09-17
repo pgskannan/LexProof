@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
-import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -18,39 +18,19 @@ from ..domains.passport.utils.evidence import count_legal_evidence_findings
 from ..domains.passport.utils.hashing import compute_sha256_hash
 from ..repositories.firestore import EvidenceAnchorRepository, FirestoreRepository
 from .audit import record_audit_event
+from .analysis_prompt import (
+    ANALYSIS_SYSTEM_PROMPT,
+    build_analysis_prompt,
+    build_playbook_text,
+    parse_structured_analysis,
+)
+from .analysis_safety import sanitize_analysis_error as _sanitize_analysis_error
+from .notification_prefs import get_notification_preferences
 from .ethereum_anchor_service import get_ethereum_anchor_service
+from .organizations import DEFAULT_PLAYBOOK_CLAUSES
 from .vertex_ai import VertexAIError, VertexGeminiProvider
 
 logger = logging.getLogger(__name__)
-
-
-def parse_structured_analysis(content: str) -> dict[str, Any]:
-    """Parse Gemini JSON output without manufacturing missing analysis data."""
-    candidates = [content.strip()]
-    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", content.strip(), re.IGNORECASE | re.DOTALL)
-    if fenced:
-        candidates.append(fenced.group(1).strip())
-    for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            if not isinstance(parsed.get("findings"), list):
-                raise ValueError("Vertex AI response omitted findings")
-            return parsed
-
-    decoder = json.JSONDecoder()
-    for match in re.finditer(r"\{", content):
-        try:
-            parsed, _ = decoder.raw_decode(content[match.start():])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            if not isinstance(parsed.get("findings"), list):
-                raise ValueError("Vertex AI response omitted findings")
-            return parsed
-    raise ValueError("Vertex AI returned invalid structured analysis")
 
 
 def _structured_clauses(analysis: dict[str, Any]) -> list[dict[str, Any]]:
@@ -71,6 +51,24 @@ def _structured_clauses(analysis: dict[str, Any]) -> list[dict[str, Any]]:
         elif isinstance(clause, str) and clause.strip():
             structured.append({"text": clause, "hash": compute_sha256_hash(clause)})
     return structured
+
+
+def _load_playbook_clauses(repository_factory: Callable[[str], Any], org_id: str | None) -> list[dict[str, Any]]:
+    """Benchmark clauses for this analysis: the org's customized playbook when
+
+    one exists, else the built-in default -- so playbook benchmarking is
+    always live, including for contracts with no org (e.g. the demo flow),
+    never gated behind admin setup.
+    """
+    if org_id:
+        try:
+            org = repository_factory("organizations").get(org_id)
+        except Exception:
+            org = None
+        clauses = (org or {}).get("playbook_clauses")
+        if isinstance(clauses, list) and clauses:
+            return clauses
+    return DEFAULT_PLAYBOOK_CLAUSES
 
 
 class VersionAnalysisService:
@@ -115,6 +113,9 @@ class VersionAnalysisService:
         analysis result or error that triggered it.
         """
         try:
+            preferences = get_notification_preferences(self.repository_factory, user_id)
+            if not preferences.get(f"in_app_{type_}", True):
+                return
             notifications = self.repository_factory("notifications")
             notification_id = str(uuid.uuid4())
             notifications.set(notification_id, {
@@ -198,24 +199,36 @@ class VersionAnalysisService:
 
         self.versions.set(version_id, {"analysis_status": "processing"}, merge=True)
 
-        class Request:
-            prompt = (
-                "Return JSON only with risk_score (0-100), compliance_score (0-100), risk_level, findings[], "
-                "key_clauses[], and compliance_items[]. Each finding must contain: title, severity, description, "
-                "evidence, recommendation, risk_impact (0-100), compliance_impact (0-100), source_section, and evidence_quote. "
-                "For source_section, cite the exact clause, section, or page reference (e.g., 'Section 7.2', 'Clause 12.3', 'Page 5'). "
-                "For evidence_quote, extract the exact text from the contract that supports this finding. "
-                "Do not omit fields. Use 0 when a finding truly has zero impact; never invent missing values or contract text.\n\nContract:\n"
-                + document_text
-            )
-            model = None
-            system_prompt = "You are a legal contract risk analyst. Analyze only the supplied contract."
+        playbook_clauses = _load_playbook_clauses(self.repository_factory, contract.get("org_id"))
+        playbook_text = build_playbook_text(playbook_clauses)
 
+        class Request:
+            # Production and the isolated benchmark runner build the identical
+            # prompt from the shared, versioned builder (ANALYSIS_PROMPT_VERSION),
+            # so a benchmark measures the AI behaviour production actually ships.
+            prompt = build_analysis_prompt(document_text, playbook_text)
+            model = None
+            system_prompt = ANALYSIS_SYSTEM_PROMPT
+
+        # Real, measured AI processing time (hardening item #3), timed directly
+        # around the actual Gemini call below -- deliberately NOT derived from
+        # broader lifecycle timestamps (e.g. version created_at vs. passport
+        # created_at), which can silently include upload delay, developer
+        # debugging/restarts, or a later re-analysis gap and so misrepresent
+        # true AI processing time. Stays None when this call reuses a cached
+        # analysis_snapshot instead of invoking Gemini again (the idempotent
+        # short-circuit path a few lines below has already returned before
+        # this point for a *complete* analysis; this is the rarer case of a
+        # snapshot persisted by a prior attempt that didn't finish creating a
+        # passport) -- there is no new measurement to report in that case.
+        ai_analysis_duration_ms: float | None = None
         try:
             analysis = version.get("analysis_snapshot")
             if not isinstance(analysis, dict):
                 provider = self.provider_factory()
+                gemini_call_started = time.monotonic()
                 response = await provider.complete(Request())
+                ai_analysis_duration_ms = (time.monotonic() - gemini_call_started) * 1000
                 try:
                     analysis = parse_structured_analysis(response.content)
                 except ValueError:
@@ -235,6 +248,7 @@ class VersionAnalysisService:
                     policy_version="default",
                     document_content=document_text,
                     metadata={"owner_id": user_id, "version_id": version_id, "risk_level": analysis.get("risk_level"), "key_clauses": analysis.get("key_clauses", []), "clauses": _structured_clauses(analysis), "compliance_items": analysis.get("compliance_items", []), "content_hash": version.get("content_hash")},
+                    ai_analysis_duration_ms=ai_analysis_duration_ms,
                 )
                 existing_passport = {**passport.model_dump(mode="json"), "id": passport.passport_id, "owner_id": user_id, "version_id": version_id}
             passport_id = existing_passport.get("passport_id")
@@ -249,7 +263,43 @@ class VersionAnalysisService:
                     matched_finding_indexes.add(matching_index)
                     continue
                 finding_id = str(uuid.uuid4())
-                finding_record = {"id": finding_id, "owner_id": user_id, "contract_id": contract_id, "version_id": version_id, "contract_version": version["version_number"], **finding, "created_at": now}
+                # Finding Evidence Integrity (hardening follow-up to Priority #1's
+                # browser Publish smoke test): Gemini is instructed to return a
+                # verbatim `evidence_quote` for each finding (see the prompt
+                # above), but nothing previously checked that claim against the
+                # actual source text before persisting it -- the mismatch was
+                # only ever discovered later, at publish time, when
+                # ProposalService.publish() runs the exact same `str.count()`
+                # check (services/redline_proposals.py) as the last line of
+                # defense before creating a new contract version. That guard is
+                # deliberately left completely unchanged; this only moves
+                # detection earlier, to the point where the mismatch can
+                # actually be surfaced to a reviewer before they spend time
+                # drafting and approving a redline that can never publish.
+                # Intentionally strict and unnormalized (no whitespace/quote
+                # normalization, no fuzzy matching, no second LLM call): if the
+                # AI's claim of an exact quote can't be proven against the real
+                # document bytes, that is the fact to record, not paper over.
+                evidence_quote = finding.get("evidence_quote") or ""
+                evidence_match_count = document_text.count(evidence_quote) if evidence_quote else 0
+                finding_record = {
+                    "id": finding_id,
+                    "owner_id": user_id,
+                    "contract_id": contract_id,
+                    "version_id": version_id,
+                    "contract_version": version["version_number"],
+                    **finding,
+                    # Denormalized from the analysis-level result (not part of the
+                    # per-finding schema) onto every finding, mirroring how
+                    # contract_version is already denormalized above -- lets the
+                    # Findings UI show/filter by source language without a second
+                    # lookup against the passport or version record.
+                    "detected_language": analysis.get("detected_language"),
+                    "detected_language_name": analysis.get("detected_language_name"),
+                    "evidence_validation": "VALID" if evidence_match_count == 1 else "INVALID",
+                    "evidence_match_count": evidence_match_count,
+                    "created_at": now,
+                }
                 findings_repository.set(finding_id, finding_record)
                 persisted_findings.append(finding_record)
             evidence_repository = self.repository_factory("evidence_records")
@@ -266,7 +316,17 @@ class VersionAnalysisService:
 
             if anchor_evidence:
                 anchor_repository = self.anchor_repository_factory("evidence_anchors")
-                anchor_service = self.anchor_service_factory(
+                # anchor_service_factory defaults to get_ethereum_anchor_service, a
+                # lazy singleton accessor: on its first call per process it
+                # constructs a real BlockchainService, which does blocking network
+                # I/O (connectivity check + an eth_chainId RPC call). Run that
+                # construction on a worker thread so it can never stall the event
+                # loop (hardening item #2; see ethereum_anchor_service.py's
+                # get_ethereum_anchor_service for the full rationale) -- this is
+                # safe regardless of what factory is injected (a synchronous test
+                # fake just returns immediately from the worker thread).
+                anchor_service = await asyncio.to_thread(
+                    self.anchor_service_factory,
                     repository=anchor_repository,
                     evidence_repository=evidence_repository,
                 )
@@ -304,27 +364,39 @@ class VersionAnalysisService:
                 resource_type="legal_passport",
                 resource_id=passport_id,
                 resource_name=contract_name,
+                contract_id=contract_id,
                 summary=f"AI analysis complete for \"{contract_name}\" (v{version['version_number']}) -- {len(findings)} finding(s)",
                 org_id=contract.get("org_id"),
             )
             return {"passport": existing_passport, "passport_id": passport_id, "analysis_status": "complete", "finding_count": len(findings), "evidence_count": count_legal_evidence_findings(evidence_items)}
         except HTTPException as exc:
-            self.versions.set(version_id, {"analysis_status": "failed"}, merge=True)
+            self._mark_analysis_failed(version_id, exc)
             if exc.status_code >= 500:
                 self._notify_analysis_failed(user_id, contract_id, version_id)
             raise
         except VertexAIError as exc:
-            self.versions.set(version_id, {"analysis_status": "failed"}, merge=True)
+            self._mark_analysis_failed(version_id, exc)
             self._notify_analysis_failed(user_id, contract_id, version_id)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
-            self.versions.set(version_id, {"analysis_status": "failed"}, merge=True)
+            self._mark_analysis_failed(version_id, exc)
             self._notify_analysis_failed(user_id, contract_id, version_id)
             raise HTTPException(status_code=502, detail="Vertex AI returned invalid structured analysis") from exc
         except Exception as exc:
-            self.versions.set(version_id, {"analysis_status": "failed"}, merge=True)
+            self._mark_analysis_failed(version_id, exc)
             self._notify_analysis_failed(user_id, contract_id, version_id)
             raise HTTPException(status_code=502, detail="Version analysis failed") from exc
+
+    def _mark_analysis_failed(self, version_id: str, exc: BaseException) -> None:
+        self.versions.set(
+            version_id,
+            {
+                "analysis_status": "failed",
+                "analysis_error": exc.__class__.__name__,
+                "error_detail": _sanitize_analysis_error(exc),
+            },
+            merge=True,
+        )
 
     def _notify_analysis_failed(self, user_id: str, contract_id: str, version_id: str) -> None:
         contract = self.contracts.get(contract_id) or {}

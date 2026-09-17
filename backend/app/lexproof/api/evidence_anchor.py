@@ -98,8 +98,8 @@ class EvidenceAnchorResponse(BaseModel):
     evidence_id: str
     blockchain_network: str
     contract_address: str
-    transaction_hash: str
-    block_number: int
+    transaction_hash: Optional[str] = None
+    block_number: Optional[int] = None
     anchored_at: str
     evidence_hash: str
 

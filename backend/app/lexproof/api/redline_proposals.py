@@ -2,11 +2,13 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..services.auth import get_current_user
 from ..services.redline_proposals import FinalDecisionError, ProposalNotFoundError, ProposalService, PublicationError, RedlineProposalError
+from ..services.redline_suggestions import RedlineSuggestionError, RedlineSuggestionService, get_redline_suggestion_service
+from ..services.vertex_ai import VertexAIError
 from ..repositories.firestore import FirestoreRepository
 from ..services.version_analysis import VersionAnalysisService
 from ..services.audit import record_audit_event
@@ -20,6 +22,18 @@ class RedlineProposalCreateRequest(BaseModel):
     finding_id: str
     proposed_text: str = ""
     evidence_id: str | None = None
+
+
+class RedlineSuggestionRequest(BaseModel):
+    finding_id: str
+
+
+class RedlineSuggestionResponse(BaseModel):
+    suggested_text: str
+    rationale: str
+    original_text: str
+    clause_type: str | None = None
+    playbook_standard_position: str | None = None
 
 
 class RedlineProposalUpdateRequest(BaseModel):
@@ -46,12 +60,19 @@ class RedlineReviewResponse(BaseModel):
 
 class RedlinePublicationResponse(BaseModel):
     proposal_id: str
+    contract_id: str
     status: str
     source_version_id: str
     published_version_id: str
     published_by: str
     published_at: str
     analysis_status: str | None = None
+    publication_status: str | None = None
+    passport_status: str | None = None
+    evidence_count: int = 0
+    anchored_evidence_count: int = 0
+    proof_status: str = "action_required"
+    recommended_action: str = "retry"
 
 
 class RedlineProposalResponse(BaseModel):
@@ -78,6 +99,14 @@ class RedlineProposalResponse(BaseModel):
     analysis_status: str | None = None
     workflow_instance_id: str | None = None
     org_id: str | None = None
+    sla_due_at: str | None = None
+    is_overdue: bool = False
+    publication_status: str | None = None
+    passport_status: str | None = None
+    evidence_count: int = 0
+    anchored_evidence_count: int = 0
+    proof_status: str = "action_required"
+    recommended_action: str = "retry"
 
 
 def _service() -> ProposalService:
@@ -94,12 +123,34 @@ def _service() -> ProposalService:
     )
 
 
+def _suggestion_service() -> RedlineSuggestionService:
+    return get_redline_suggestion_service()
+
+
 def _handle_error(error: RedlineProposalError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
 
 
 def _handle_review_error(error: RedlineProposalError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+
+
+@router.post("/{contract_id}/redline-proposals/suggest", response_model=RedlineSuggestionResponse)
+async def suggest_redline_language(
+    contract_id: str,
+    request: RedlineSuggestionRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    """AI-drafted starting point for a redline: never persisted, never a proposal --
+    the caller must still review, edit if needed, and explicitly save it."""
+    try:
+        return await _suggestion_service().suggest(contract_id, request.finding_id, str(user["uid"]))
+    except PermissionError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except RedlineSuggestionError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except VertexAIError as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
 
 
 @router.post("/{contract_id}/redline-proposals", response_model=RedlineProposalResponse, status_code=status.HTTP_201_CREATED)
@@ -184,6 +235,7 @@ def review_redline_proposal(
         resource_type="redline_proposal",
         resource_id=proposal_id,
         resource_name=f"Finding {result.get('finding_id', '')}",
+        contract_id=result.get("contract_id"),
         summary=f"{result['decision'].title()} redline proposal for contract {result.get('contract_id', '')}",
         org_id=(proposal or {}).get("org_id"),
     )
@@ -193,17 +245,38 @@ def review_redline_proposal(
 @proposal_router.post("/{proposal_id}/publish", response_model=RedlinePublicationResponse)
 def publish_redline_proposal(
     proposal_id: str,
+    background_tasks: BackgroundTasks,
     user: dict[str, Any] = Depends(get_current_user),
 ):
+    service = _service()
     try:
-        result = _service().publish(proposal_id, str(user["uid"]))
+        result = service.publish(proposal_id, str(user["uid"]))
     except PermissionError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except ProposalNotFoundError as error:
         raise _handle_error(error) from error
     except PublicationError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-    proposal = _service().proposals.get(proposal_id)
+    proposal = service.proposals.get(proposal_id)
+    # The publish itself is already fully committed above (new version created,
+    # proposal marked PUBLISHED, publication audit recorded) -- this response is
+    # about to return successfully regardless of what happens next. Gemini
+    # analysis + Ethereum evidence anchoring for the new version are slow and
+    # best-effort, so they run as a background task *after* the response is
+    # sent rather than blocking this request on them (see ProposalService.
+    # publish()/run_post_publish_analysis() for the full rationale -- hardening
+    # item #1, publish success/error semantic separation). Scheduling on
+    # "failed" too means a retried/idempotent publish call naturally retries a
+    # previously failed analysis run; "complete" and "not_attempted" (no
+    # analysis service configured) schedule nothing.
+    if result.get("analysis_status") in ("pending", "failed") and result.get("published_version_id"):
+        background_tasks.add_task(
+            service.run_post_publish_analysis,
+            proposal_id,
+            (proposal or {}).get("contract_id"),
+            result["published_version_id"],
+            str(user["uid"]),
+        )
     record_audit_event(
         actor_id=str(user["uid"]),
         actor_email=user.get("email"),
@@ -211,7 +284,8 @@ def publish_redline_proposal(
         resource_type="redline_proposal",
         resource_id=proposal_id,
         resource_name=f"Published version {result.get('published_version_id', '')}",
-        summary=f"Published redline for contract {result.get('source_version_id', '')}",
+        contract_id=result.get("contract_id"),
+        summary=f"Published redline for contract {result.get('contract_id', '')}",
         org_id=(proposal or {}).get("org_id"),
     )
     return result

@@ -192,6 +192,30 @@ def test_recovery_uses_event_transaction_hash_without_resubmitting_anchor():
     assert blockchain.anchor_evidence_calls == 0
 
 
+def test_recovery_uses_on_chain_anchor_when_transaction_lookup_fails():
+    evidence = evidence_record()
+    repository = MemoryRepository()
+    computed_hash = hash_evidence_item(evidence)
+    blockchain = FakeBlockchain(computed_hash)
+    service = make_service(repository, blockchain)
+    service.evidence_repository.set("evidence-1", evidence)
+
+    def failing_tx_lookup(record_id, evidence_hash=None):
+        raise RuntimeError("No EvidenceAnchored transaction found")
+
+    blockchain.get_anchor_transaction_hash = failing_tx_lookup
+
+    result = __import__("asyncio").run(service.anchor_evidence("evidence-1"))
+
+    assert result["evidence_id"] == "evidence-1"
+    assert result["evidence_hash"] == computed_hash
+    assert result["transaction_hash"] is None
+    assert result["block_number"] is None
+    assert result["anchored_at"] == datetime.fromtimestamp(1700000000, timezone.utc).isoformat()
+    assert repository.get("evidence-1")["evidence_hash"] == computed_hash
+    assert blockchain.anchor_evidence_calls == 0
+
+
 def test_matching_hash_is_verified(evidence_hash):
     evidence = evidence_record()
     computed_hash = hash_evidence_item(evidence)

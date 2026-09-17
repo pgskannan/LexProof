@@ -106,6 +106,32 @@ def test_auditor_role_can_also_read(monkeypatch):
     assert len(response.json()) == 2
 
 
+def test_contract_id_filter_returns_only_matching_entries(monkeypatch):
+    reset_stores()
+    seed_entries()
+    entries = FakeRepository("audit_log")
+    entries.set("e4", {
+        "id": "e4",
+        "actor_id": "admin-1",
+        "action": "redline.published",
+        "resource_type": "redline_proposal",
+        "resource_id": "p2",
+        "contract_id": "c1",
+        "summary": "Published redline for contract c1",
+        "org_id": ORG_A,
+        "created_at": "2026-09-04T00:00:00+00:00",
+    })
+    client = make_client(monkeypatch, "admin-1")
+
+    matching = client.get("/api/audit-log?contract_id=c1", headers={"X-Org-Id": ORG_A})
+    assert matching.status_code == 200
+    assert [item["id"] for item in matching.json()] == ["e4", "e1"]
+
+    missing = client.get("/api/audit-log?contract_id=c2", headers={"X-Org-Id": ORG_A})
+    assert missing.status_code == 200
+    assert [item["id"] for item in missing.json()] == []
+
+
 def test_other_org_entries_are_not_visible(monkeypatch):
     reset_stores()
     seed_entries()

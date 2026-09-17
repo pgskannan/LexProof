@@ -13,6 +13,7 @@ from app.lexproof.services.counterparty_links import (
     TokenRateLimiter,
     token_document_id,
 )
+from app.lexproof.services.esignature import StubESignatureProvider
 from app.lexproof.services.organizations import OrganizationService
 from tests.fakes import FakeRepository
 
@@ -136,6 +137,12 @@ def make_service() -> CounterpartyLinkService:
         organizations=orgs,
         evidence_service_factory=evidence_factory,
         limiter=TokenRateLimiter(),
+        # Without this, the service would fall back to a real
+        # FirestoreRepository for e-signature envelopes (get_esignature_provider()
+        # only ever returns the stub in tests, but the stub's own default
+        # envelope store is real Firestore) -- same class of bug as every other
+        # "FirestoreRepository constructed directly" gap this engagement has hit.
+        esignature_provider=StubESignatureProvider(envelopes=FakeRepository("esignature_envelopes")),
     )
 
 

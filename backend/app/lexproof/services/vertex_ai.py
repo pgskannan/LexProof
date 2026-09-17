@@ -1,5 +1,6 @@
 """Vertex AI/Gemini provider compatible with ContractRiskEdge's LLM contract."""
 from __future__ import annotations
+import asyncio
 import inspect
 import time
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ ANALYSIS_RESPONSE_SCHEMA = {
         "risk_score": {"type": "number"},
         "compliance_score": {"type": "number"},
         "risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
+        "detected_language": {"type": "string"},
+        "detected_language_name": {"type": "string"},
         "findings": {
             "type": "array",
             "items": {
@@ -31,6 +34,12 @@ ANALYSIS_RESPONSE_SCHEMA = {
                     "compliance_impact": {"type": "number"},
                     "source_section": {"type": "string"},
                     "evidence_quote": {"type": "string"},
+                    "reasoning": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "clause_type": {"type": "string"},
+                    "playbook_alignment": {"type": "string", "enum": ["ALIGNED", "DEVIATION", "NOT_COVERED"]},
+                    "playbook_notes": {"type": "string"},
+                    "regulatory_citations": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": [
                     "title",
@@ -42,13 +51,28 @@ ANALYSIS_RESPONSE_SCHEMA = {
                     "compliance_impact",
                     "source_section",
                     "evidence_quote",
+                    "reasoning",
+                    "confidence",
+                    "clause_type",
+                    "playbook_alignment",
+                    "playbook_notes",
+                    "regulatory_citations",
                 ],
             },
         },
         "key_clauses": {"type": "array", "items": {"type": "string"}},
         "compliance_items": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["risk_score", "compliance_score", "risk_level", "findings", "key_clauses", "compliance_items"],
+    "required": [
+        "risk_score",
+        "compliance_score",
+        "risk_level",
+        "detected_language",
+        "detected_language_name",
+        "findings",
+        "key_clauses",
+        "compliance_items",
+    ],
 }
 
 
@@ -99,7 +123,18 @@ class VertexGeminiProvider:
                 sync_kwargs = {}
                 if "generation_config" in inspect.signature(model.generate_content).parameters:
                     sync_kwargs["generation_config"] = generation_config
-                response = model.generate_content(contents, **sync_kwargs)
+                # This is a real, blocking network call to Vertex AI (it can
+                # legitimately take tens of seconds - see status-and-plan.md
+                # hardening item #3). It only runs when the model object has no
+                # generate_content_async (an older SDK, or a sync-only test
+                # double); the real Vertex SDK normally takes the awaited branch
+                # above. Run it on a worker thread rather than directly on the
+                # event loop -- calling it inline here would stall every other
+                # request for the full duration of the Gemini call, the same
+                # class of bug fixed for blockchain calls (see hardening item
+                # #2 / asyncio.to_thread usage in api/blockchain.py and
+                # services/ethereum_anchor_service.py).
+                response = await asyncio.to_thread(model.generate_content, contents, **sync_kwargs)
         except Exception as exc:
             raise VertexAIError(f"Vertex AI request failed: {exc}") from exc
         content = getattr(response, "text", "")
@@ -140,7 +175,18 @@ class VertexGeminiProvider:
                 sync_kwargs = {}
                 if "generation_config" in inspect.signature(model.generate_content).parameters:
                     sync_kwargs["generation_config"] = generation_config
-                response = model.generate_content(contents, **sync_kwargs)
+                # This is a real, blocking network call to Vertex AI (it can
+                # legitimately take tens of seconds - see status-and-plan.md
+                # hardening item #3). It only runs when the model object has no
+                # generate_content_async (an older SDK, or a sync-only test
+                # double); the real Vertex SDK normally takes the awaited branch
+                # above. Run it on a worker thread rather than directly on the
+                # event loop -- calling it inline here would stall every other
+                # request for the full duration of the Gemini call, the same
+                # class of bug fixed for blockchain calls (see hardening item
+                # #2 / asyncio.to_thread usage in api/blockchain.py and
+                # services/ethereum_anchor_service.py).
+                response = await asyncio.to_thread(model.generate_content, contents, **sync_kwargs)
         except Exception as exc:
             raise VertexAIError(f"Vertex AI request failed: {exc}") from exc
         content = getattr(response, "text", "") or ""

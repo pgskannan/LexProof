@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 from app.lexproof.api import findings as findings_api
 from app.lexproof.main import create_app
 from app.lexproof.services.auth import get_current_user
+from app.lexproof.services.organizations import OrganizationService
+from tests.fakes import FakeRepository
 
 
 class FakeFindingsRepository:
@@ -23,6 +25,14 @@ class FakeFindingsRepository:
             "evidence_quote": "Liability shall not exceed...",
             "source_section": "Section 12",
             "recommendation": "Review the cap.",
+            "reasoning": "The cap of $10,000 is far below the demonstrated exposure in Section 9's indemnity scope.",
+            "confidence": 0.85,
+            "clause_type": "Limitation of Liability",
+            "playbook_alignment": "DEVIATION",
+            "playbook_notes": "The $10,000 cap is far below the standard 12-months-of-fees position.",
+            "regulatory_citations": ["GDPR Article 28"],
+            "evidence_validation": "VALID",
+            "evidence_match_count": 1,
             "created_at": datetime.now(timezone.utc),
             "internal_value": "excluded",
         },
@@ -42,10 +52,21 @@ class FakeFindingsRepository:
     ]
 
     def __init__(self, collection: str):
-        assert collection == "risk_findings"
+        assert collection in {"risk_findings", "contracts"}
+        self.collection = collection
 
     def stream(self):
+        if self.collection == "contracts":
+            return iter([
+                {"id": "contract-1"},
+                {"id": "contract-2"},
+            ])
         return iter(self.records)
+
+    def get(self, record_id: str):
+        if self.collection == "contracts":
+            return next((record for record in self.stream() if record.get("id") == record_id), None)
+        return next((record for record in self.records if record.get("id") == record_id), None)
 
 
 def make_client(monkeypatch):
@@ -78,6 +99,18 @@ def test_findings_are_filtered_by_contract_and_version(monkeypatch):
         "evidence_quote": "Liability shall not exceed...",
         "source_section": "Section 12",
         "recommendation": "Review the cap.",
+        "reasoning": "The cap of $10,000 is far below the demonstrated exposure in Section 9's indemnity scope.",
+        "confidence": 0.85,
+        "clause_type": "Limitation of Liability",
+        "playbook_alignment": "DEVIATION",
+        "playbook_notes": "The $10,000 cap is far below the standard 12-months-of-fees position.",
+        "regulatory_citations": ["GDPR Article 28"],
+        "evidence_quote_masked": "Liability shall not exceed...",
+        "contains_pii": False,
+        "detected_language": None,
+        "detected_language_name": None,
+        "evidence_validation": "VALID",
+        "evidence_match_count": 1,
         "created_at": response.json()[0]["created_at"],
     }]
 
@@ -100,3 +133,74 @@ def test_missing_optional_fields_remain_unavailable(monkeypatch):
     assert finding["compliance_impact"] is None
     assert finding["evidence_quote"] is None
     assert finding["source_section"] is None
+    assert finding["reasoning"] is None
+    assert finding["confidence"] is None
+    assert finding["clause_type"] is None
+    assert finding["playbook_alignment"] is None
+    assert finding["playbook_notes"] is None
+    assert finding["regulatory_citations"] == []
+    assert finding["evidence_quote_masked"] is None
+    assert finding["contains_pii"] is False
+    assert finding["detected_language"] is None
+    assert finding["detected_language_name"] is None
+    assert finding["evidence_validation"] is None
+    assert finding["evidence_match_count"] is None
+
+
+def make_org_service() -> OrganizationService:
+    service = OrganizationService(
+        orgs=FakeRepository("organizations"),
+        users=FakeRepository("users"),
+        invites=FakeRepository("organization_invites"),
+        member_factory=lambda org_id: FakeRepository(f"organizations/{org_id}/members"),
+        claims_refresher=lambda *args, **kwargs: None,
+    )
+    return service
+
+
+def make_org_findings_client(monkeypatch, uid: str):
+    FakeRepository.stores = {
+        "organizations": {"org-1": {"org_id": "org-1", "status": "active"}},
+        "users": {},
+        "organization_invites": {},
+        "organizations/org-1/members": {
+            "owner-1": {"user_id": "owner-1", "roles": ["contract_owner"], "status": "active", "org_id": "org-1"},
+            "admin-1": {"user_id": "admin-1", "roles": ["admin"], "status": "active", "org_id": "org-1"},
+            "reviewer-1": {"user_id": "reviewer-1", "roles": ["reviewer"], "status": "active", "org_id": "org-1"},
+        },
+        "contracts": {"contract-1": {"id": "contract-1", "org_id": "org-1"}},
+        "risk_findings": {
+            "finding-1": {"id": "finding-1", "owner_id": "owner-1", "contract_id": "contract-1", "title": "Org finding"},
+        },
+    }
+    service = make_org_service()
+    monkeypatch.setattr(findings_api, "FirestoreRepository", FakeRepository)
+    monkeypatch.setattr(findings_api, "get_organization_service", lambda: service)
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: {"uid": uid}
+    return TestClient(app)
+
+
+def test_same_org_admin_can_read_contract_findings(monkeypatch):
+    response = make_org_findings_client(monkeypatch, "admin-1").get("/api/findings?contract_id=contract-1")
+    assert response.status_code == 200
+    assert response.json()[0]["finding_id"] == "finding-1"
+
+
+def test_same_org_member_can_read_contract_findings(monkeypatch):
+    response = make_org_findings_client(monkeypatch, "reviewer-1").get("/api/findings?contract_id=contract-1")
+    assert response.status_code == 200
+    assert response.json()[0]["finding_id"] == "finding-1"
+
+
+def test_non_member_cannot_read_contract_findings(monkeypatch):
+    response = make_org_findings_client(monkeypatch, "outside-1").get("/api/findings?contract_id=contract-1")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_legacy_finding_without_org_preserves_owner_only_visibility(monkeypatch):
+    client = make_client(monkeypatch)
+    response = client.get("/api/findings?contract_id=contract-1")
+    assert response.status_code == 200
+    assert [item["finding_id"] for item in response.json()] == ["finding-1"]

@@ -31,6 +31,7 @@ class AuditLogEntryResponse(BaseModel):
     resource_type: str
     resource_id: Optional[str] = None
     resource_name: Optional[str] = None
+    contract_id: Optional[str] = None
     summary: str
     org_id: Optional[str] = None
     metadata: dict[str, Any] = {}
@@ -46,6 +47,7 @@ def _response(record: dict[str, Any]) -> AuditLogEntryResponse:
         resource_type=str(record.get("resource_type") or ""),
         resource_id=record.get("resource_id"),
         resource_name=record.get("resource_name"),
+        contract_id=record.get("contract_id"),
         summary=str(record.get("summary") or ""),
         org_id=record.get("org_id"),
         metadata=record.get("metadata") or {},
@@ -58,6 +60,7 @@ def list_audit_log(
     limit: int = Query(100, ge=1, le=500),
     action: Optional[str] = Query(None),
     resource_type: Optional[str] = Query(None),
+    contract_id: Optional[str] = Query(None),
     member: dict[str, Any] = Depends(get_current_org_member_from_header),
 ) -> list[AuditLogEntryResponse]:
     """Return this organization's audit-log entries, most recent first.
@@ -73,5 +76,14 @@ def list_audit_log(
         records = [record for record in records if record.get("action") == action]
     if resource_type:
         records = [record for record in records if record.get("resource_type") == resource_type]
+    if contract_id:
+        contract_id = contract_id.strip()
+        records = [
+            record
+            for record in records
+            if record.get("contract_id") == contract_id
+            or (record.get("resource_type") == "contract" and record.get("resource_id") == contract_id)
+            or (record.get("metadata") or {}).get("contract_id") == contract_id
+        ]
     records.sort(key=lambda record: record.get("created_at") or "", reverse=True)
     return [_response(record) for record in records[:limit]]

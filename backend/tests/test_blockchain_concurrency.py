@@ -44,9 +44,14 @@ class SlowFakeBlockchain:
 
 
 def seed_contracts_data():
+    # No org_id here deliberately: _is_visible_to_user() now branches to a real
+    # OrganizationService (its own unfaked FirestoreRepository) whenever a
+    # record has an org_id, which would defeat this test's Firestore faking.
+    # This test is about event-loop non-blocking behavior, not authorization,
+    # so the legacy owner-only visibility path (no org_id) is the right fake.
     FakeRepository.stores = {
         "contracts": {
-            "contract-1": {"id": "contract-1", "owner_id": "owner-1", "org_id": "org-1"},
+            "contract-1": {"id": "contract-1", "owner_id": "owner-1"},
         },
     }
 
@@ -101,6 +106,7 @@ async def test_slow_blockchain_call_does_not_block_private_api(monkeypatch):
     seed_contracts_data()
     monkeypatch.setattr(blockchain_api, "create_blockchain_service", lambda: SlowFakeBlockchain())
     monkeypatch.setattr(contracts_api, "FirestoreRepository", FakeRepository)
+    monkeypatch.setattr(contracts_api, "EvidenceAnchorRepository", FakeRepository)
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: {"uid": "owner-1"}
 

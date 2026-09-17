@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from ..repositories.firestore import FirestoreRepository
 from ..services.auth import get_current_org_member, get_current_user, require_roles
 from ..services.organizations import (
     InviteError,
@@ -16,6 +17,7 @@ from ..services.organizations import (
     OrganizationService,
     get_organization_service,
 )
+from ..services.regulation_map import build_regulation_map
 from ..services.roles import OrgRole
 from ..services.audit import record_audit_event
 
@@ -35,10 +37,23 @@ class RoleChangeRequest(BaseModel):
     role: str
 
 
+class PlaybookClauseModel(BaseModel):
+    clause_type: str
+    standard_position: str
+
+
+class UpdatePlaybookRequest(BaseModel):
+    clauses: list[PlaybookClauseModel] = Field(min_length=1)
+
+
 class UpdateOrgSettingsRequest(BaseModel):
     name: str | None = None
     default_link_expiry_days: int | None = Field(default=None, ge=1, le=90)
     notify_on_assignment: bool | None = None
+    slack_webhook_url: str | None = None
+    teams_webhook_url: str | None = None
+    logo_url: str | None = None
+    primary_color: str | None = None
 
 
 def _orgs() -> OrganizationService:
@@ -101,6 +116,63 @@ def update_org_settings(
         org_id=org_id,
     )
     return result
+
+
+@router.get("/orgs/{org_id}/playbook")
+def get_playbook(org_id: str, member: dict[str, Any] = Depends(get_current_org_member)):
+    """Any active member can read the playbook; only Admin can change it."""
+    try:
+        return {"clauses": _orgs().get_playbook(org_id)}
+    except OrganizationError as error:
+        raise _handle(error) from error
+
+
+@router.put("/orgs/{org_id}/playbook")
+def update_playbook(
+    org_id: str,
+    request: UpdatePlaybookRequest,
+    member: dict[str, Any] = Depends(get_current_org_member),
+):
+    require_roles(member, OrgRole.ADMIN.value)
+    try:
+        clauses = _orgs().update_playbook(org_id, [clause.model_dump() for clause in request.clauses], str(member["uid"]))
+    except OrganizationError as error:
+        raise _handle(error) from error
+    record_audit_event(
+        actor_id=str(member["uid"]),
+        actor_email=member.get("email"),
+        action="org.playbook_updated",
+        resource_type="organization",
+        resource_id=org_id,
+        summary=f"Updated organization playbook ({len(clauses)} clause type(s))",
+        org_id=org_id,
+    )
+    return {"clauses": clauses}
+
+
+@router.get("/orgs/{org_id}/regulation-map")
+def get_regulation_map(org_id: str, member: dict[str, Any] = Depends(get_current_org_member)):
+    """Findings grouped by the specific regulation(s) they cite, across every
+    contract in this org -- powers the Regulation Map view. Any active member
+    can read it."""
+    contracts_repo = FirestoreRepository("contracts")
+    org_contracts = {
+        str(contract.get("id") or contract.get("contract_id") or ""): contract
+        for contract in contracts_repo.stream()
+        if contract.get("org_id") == org_id
+    }
+    org_contracts.pop("", None)
+    contract_names = {
+        contract_id: str(contract.get("name") or contract.get("contract_name") or contract_id)
+        for contract_id, contract in org_contracts.items()
+    }
+    findings_repo = FirestoreRepository("risk_findings")
+    findings = [
+        finding
+        for finding in findings_repo.stream()
+        if str(finding.get("contract_id") or "") in org_contracts
+    ]
+    return {"regulations": build_regulation_map(findings, contract_names)}
 
 
 @router.get("/orgs/{org_id}/members")

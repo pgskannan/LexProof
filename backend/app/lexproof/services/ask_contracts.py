@@ -76,7 +76,11 @@ Answer ONLY from the retrieved findings provided in the user message.
 Every factual claim must cite a finding_id (and evidence_id when present) from that list.
 If the findings do not contain enough information to answer, say so clearly instead of speculating.
 Do not invent contracts, clauses, finding IDs, or evidence IDs.
-Do not use general legal knowledge that is not in the retrieved findings."""
+Do not use general legal knowledge that is not in the retrieved findings.
+A prior conversation may be included for context. Use it ONLY to resolve references like "that contract",
+"the second one", or "what about indemnification" to what was discussed earlier -- it is never itself a
+source of facts. Every factual claim in your new answer must still cite a finding_id from the retrieved
+findings list below, even when the question is a follow-up."""
 
 UNGROUNDED_MESSAGE = (
     "I don't have enough information in your verified findings to answer that. "
@@ -223,20 +227,34 @@ class AskContractsService:
                 )
         return records
 
-    def retrieve(self, org_id: str, question: str, actor_id: str) -> list[dict[str, Any]]:
+    def retrieve(
+        self,
+        org_id: str,
+        question: str,
+        actor_id: str,
+        history: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         contracts = self.org_contracts(org_id, actor_id)
         if not contracts:
             return []
         contract_ids = {item["contract_id"] for item in contracts if item.get("contract_id")}
         names = {item["contract_id"]: item.get("name") or item["contract_id"] for item in contracts}
-        scoped = named_contracts(question, contracts)
+        # A follow-up like "what about indemnification?" carries no contract name of its
+        # own -- fold in the last couple of user turns so scoping stays on the same
+        # contract(s) the conversation was already about, instead of resetting to a
+        # portfolio-wide search on every turn.
+        prior_user_turns = [
+            str(turn.get("content") or "") for turn in (history or []) if turn.get("role") == "user"
+        ]
+        scoping_text = " ".join([*prior_user_turns[-2:], question])
+        scoped = named_contracts(scoping_text, contracts)
         scoped_ids = {item["contract_id"] for item in scoped} if scoped else contract_ids
         evidence_by_contract: dict[str, list[dict[str, Any]]] = {}
         for item in self.evidence.stream():
             cid = str(item.get("contract_id") or "")
             if cid in scoped_ids:
                 evidence_by_contract.setdefault(cid, []).append(item)
-        terms = tokenize_question(question)
+        terms = tokenize_question(scoping_text)
         ranked: list[tuple[int, int, dict[str, Any]]] = []
         for finding in self.findings.stream():
             cid = str(finding.get("contract_id") or "")
@@ -256,8 +274,14 @@ class AskContractsService:
             return [item for _keyword, _total, item in ranked[:TOP_N]]
         return [item for keyword_score, _total, item in ranked if keyword_score > 0][:TOP_N]
 
-    async def ask(self, org_id: str, question: str, actor_id: str) -> dict[str, Any]:
-        retrieved = self.retrieve(org_id, question.strip(), actor_id)
+    async def ask(
+        self,
+        org_id: str,
+        question: str,
+        actor_id: str,
+        history: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        retrieved = self.retrieve(org_id, question.strip(), actor_id, history)
         if not retrieved:
             return {"answer": UNGROUNDED_MESSAGE, "citations": [], "grounded": False}
 
@@ -280,8 +304,19 @@ class AskContractsService:
                     ]
                 )
             )
+        history_lines = [
+            f"{turn.get('role')}: {turn.get('content')}"
+            for turn in (history or [])[-8:]
+            if turn.get("role") in ("user", "assistant") and str(turn.get("content") or "").strip()
+        ]
+        conversation_block = (
+            "Prior conversation (context only, not a source of facts):\n" + "\n".join(history_lines) + "\n\n"
+            if history_lines
+            else ""
+        )
         prompt = (
-            f"Question: {question.strip()}\n\n"
+            conversation_block
+            + f"New question: {question.strip()}\n\n"
             "Retrieved findings (the only allowed source of facts):\n\n"
             + "\n---\n".join(context_lines)
         )

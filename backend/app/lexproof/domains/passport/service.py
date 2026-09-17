@@ -86,6 +86,7 @@ class PassportService:
         policy_content: Optional[str] = None,
         normalized_document: str = "",
         metadata: Optional[Dict[str, Any]] = None,
+        ai_analysis_duration_ms: Optional[float] = None,
     ) -> ContractPassportResponse:
         """Create a new contract passport.
 
@@ -166,6 +167,7 @@ class PassportService:
             created_at=datetime.now(timezone.utc),
             created_by=self.user_id,
             status=PassportStatus.CREATED,
+            ai_analysis_duration_ms=ai_analysis_duration_ms,
             audit_events=[],
             metadata={
                 **(metadata or {}),

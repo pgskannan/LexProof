@@ -19,6 +19,11 @@ from pydantic import BaseModel
 
 from ..repositories.firestore import FirestoreRepository
 from ..services.auth import get_current_user
+from ..services.notification_prefs import (
+    DEFAULT_NOTIFICATION_PREFERENCES,
+    get_notification_preferences,
+    update_notification_preferences,
+)
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -32,6 +37,20 @@ class NotificationResponse(BaseModel):
     url: Optional[str] = None
     read: bool = False
     created_at: Optional[datetime] = None
+
+
+class NotificationPreferencesResponse(BaseModel):
+    in_app_analysis_complete: bool
+    in_app_analysis_failed: bool
+    email_analysis_complete: bool
+    email_analysis_failed: bool
+
+
+class UpdateNotificationPreferencesRequest(BaseModel):
+    in_app_analysis_complete: Optional[bool] = None
+    in_app_analysis_failed: Optional[bool] = None
+    email_analysis_complete: Optional[bool] = None
+    email_analysis_failed: Optional[bool] = None
 
 
 def _response(record: dict[str, Any]) -> NotificationResponse:
@@ -62,6 +81,26 @@ def list_notifications(
     ]
     records.sort(key=lambda record: record.get("created_at") or "", reverse=True)
     return [_response(record) for record in records[:limit]]
+
+
+@router.get("/preferences", response_model=NotificationPreferencesResponse)
+def get_preferences(user: dict[str, Any] = Depends(get_current_user)) -> NotificationPreferencesResponse:
+    """Return the signed-in user's notification preferences (defaults filled in)."""
+    uid = str(user["uid"])
+    prefs = get_notification_preferences(FirestoreRepository, uid)
+    return NotificationPreferencesResponse(**prefs)
+
+
+@router.patch("/preferences", response_model=NotificationPreferencesResponse)
+def update_preferences(
+    body: UpdateNotificationPreferencesRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> NotificationPreferencesResponse:
+    """Update one or more of the signed-in user's notification preferences."""
+    uid = str(user["uid"])
+    updates = {key: value for key, value in body.model_dump().items() if key in DEFAULT_NOTIFICATION_PREFERENCES}
+    prefs = update_notification_preferences(FirestoreRepository, uid, updates)
+    return NotificationPreferencesResponse(**prefs)
 
 
 @router.get("/unread-count")

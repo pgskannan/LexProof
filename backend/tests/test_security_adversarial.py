@@ -51,14 +51,21 @@ ORG_ID = "adversarial-org"
 # ---------------------------------------------------------------------------
 
 def test_cross_owner_cannot_read_another_users_contract(monkeypatch):
-    """User A must not be able to read User B's contract by guessing its ID,
-    and the failure must not leak that the contract exists (404, not 403)."""
+    """A non-member must not read an org-owned contract by guessing its ID."""
     FakeRepository.stores = {
         "contracts": {
             "contract-1": {"id": "contract-1", "owner_id": "owner-1", "org_id": ORG_ID, "current_version_id": "version-1"},
         },
         "contract_versions": {},
         "legal_passports": {},
+        "evidence_records": {},
+        "evidence_anchors": {},
+        "organizations": {ORG_ID: {"org_id": ORG_ID, "status": "active"}},
+        f"organizations/{ORG_ID}/members": {
+            "owner-1": {"user_id": "owner-1", "roles": ["contract_owner"], "status": "active", "org_id": ORG_ID},
+        },
+        "users": {},
+        "organization_invites": {},
     }
     monkeypatch.setattr(
         contracts_api, "_repositories",
@@ -71,6 +78,7 @@ def test_cross_owner_cannot_read_another_users_contract(monkeypatch):
     # fallback also reads from FakeRepository.stores instead of trying a real
     # Firestore connection.
     monkeypatch.setattr(contracts_api, "FirestoreRepository", FakeRepository)
+    monkeypatch.setattr(contracts_api, "get_organization_service", make_orgs)
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: {"uid": "attacker"}
     client = TestClient(app)
@@ -82,15 +90,9 @@ def test_cross_owner_cannot_read_another_users_contract(monkeypatch):
 
 
 def test_owner_can_read_their_own_contract(monkeypatch):
-    """Sanity check alongside the IDOR test above: the real owner is not
-    collaterally locked out by the same check."""
-    FakeRepository.stores = {
-        "contracts": {
-            "contract-1": {"id": "contract-1", "owner_id": "owner-1", "org_id": ORG_ID, "current_version_id": "version-1"},
-        },
-        "contract_versions": {},
-        "legal_passports": {},
-    }
+    """The owner remains visible as an active member of the organization."""
+    seed_contract_visibility()
+    monkeypatch.setattr(contracts_api, "get_organization_service", make_orgs)
     monkeypatch.setattr(
         contracts_api, "_repositories",
         lambda: (FakeRepository("contracts"), FakeRepository("contract_versions"), object()),
@@ -102,6 +104,106 @@ def test_owner_can_read_their_own_contract(monkeypatch):
     response = client.get("/api/contracts/contract-1")
 
     assert response.status_code == 200
+
+
+def seed_contract_visibility():
+    FakeRepository.stores = {
+        "contracts": {
+            "contract-1": {"id": "contract-1", "owner_id": "owner-1", "org_id": ORG_ID, "current_version_id": "version-1"},
+        },
+        "contract_versions": {},
+        "legal_passports": {},
+        "organizations": {ORG_ID: {"org_id": ORG_ID, "status": "active"}},
+        f"organizations/{ORG_ID}/members": {
+            "owner-1": {"user_id": "owner-1", "roles": ["contract_owner"], "status": "active", "org_id": ORG_ID},
+            "admin-1": {"user_id": "admin-1", "roles": ["admin"], "status": "active", "org_id": ORG_ID},
+            "reviewer-1": {"user_id": "reviewer-1", "roles": ["reviewer"], "status": "active", "org_id": ORG_ID},
+        },
+        "users": {},
+        "organization_invites": {},
+    }
+
+
+def make_contract_visibility_client(monkeypatch, uid: str):
+    seed_contract_visibility()
+    monkeypatch.setattr(
+        contracts_api,
+        "_repositories",
+        lambda: (FakeRepository("contracts"), FakeRepository("contract_versions"), object()),
+    )
+    monkeypatch.setattr(contracts_api, "FirestoreRepository", FakeRepository)
+    monkeypatch.setattr(contracts_api, "get_organization_service", make_orgs)
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: {"uid": uid}
+    return TestClient(app)
+
+
+def test_same_org_admin_can_read_another_users_contract(monkeypatch):
+    response = make_contract_visibility_client(monkeypatch, "admin-1").get("/api/contracts/contract-1")
+    assert response.status_code == 200
+
+
+def test_same_org_member_can_read_another_users_contract(monkeypatch):
+    response = make_contract_visibility_client(monkeypatch, "reviewer-1").get("/api/contracts/contract-1")
+    assert response.status_code == 200
+
+
+def test_legacy_contract_without_org_id_preserves_owner_only_visibility(monkeypatch):
+    seed_contract_visibility()
+    FakeRepository.stores["contracts"]["legacy-contract"] = {
+        "id": "legacy-contract",
+        "owner_id": "owner-1",
+        "current_version_id": "version-1",
+    }
+    monkeypatch.setattr(
+        contracts_api,
+        "_repositories",
+        lambda: (FakeRepository("contracts"), FakeRepository("contract_versions"), object()),
+    )
+    monkeypatch.setattr(contracts_api, "FirestoreRepository", FakeRepository)
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: {"uid": "admin-1"}
+    response = TestClient(app).get("/api/contracts/legacy-contract")
+    assert response.status_code == 404
+
+
+def test_same_org_owner_can_read_contract_versions(monkeypatch):
+    response = make_contract_visibility_client(monkeypatch, "owner-1").get("/api/contracts/contract-1/versions")
+    assert response.status_code == 200
+
+
+def test_same_org_admin_can_read_contract_versions(monkeypatch):
+    response = make_contract_visibility_client(monkeypatch, "admin-1").get("/api/contracts/contract-1/versions")
+    assert response.status_code == 200
+
+
+def test_same_org_member_can_read_contract_versions(monkeypatch):
+    response = make_contract_visibility_client(monkeypatch, "reviewer-1").get("/api/contracts/contract-1/versions")
+    assert response.status_code == 200
+
+
+def test_nonmember_cannot_read_contract_versions(monkeypatch):
+    response = make_contract_visibility_client(monkeypatch, "attacker").get("/api/contracts/contract-1/versions")
+    assert response.status_code == 404
+
+
+def test_legacy_contract_versions_remain_owner_only(monkeypatch):
+    seed_contract_visibility()
+    FakeRepository.stores["contracts"]["legacy-contract"] = {
+        "id": "legacy-contract",
+        "owner_id": "owner-1",
+        "current_version_id": "version-1",
+    }
+    monkeypatch.setattr(
+        contracts_api,
+        "_repositories",
+        lambda: (FakeRepository("contracts"), FakeRepository("contract_versions"), object()),
+    )
+    monkeypatch.setattr(contracts_api, "FirestoreRepository", FakeRepository)
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: {"uid": "admin-1"}
+    response = TestClient(app).get("/api/contracts/legacy-contract/versions")
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +236,9 @@ def make_proposal_service() -> ProposalService:
         proposals=FakeRepository("redline_proposals"),
         reviews=FakeRepository("redline_reviews"),
         publication_audits=FakeRepository("redline_publication_audits"),
+        passports=FakeRepository("legal_passports"),
+        evidence_records=FakeRepository("evidence_records"),
+        evidence_anchors=FakeRepository("evidence_anchors"),
         analysis_service=None,
         organizations=make_orgs(),
         workflow=make_workflow(),

@@ -5,6 +5,7 @@ credential values through health responses or frontend-facing settings.
 """
 import os
 from functools import lru_cache
+from pathlib import Path
 
 from dotenv import load_dotenv
 from pydantic import AliasChoices, Field, SecretStr
@@ -47,6 +48,13 @@ class LexProofSettings(BaseSettings):
         validation_alias="LEXPROOF_CORS_ORIGINS",
     )
     integration_tests: bool = False
+    docusign_integration_key: str = Field(default="", validation_alias="DOCUSIGN_INTEGRATION_KEY")
+    docusign_user_id: str = Field(default="", validation_alias="DOCUSIGN_USER_ID")
+    docusign_account_id: str = Field(default="", validation_alias="DOCUSIGN_ACCOUNT_ID")
+    docusign_private_key: SecretStr = Field(default=SecretStr(""), validation_alias="DOCUSIGN_PRIVATE_KEY")
+    docusign_base_url: str = Field(default="https://demo.docusign.net/restapi", validation_alias="DOCUSIGN_BASE_URL")
+    docusign_auth_server: str = Field(default="account-d.docusign.com", validation_alias="DOCUSIGN_AUTH_SERVER")
+    google_translate_api_key: SecretStr = Field(default=SecretStr(""), validation_alias="GOOGLE_TRANSLATE_API_KEY")
 
     @property
     def project_id(self) -> str:
@@ -69,13 +77,39 @@ class LexProofSettings(BaseSettings):
     def has_blockchain_configuration(self) -> bool:
         return bool(self.ethereum_rpc_url and self.contract_address and self.blockchain_private_key.get_secret_value())
 
+    def has_esignature_configuration(self) -> bool:
+        """True once real DocuSign credentials are configured -- until then,
+        e-signature requests are served by the stub provider so the feature
+        is fully usable without any external account or credential."""
+        return bool(
+            self.docusign_integration_key
+            and self.docusign_user_id
+            and self.docusign_account_id
+            and self.docusign_private_key.get_secret_value()
+        )
+
+    def has_google_translate_configuration(self) -> bool:
+        """True once a real Google Cloud Translation API key is configured --
+        until then, findings translation is served by the Gemini-based
+        provider, which needs no separate credential since this app's
+        Gemini/Vertex AI access is already configured."""
+        return bool(self.google_translate_api_key.get_secret_value())
+
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
 @lru_cache
 def get_settings() -> LexProofSettings:
-    """Return the process-wide environment-backed settings instance."""
-    if os.getenv("LEXPROOF_USE_ENV_FILE"):
-        load_dotenv()
+    """Return the process-wide environment-backed settings instance.
+
+    The repo includes a backend/.env file for local development. Load it when the
+    app is launched from the backend directory or when the explicit override is
+    enabled; otherwise the process can silently run against the wrong project
+    values and Firestore credentials.
+    """
+    env_file = Path.cwd() / ".env"
+    repo_env_file = Path(__file__).resolve().parents[3] / ".env"
+    if os.getenv("LEXPROOF_USE_ENV_FILE") or env_file.exists() or repo_env_file.exists():
+        load_dotenv(dotenv_path=env_file if env_file.exists() else repo_env_file)
     return LexProofSettings()

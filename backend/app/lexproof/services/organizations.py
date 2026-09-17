@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import uuid4
@@ -22,9 +23,73 @@ MEMBER_DEACTIVATED = "deactivated"
 DEFAULT_ORG_SETTINGS: dict[str, Any] = {
     "default_link_expiry_days": 14,
     "notify_on_assignment": True,
+    # Chat (Slack/Teams) notification webhooks: None until an admin
+    # configures one. See services/chat_notifications.py -- with neither
+    # set, chat notifications still fire but are recorded as simulated
+    # ("stub") deliveries rather than skipped, so the feature is always
+    # demoable.
+    "slack_webhook_url": None,
+    "teams_webhook_url": None,
+    # White-label / custom branding (Task #109): None until an admin sets
+    # them, in which case the app falls back to LexProof's own default
+    # look (see frontend Navigation.tsx / Button.tsx) -- so every org is
+    # fully branded on day one and customizing is purely additive.
+    "logo_url": None,
+    "primary_color": None,
 }
 SETTINGS_MIN_LINK_EXPIRY_DAYS = 1
 SETTINGS_MAX_LINK_EXPIRY_DAYS = 90
+# #rrggbb only (no shorthand #rgb, no alpha) -- kept intentionally strict
+# since this value is interpolated directly into CSS custom properties on
+# the frontend with no further sanitization.
+PRIMARY_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+# Seed playbook: sensible default "standard positions" per common clause type,
+# used until an org admin customizes it. Also used as the benchmark for
+# contracts with no org (e.g. the demo flow), so the feature is always live,
+# never gated behind org setup.
+DEFAULT_PLAYBOOK_CLAUSES: list[dict[str, str]] = [
+    {
+        "clause_type": "Limitation of Liability",
+        "standard_position": "Liability is capped at 12 months of fees paid, mutual for both parties, with "
+        "standard carve-outs (fraud, gross negligence, confidentiality breach, IP indemnity).",
+    },
+    {
+        "clause_type": "Indemnification",
+        "standard_position": "Indemnification obligations are mutual and limited to third-party claims arising "
+        "from breach of contract, negligence, or IP infringement -- not a broad one-sided indemnity.",
+    },
+    {
+        "clause_type": "Intellectual Property Ownership",
+        "standard_position": "The customer owns all deliverables and work product created specifically for it; "
+        "each party's pre-existing IP remains with its original owner, licensed as needed to use the deliverables.",
+    },
+    {
+        "clause_type": "Termination",
+        "standard_position": "Either party may terminate for convenience with 30-90 days' written notice, or "
+        "immediately for uncured material breach after a 30-day cure period.",
+    },
+    {
+        "clause_type": "Confidentiality",
+        "standard_position": "Confidentiality obligations are mutual and survive termination for 3-5 years, with "
+        "standard exclusions for public and independently-developed information.",
+    },
+    {
+        "clause_type": "Payment Terms",
+        "standard_position": "Net 30 payment terms, late-payment interest capped at the statutory maximum, and "
+        "no unilateral price increases without at least 60 days' notice.",
+    },
+    {
+        "clause_type": "Governing Law",
+        "standard_position": "Governing law and venue are a neutral, mutually agreeable jurisdiction -- not an "
+        "exclusive forum-selection clause that only favors the drafting party.",
+    },
+    {
+        "clause_type": "Non-Compete / Non-Solicit",
+        "standard_position": "Non-solicitation of employees is limited to 12 months post-termination; no broad "
+        "non-compete clause restricting the other party's general business operations.",
+    },
+]
 
 
 class OrganizationError(ValueError):
@@ -149,12 +214,71 @@ class OrganizationService:
             settings["default_link_expiry_days"] = days
         if "notify_on_assignment" in updates and updates["notify_on_assignment"] is not None:
             settings["notify_on_assignment"] = bool(updates["notify_on_assignment"])
+        for webhook_key in ("slack_webhook_url", "teams_webhook_url"):
+            if webhook_key not in updates:
+                continue
+            raw = updates[webhook_key]
+            value = str(raw).strip() if raw is not None else ""
+            if not value:
+                settings[webhook_key] = None
+            elif not value.startswith("https://"):
+                raise OrganizationError(f"{webhook_key} must be a valid https:// URL")
+            else:
+                settings[webhook_key] = value
+        if "logo_url" in updates:
+            raw_logo = updates["logo_url"]
+            logo_value = str(raw_logo).strip() if raw_logo is not None else ""
+            if not logo_value:
+                settings["logo_url"] = None
+            elif not logo_value.startswith("https://"):
+                raise OrganizationError("logo_url must be a valid https:// URL")
+            else:
+                settings["logo_url"] = logo_value
+        if "primary_color" in updates:
+            raw_color = updates["primary_color"]
+            color_value = str(raw_color).strip() if raw_color is not None else ""
+            if not color_value:
+                settings["primary_color"] = None
+            elif not PRIMARY_COLOR_RE.match(color_value):
+                raise OrganizationError("primary_color must be a hex color like #2563EB")
+            else:
+                settings["primary_color"] = color_value
         org_fields["settings"] = settings
         org_fields["settings_updated_at"] = _now()
         org_fields["settings_updated_by"] = actor_id
         self.orgs.set(org_id, org_fields, merge=True)
         logger.info("organization settings updated org_id=%s actor=%s", org_id, actor_id)
         return {**DEFAULT_ORG_SETTINGS, **settings, **({"name": org_fields["name"]} if "name" in org_fields else {})}
+
+    def get_playbook(self, org_id: str) -> list[dict[str, Any]]:
+        org = self.orgs.get(org_id)
+        if not org:
+            raise OrganizationNotFoundError(f"Organization not found: {org_id}")
+        clauses = org.get("playbook_clauses")
+        if isinstance(clauses, list) and clauses:
+            return clauses
+        return [dict(clause) for clause in DEFAULT_PLAYBOOK_CLAUSES]
+
+    def update_playbook(self, org_id: str, clauses: list[dict[str, Any]], actor_id: str) -> list[dict[str, Any]]:
+        org = self.orgs.get(org_id)
+        if not org:
+            raise OrganizationNotFoundError(f"Organization not found: {org_id}")
+        normalized: list[dict[str, Any]] = []
+        for item in clauses:
+            clause_type = str((item or {}).get("clause_type") or "").strip()
+            standard_position = str((item or {}).get("standard_position") or "").strip()
+            if not clause_type or not standard_position:
+                raise OrganizationError("Each playbook clause needs both a clause_type and a standard_position")
+            normalized.append({"clause_type": clause_type, "standard_position": standard_position})
+        if not normalized:
+            raise OrganizationError("Playbook must contain at least one clause")
+        self.orgs.set(org_id, {
+            "playbook_clauses": normalized,
+            "playbook_updated_at": _now(),
+            "playbook_updated_by": actor_id,
+        }, merge=True)
+        logger.info("organization playbook updated org_id=%s actor=%s clause_count=%d", org_id, actor_id, len(normalized))
+        return normalized
 
     def get_member(self, org_id: str, user_id: str) -> dict[str, Any] | None:
         record = self.members(org_id).get(user_id)

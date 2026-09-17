@@ -76,6 +76,28 @@ def test_firebase_initialization_uses_local_file(monkeypatch, tmp_path):
     reset_firebase_for_tests()
 
 
+def test_settings_load_dotenv_when_project_file_exists(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("FIREBASE_PROJECT_ID", raising=False)
+    monkeypatch.delenv("FIREBASE_CLIENT_EMAIL", raising=False)
+    monkeypatch.delenv("FIREBASE_PRIVATE_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "GOOGLE_CLOUD_PROJECT=dotenv-project\n"
+        "FIREBASE_PROJECT_ID=dotenv-project\n"
+        "FIREBASE_CLIENT_EMAIL=dotenv@example.com\n"
+        "FIREBASE_PRIVATE_KEY=dotenv-key\n",
+        encoding="utf-8",
+    )
+    from app.lexproof.config import get_settings
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.project_id == "dotenv-project"
+    assert settings.has_firebase_credentials() is True
+    get_settings.cache_clear()
+
+
 def test_settings_never_expose_secret_values(settings):
     assert settings.project_id == "test-project"
     assert "test-key" not in repr(settings)
@@ -121,6 +143,37 @@ async def test_vertex_provider_uses_llm_compatible_response(settings):
     result = await VertexGeminiProvider(settings, model=Model()).complete(Request())
     assert result.content == "verified"
     assert result.provider == "vertex_ai"
+
+
+@pytest.mark.asyncio
+async def test_vertex_provider_offloads_sync_only_model_to_a_thread(settings):
+    """A model object without generate_content_async (an older SDK, or a
+    sync-only double like this one) must still not block the event loop:
+    complete() has to run generate_content() on a worker thread rather than
+    calling it inline (hardening item #2 -- the same asyncio.to_thread
+    pattern used for blockchain calls elsewhere in this codebase)."""
+    import threading
+
+    calling_thread = {}
+
+    class Response:
+        text = "verified-sync"
+
+    class Model:
+        def generate_content(self, prompt):
+            calling_thread["name"] = threading.current_thread().name
+            assert prompt == "check this"
+            return Response()
+
+    class Request:
+        prompt = "check this"
+        system_prompt = None
+        model = None
+
+    result = await VertexGeminiProvider(settings, model=Model()).complete(Request())
+
+    assert result.content == "verified-sync"
+    assert calling_thread["name"] != threading.current_thread().name
 
 
 def test_vertex_provider_requires_project(monkeypatch):

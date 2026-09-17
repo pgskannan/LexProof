@@ -7,6 +7,45 @@ from ..config import LexProofSettings
 
 T = TypeVar("T")
 
+# Process-wide Firestore client, created once and reused by every
+# FirestoreRepository that doesn't get an explicit client injected (real
+# request handlers never do -- only tests, via a fake). Constructing a new
+# google.cloud.firestore.Client() is expensive (a fresh gRPC channel plus
+# credential resolution on every call) and every FirestoreRepository used to
+# create its own from scratch on every single request, since each request
+# handler builds a fresh FirestoreRepository(...) instance. That matches the
+# extreme, intermittent latency repeatedly observed in this environment
+# across otherwise-unrelated endpoints (a full collection scan and a
+# single-document read showing the identical symptom) -- the shared cost
+# wasn't query execution, it was standing up a brand-new client/channel on
+# every call, with no reuse. This caches one client for the life of the
+# process, matching the Firestore client library's documented usage (the
+# client is thread-safe and meant to be reused) and the same process-wide
+# pattern `initialize_firebase` already uses for the Firebase Admin app.
+_shared_client: Any = None
+
+# Firestore's `in` operator accepts at most 30 values per query. Batched point
+# reads are chunked at that size, which turns an N-document N+1 lookup pattern
+# into ceil(N/30) round trips instead of N.
+_MAX_IN_FILTER_VALUES = 30
+
+
+def _get_shared_firestore_client(settings: LexProofSettings | None) -> Any:
+    global _shared_client
+    if _shared_client is None:
+        initialize_firebase(settings)
+        from google.cloud import firestore
+        _shared_client = firestore.Client(project=settings.project_id if settings else None)
+    return _shared_client
+
+
+def reset_firestore_client_for_tests() -> None:
+    """Clear the cached client. Only real integration-style tests that touch
+    a real Firestore client would ever need this; unit tests use FakeRepository
+    and never exercise this path at all."""
+    global _shared_client
+    _shared_client = None
+
 
 class FirestoreRepository:
     def __init__(self, collection: str, settings: LexProofSettings | None = None, client: Any = None):
@@ -18,9 +57,7 @@ class FirestoreRepository:
 
     def _get_client(self) -> Any:
         if self._client is None:
-            initialize_firebase(self.settings)
-            from google.cloud import firestore
-            self._client = firestore.Client(project=self.settings.project_id if self.settings else None)
+            self._client = _get_shared_firestore_client(self.settings)
         return self._client
 
     def _collection_ref(self) -> Any:
@@ -74,6 +111,32 @@ class FirestoreRepository:
         if limit is not None:
             query = query.limit(limit)
         return [{"id": snapshot.id, **(snapshot.to_dict() or {})} for snapshot in query.stream()]
+
+    def get_many(self, document_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Batched point reads keyed by document id.
+
+        Same result as calling `get()` for each id, but with one round trip per
+        30 ids. Callers that previously looped over ids to build a lookup map
+        (a classic N+1) should use this instead. Ids that do not exist are
+        simply absent from the result.
+        """
+        ids = list(dict.fromkeys(str(document_id) for document_id in document_ids))
+        if not ids:
+            return {}
+        from google.cloud.firestore_v1.base_query import FieldFilter
+        from google.cloud.firestore_v1.field_path import FieldPath
+
+        found: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(ids), _MAX_IN_FILTER_VALUES):
+            chunk = ids[start:start + _MAX_IN_FILTER_VALUES]
+            # The `__name__` operator takes document keys, not bare ids, so the
+            # ids are resolved to references first.
+            query = self._collection_ref().where(
+                filter=FieldFilter(FieldPath.document_id(), "in", [self.document_ref(document_id) for document_id in chunk])
+            )
+            for snapshot in query.stream():
+                found[snapshot.id] = {"id": snapshot.id, **(snapshot.to_dict() or {})}
+        return found
 
     def run_transaction(self, callback: Callable[[Any], T]) -> T:
         """Run `callback(transaction)` atomically. Fake clients without transactions invoke it with None."""
