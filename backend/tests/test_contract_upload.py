@@ -133,6 +133,10 @@ def test_extract_text_scanned_pdf_without_tesseract_binary_is_graceful(monkeypat
     assert "OCR pending" in text
 
 
+@pytest.mark.skipif(
+    not contracts_api._ocr_engine_available(),
+    reason="Tesseract OCR binary is not installed",
+)
 def test_extract_text_image_runs_real_ocr():
     image_bytes = _sample_image_bytes("HELLO OCR")
     text, ocr_status = contracts_api._extract_text("scan.png", image_bytes)
@@ -162,8 +166,45 @@ def test_upload_accepts_png_image(monkeypatch):
     assert response.status_code == 201
     body = response.json()
     version = FakeRepository.stores["contract_versions"][body["version_id"]]
-    assert version["ocr_status"] == "ocr_success"
-    assert "CONTRACT" in version["document_text"].upper()
+    if contracts_api._ocr_engine_available():
+        assert version["ocr_status"] == "ocr_success"
+        assert "CONTRACT" in version["document_text"].upper()
+    else:
+        assert version["ocr_status"] == "ocr_unavailable"
+
+
+def test_upload_stamps_org_id_from_header(monkeypatch):
+    """POST /api/contracts without X-Org-Id used to persist a contract with no
+    org_id. ProposalService.create() then raises PermissionError('Contract is
+    not assigned to an organization') -- the full-lifecycle E2E's Save proposal
+    failure. When the client sends the current org, stamp it on the contract
+    and version so workflow can start."""
+    client = make_client(monkeypatch)
+    monkeypatch.setattr(
+        contracts_api,
+        "load_org_member",
+        lambda org_id, user: {**user, "org_id": org_id},
+    )
+    response = client.post(
+        "/api/contracts",
+        files={"file": ("agreement.txt", b"The total liability cap for any claim is $100,000.", "text/plain")},
+        headers={"X-Org-Id": "lexproof-demo"},
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert FakeRepository.stores["contracts"][body["contract_id"]]["org_id"] == "lexproof-demo"
+    assert FakeRepository.stores["contract_versions"][body["version_id"]]["org_id"] == "lexproof-demo"
+
+
+def test_upload_without_org_header_does_not_invent_an_org(monkeypatch):
+    client = make_client(monkeypatch)
+    response = client.post(
+        "/api/contracts",
+        files={"file": ("agreement.txt", b"Hello, world.", "text/plain")},
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert "org_id" not in FakeRepository.stores["contracts"][body["contract_id"]]
 
 
 def test_upload_accepts_tiff_extension_and_reports_ocr_status_when_unavailable(monkeypatch):
@@ -202,4 +243,7 @@ def test_list_versions_surfaces_ocr_status(monkeypatch):
 
     assert response.status_code == 200
     [version] = response.json()
-    assert version["ocr_status"] == "ocr_success"
+    if contracts_api._ocr_engine_available():
+        assert version["ocr_status"] == "ocr_success"
+    else:
+        assert version["ocr_status"] == "ocr_unavailable"

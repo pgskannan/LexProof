@@ -166,6 +166,27 @@ class EvidenceAnchorRepository(FirestoreRepository):
         super().delete(document_id)
 
 
+class PassportAnchorRepository(FirestoreRepository):
+    """Create-once persistence for confirmed Legal Passport ROOT anchors.
+
+    Mirrors EvidenceAnchorRepository's create-once semantics exactly, but is
+    a fully separate collection (``passport_anchors``, not
+    ``evidence_anchors``) -- a passport-root anchor is never written into the
+    evidence anchor collection, and vice versa, so the two anchor types can
+    never collide or be confused for one another.
+    """
+
+    def set(self, document_id: str, data: dict[str, Any], merge: bool = False) -> None:
+        if self.get(document_id):
+            raise ValueError(f"Passport root anchor already exists: {document_id}")
+        super().set(document_id, data, merge=False)
+
+    def delete(self, document_id: str) -> None:
+        if self.get(document_id):
+            raise ValueError(f"Passport root anchors cannot be deleted: {document_id}")
+        super().delete(document_id)
+
+
 class EvidenceRecordRepository(FirestoreRepository):
     """Persistence for evidence records locked by confirmed anchors."""
 

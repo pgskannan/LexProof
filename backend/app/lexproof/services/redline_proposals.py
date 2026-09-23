@@ -154,17 +154,24 @@ class ProposalService:
 
     def list(self, contract_id: str, user_id: str, version_id: str | None = None, finding_id: str | None = None) -> list[dict[str, Any]]:
         self._require_contract_member(contract_id, user_id)
+        # Query by contract_id instead of streaming every redline_proposals
+        # and contract_versions document. The remediation page (and the
+        # golden-path E2E test after it) waits on this list; a full-collection
+        # scan left the page on its loading skeleton past Playwright's 5s
+        # default expect timeout.
         proposals = [
-            proposal for proposal in self.proposals.stream()
-            if proposal.get("contract_id") == contract_id
-            and (version_id is None or proposal.get("source_version_id") == version_id)
+            proposal for proposal in self.proposals.query(equal={"contract_id": contract_id})
+            if (version_id is None or proposal.get("source_version_id") == version_id)
             and (finding_id is None or proposal.get("finding_id") == finding_id)
         ]
-        reviews_by_proposal = {
-            item.get("proposal_id"): item
-            for item in self.reviews.stream()
-            if item.get("proposal_id")
-        }
+        reviews_by_proposal: dict[str, dict[str, Any]] = {}
+        for proposal in proposals:
+            proposal_id = proposal.get("proposal_id")
+            if not proposal_id:
+                continue
+            matches = self.reviews.query(equal={"proposal_id": proposal_id})
+            if matches:
+                reviews_by_proposal[str(proposal_id)] = matches[-1]
         published_version_ids = {
             item.get("published_version_id")
             for item in proposals
@@ -175,7 +182,7 @@ class ProposalService:
         anchor_snapshot = list(self.evidence_anchors.stream()) if published_version_ids else []
         finding_snapshot = list(self.findings.stream()) if published_version_ids else []
         status_by_version = project_published_version_status_batch(
-            [item for item in self.versions.stream() if item.get("contract_id") == contract_id],
+            self.versions.query(equal={"contract_id": contract_id}),
             proposals,
             passport_snapshot,
             evidence_snapshot,

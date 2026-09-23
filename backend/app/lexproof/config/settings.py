@@ -42,6 +42,17 @@ class LexProofSettings(BaseSettings):
         default=SecretStr(""),
         validation_alias=AliasChoices("ETHEREUM_PRIVATE_KEY", "BLOCKCHAIN_PRIVATE_KEY"),
     )
+    # Additive Legal Passport root registry address. Deliberately a SEPARATE
+    # setting from `contract_address` (ETHEREUM_CONTRACT_ADDRESS), which
+    # remains pointed at the existing, unchanged per-evidence-item
+    # LexProofRegistry deployment forever. Passport-root anchoring uses the
+    # same RPC endpoint, chain, and registrar signer as evidence anchoring,
+    # but a distinct contract address for the additive LexProofPassportRegistry
+    # deployment -- never the item registry's address.
+    passport_registry_address: str = Field(
+        default="",
+        validation_alias="ETHEREUM_PASSPORT_REGISTRY_ADDRESS",
+    )
     firebase_storage_bucket: str = ""
     cors_origins: str = Field(
         default="http://localhost:3000,http://localhost:3001,http://localhost:3002",
@@ -76,6 +87,20 @@ class LexProofSettings(BaseSettings):
 
     def has_blockchain_configuration(self) -> bool:
         return bool(self.ethereum_rpc_url and self.contract_address and self.blockchain_private_key.get_secret_value())
+
+    def has_passport_blockchain_configuration(self) -> bool:
+        """True once the additive passport-root registry is configured.
+
+        Deliberately independent of has_blockchain_configuration(): the item
+        registry and passport registry are separate deployments, and one can
+        be configured without the other (e.g. this launch's passport registry
+        not yet deployed while item anchoring keeps working).
+        """
+        return bool(
+            self.ethereum_rpc_url
+            and self.passport_registry_address
+            and self.blockchain_private_key.get_secret_value()
+        )
 
     def has_esignature_configuration(self) -> bool:
         """True once real DocuSign credentials are configured -- until then,

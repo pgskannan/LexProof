@@ -12,6 +12,15 @@ class VertexAIError(Exception):
     """Raised when Vertex AI cannot complete a request."""
 
 
+_RATE_LIMIT_MARKERS = ("429", "Resource exhausted", "RESOURCE_EXHAUSTED", "Too Many Requests")
+_RATE_LIMIT_BACKOFF_SECONDS = (2, 6, 15)
+
+
+def _is_rate_limited(exc: BaseException) -> bool:
+    text = str(exc)
+    return any(marker in text for marker in _RATE_LIMIT_MARKERS)
+
+
 ANALYSIS_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -98,6 +107,50 @@ class VertexGeminiProvider:
     def supported_models(self) -> list[str]:
         return [self.settings.gemini_model]
 
+    async def _invoke_model(self, model: Any, contents: str, generation_config: Any) -> Any:
+        if hasattr(model, "generate_content_async"):
+            async_kwargs: dict[str, Any] = {}
+            if "generation_config" in inspect.signature(model.generate_content_async).parameters:
+                async_kwargs["generation_config"] = generation_config
+            return await model.generate_content_async(contents, **async_kwargs)
+        sync_kwargs: dict[str, Any] = {}
+        if "generation_config" in inspect.signature(model.generate_content).parameters:
+            sync_kwargs["generation_config"] = generation_config
+        # This is a real, blocking network call to Vertex AI (it can
+        # legitimately take tens of seconds - see status-and-plan.md
+        # hardening item #3). It only runs when the model object has no
+        # generate_content_async (an older SDK, or a sync-only test
+        # double); the real Vertex SDK normally takes the awaited branch
+        # above. Run it on a worker thread rather than directly on the
+        # event loop -- calling it inline here would stall every other
+        # request for the full duration of the Gemini call, the same
+        # class of bug fixed for blockchain calls (see hardening item
+        # #2 / asyncio.to_thread usage in api/blockchain.py and
+        # services/ethereum_anchor_service.py).
+        return await asyncio.to_thread(model.generate_content, contents, **sync_kwargs)
+
+    async def _generate_with_retry(self, model: Any, contents: str, generation_config: Any) -> Any:
+        """Retry transient Vertex quota errors instead of failing the upload.
+
+        Live analyze returns HTTP 200 from our API only after Gemini finishes.
+        A single 429 (RESOURCE_EXHAUSTED) used to surface immediately in the
+        contracts UI and leave the full-lifecycle E2E waiting for a passport
+        redirect that never comes. Quota errors are expected under a shared
+        demo project; a short backoff is the documented recovery.
+        """
+        last_exc: Exception | None = None
+        for delay in (*_RATE_LIMIT_BACKOFF_SECONDS, None):
+            try:
+                return await self._invoke_model(model, contents, generation_config)
+            except VertexAIError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                if not _is_rate_limited(exc) or delay is None:
+                    raise VertexAIError(f"Vertex AI request failed: {exc}") from exc
+                await asyncio.sleep(delay)
+        raise VertexAIError(f"Vertex AI request failed: {last_exc}") from last_exc
+
     async def complete(self, request: Any) -> Any:
         start = time.monotonic()
         model_name = getattr(request, "model", None) or self.settings.gemini_model
@@ -114,27 +167,9 @@ class VertexGeminiProvider:
                 temperature=self.settings.gemini_temperature,
                 max_output_tokens=self.settings.gemini_max_output_tokens,
             )
-            if hasattr(model, "generate_content_async"):
-                async_kwargs = {}
-                if "generation_config" in inspect.signature(model.generate_content_async).parameters:
-                    async_kwargs["generation_config"] = generation_config
-                response = await model.generate_content_async(contents, **async_kwargs)
-            else:
-                sync_kwargs = {}
-                if "generation_config" in inspect.signature(model.generate_content).parameters:
-                    sync_kwargs["generation_config"] = generation_config
-                # This is a real, blocking network call to Vertex AI (it can
-                # legitimately take tens of seconds - see status-and-plan.md
-                # hardening item #3). It only runs when the model object has no
-                # generate_content_async (an older SDK, or a sync-only test
-                # double); the real Vertex SDK normally takes the awaited branch
-                # above. Run it on a worker thread rather than directly on the
-                # event loop -- calling it inline here would stall every other
-                # request for the full duration of the Gemini call, the same
-                # class of bug fixed for blockchain calls (see hardening item
-                # #2 / asyncio.to_thread usage in api/blockchain.py and
-                # services/ethereum_anchor_service.py).
-                response = await asyncio.to_thread(model.generate_content, contents, **sync_kwargs)
+            response = await self._generate_with_retry(model, contents, generation_config)
+        except VertexAIError:
+            raise
         except Exception as exc:
             raise VertexAIError(f"Vertex AI request failed: {exc}") from exc
         content = getattr(response, "text", "")
@@ -166,27 +201,9 @@ class VertexGeminiProvider:
                 temperature=self.settings.gemini_temperature,
                 max_output_tokens=self.settings.gemini_max_output_tokens,
             )
-            if hasattr(model, "generate_content_async"):
-                async_kwargs = {}
-                if "generation_config" in inspect.signature(model.generate_content_async).parameters:
-                    async_kwargs["generation_config"] = generation_config
-                response = await model.generate_content_async(contents, **async_kwargs)
-            else:
-                sync_kwargs = {}
-                if "generation_config" in inspect.signature(model.generate_content).parameters:
-                    sync_kwargs["generation_config"] = generation_config
-                # This is a real, blocking network call to Vertex AI (it can
-                # legitimately take tens of seconds - see status-and-plan.md
-                # hardening item #3). It only runs when the model object has no
-                # generate_content_async (an older SDK, or a sync-only test
-                # double); the real Vertex SDK normally takes the awaited branch
-                # above. Run it on a worker thread rather than directly on the
-                # event loop -- calling it inline here would stall every other
-                # request for the full duration of the Gemini call, the same
-                # class of bug fixed for blockchain calls (see hardening item
-                # #2 / asyncio.to_thread usage in api/blockchain.py and
-                # services/ethereum_anchor_service.py).
-                response = await asyncio.to_thread(model.generate_content, contents, **sync_kwargs)
+            response = await self._generate_with_retry(model, contents, generation_config)
+        except VertexAIError:
+            raise
         except Exception as exc:
             raise VertexAIError(f"Vertex AI request failed: {exc}") from exc
         content = getattr(response, "text", "") or ""

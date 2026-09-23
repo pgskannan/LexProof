@@ -2,16 +2,19 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { CheckCircle2, UploadCloud, XCircle } from 'lucide-react';
+import { CheckCircle2, Link2, UploadCloud, XCircle } from 'lucide-react';
 import { apiFetch } from '../../../../../lib/api';
 import {
   analyzeVersionRequest,
+  escalateOverdueWorkflowsRequest,
   proposalPublishRequest,
   proposalReviewRequest,
 } from '../../../../../lib/redlineProposals';
 import { Badge } from '../../../../../components/ui/badge';
 import { Button } from '../../../../../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../../../../components/ui/card';
+import { PageHeader } from '../../../../../components/ui/page-header';
+import { PageContainer } from '../../../../../components/ui/container';
 import { ClauseDiff } from '../../../../../components/ClauseDiff';
 import { EmptyState } from '../../../../../components/EmptyState';
 import { ShareWithCounterparty } from '../../../../../components/ShareWithCounterparty';
@@ -54,6 +57,14 @@ type Proposal = {
   published_by?: string | null;
   published_at?: string | null;
   analysis_status?: string | null;
+  sla_due_at?: string | null;
+  is_overdue?: boolean;
+  publication_status?: string | null;
+  passport_status?: string | null;
+  evidence_count?: number;
+  anchored_evidence_count?: number;
+  proof_status?: 'processing' | 'confirmed' | 'failed' | 'action_required' | null;
+  recommended_action?: 'none' | 'wait' | 'retry' | null;
 };
 
 function severityVariant(severity?: string | null) {
@@ -77,6 +88,18 @@ function isReviewable(proposal: Proposal) {
 
 function isPublishable(proposal: Proposal) {
   return proposal.status === 'APPROVED' && !proposal.published_version_id;
+}
+
+function dueLabel(proposal: Proposal): string | null {
+  if (!proposal.sla_due_at || !isReviewable(proposal)) return null;
+  const due = new Date(proposal.sla_due_at);
+  if (Number.isNaN(due.getTime())) return null;
+  return due.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function formatContractId(value: string) {
+  if (!value || value.length <= 16) return value;
+  return `${value.slice(0, 8)}…${value.slice(-6)}`;
 }
 
 export default function ContractReviews() {
@@ -138,6 +161,28 @@ export default function ContractReviews() {
   useEffect(() => {
     void loadProposals(contractId);
   }, [contractId, loadProposals]);
+
+  useEffect(() => {
+    // Best-effort SLA-escalation sweep: this page is where a reviewer looks
+    // for pending approvals, so opening it doubles as the trigger for
+    // notifying admins about anything overdue. Never blocks or errors the
+    // page -- a production deployment would instead (or additionally) have
+    // an external scheduler hit this same endpoint on a timer.
+    const orgId = currentOrg?.org_id;
+    if (!orgId) return;
+    const request = escalateOverdueWorkflowsRequest(orgId);
+    void apiFetch(request.path, { method: request.method })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const body: { count?: number } = await response.json().catch(() => ({}));
+        if (body.count) {
+          toast.warning(`${body.count} overdue review${body.count === 1 ? '' : 's'} escalated to admins`);
+        }
+      })
+      .catch(() => {
+        /* background convenience only */
+      });
+  }, [currentOrg?.org_id]);
 
   function selectContract(id: string) {
     setContractId(id);
@@ -217,196 +262,238 @@ export default function ContractReviews() {
     }
   }
 
+  const selectedContract = contracts.find((item) => item.contract_id === contractId) || null;
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Contract Reviews</h1>
-        <p className="mt-2 text-gray-600">
-          Approve, reject, and publish AI-proposed redlines. Every decision is recorded against the proposal and
-          becomes part of the contract&apos;s evidence trail.
-        </p>
-      </div>
+    <PageContainer>
+      <PageHeader
+        eyebrow="Workspace"
+        title="Contract Review"
+        description="Approve, reject, and publish AI-proposed redlines. Every decision is recorded against the proposal and becomes part of the contract's evidence trail."
+      />
 
-      <div className="rounded-lg bg-white p-6 shadow">
-        <label className="text-sm font-medium text-gray-700">
-          Contract
-          <select
-            value={contractId}
-            onChange={(event) => selectContract(event.target.value)}
-            className="mt-2 block w-full max-w-xl rounded border border-gray-300 px-3 py-2 font-normal"
-            disabled={contractsLoading || contracts.length === 0}
-          >
-            {contractsLoading && <option value="">Loading contracts…</option>}
-            {!contractsLoading && contracts.length === 0 && <option value="">No contracts available</option>}
-            {contracts.map((contract) => (
-              <option key={contract.contract_id} value={contract.contract_id}>
-                {(contract.name || contract.contract_id) + (contract.version ? ` (V${contract.version})` : '')}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <div className="mt-6 space-y-6">
+        <Card>
+          <CardContent className="py-4">
+            <label className="space-y-1 text-sm font-medium text-gray-700 dark:text-gray-300">
+              <span>Contract</span>
+              <select
+                value={contractId}
+                onChange={(event) => selectContract(event.target.value)}
+                className="block w-full max-w-xl rounded-[var(--radius-md,0.5rem)] border border-gray-300 bg-white px-3 py-2 font-normal text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                disabled={contractsLoading || contracts.length === 0}
+              >
+                {contractsLoading && <option value="">Loading contracts…</option>}
+                {!contractsLoading && contracts.length === 0 && <option value="">No contracts available</option>}
+                {contracts.map((contract) => (
+                  <option key={contract.contract_id} value={contract.contract_id}>
+                    {(contract.name || contract.contract_id) + (contract.version ? ` (V${contract.version})` : '')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {selectedContract && (
+              <p className="mt-2 font-mono text-[11px] text-gray-400 dark:text-gray-500" title={selectedContract.contract_id}>
+                {formatContractId(selectedContract.contract_id)}
+              </p>
+            )}
+          </CardContent>
+        </Card>
 
-      {error && (
-        <p role="alert" className="text-sm text-red-600">
-          {error}
-        </p>
-      )}
+        {error && (
+          <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+            {error}
+          </p>
+        )}
 
-      {proposalsLoading && (
-        <div className="space-y-3">
-          <Skeleton className="h-48 w-full" />
-          <Skeleton className="h-48 w-full" />
-        </div>
-      )}
+        {proposalsLoading && (
+          <div className="space-y-3">
+            <Skeleton className="h-48 w-full" />
+            <Skeleton className="h-48 w-full" />
+          </div>
+        )}
 
-      {!proposalsLoading && contractId && proposals.length === 0 && (
-        <EmptyState
-          title="No redline proposals yet"
-          description="Open AI Findings for this contract, save a proposed clause, and it will appear here for human review."
-          actionLabel="Open findings"
-          onAction={() => router.push(`/dashboard/ai-analysis/findings?contract_id=${encodeURIComponent(contractId)}`)}
-        />
-      )}
+        {!proposalsLoading && contractId && proposals.length === 0 && (
+          <EmptyState
+            compact
+            title="No redline proposals yet"
+            description="Open AI Findings for this contract and save a proposed clause. Approved proposals will appear here for human review."
+            actionLabel="Open findings"
+            onAction={() => router.push(`/dashboard/ai-analysis/findings?contract_id=${encodeURIComponent(contractId)}`)}
+          />
+        )}
 
-      <div className="space-y-4">
-        {proposals.map((proposal) => (
-          <Card key={proposal.proposal_id}>
-            <CardHeader>
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <CardTitle>{proposal.title || 'Untitled finding'}</CardTitle>
-                  <CardDescription className="mt-1 break-all font-mono">{proposal.proposal_id}</CardDescription>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {proposal.severity && <Badge variant={severityVariant(proposal.severity)}>{proposal.severity}</Badge>}
-                  <Badge variant={statusVariant(proposal.status)}>{proposal.status}</Badge>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {(proposal.reason || proposal.recommendation) && (
-                <div className="space-y-1 text-sm text-gray-700">
-                  {proposal.reason && (
-                    <p>
-                      <span className="font-semibold">Why it matters: </span>
-                      {proposal.reason}
-                    </p>
-                  )}
-                  {proposal.recommendation && (
-                    <p>
-                      <span className="font-semibold">Recommendation: </span>
-                      {proposal.recommendation}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              <ClauseDiff originalText={proposal.original_text} proposedText={proposal.proposed_text} />
-
-              {proposal.evidence_id && (
-                <p className="break-all font-mono text-xs text-gray-500">Evidence: {proposal.evidence_id}</p>
-              )}
-
-              {proposal.review && (
-                <div className="rounded border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
-                  <p>
-                    <span className="font-semibold">{proposal.review.decision}</span> by {proposal.review.reviewer_id}{' '}
-                    on {new Date(proposal.review.created_at).toLocaleString()}
-                  </p>
-                  {proposal.review.comment && <p className="mt-1 italic">&quot;{proposal.review.comment}&quot;</p>}
-                </div>
-              )}
-
-              {proposal.published_version_id && proposal.analysis_status === 'complete' && (
-                <div className="rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
-                  Published as version <span className="font-mono">{proposal.published_version_id}</span> by{' '}
-                  {proposal.published_by || 'an unknown publisher'} on{' '}
-                  {proposal.published_at ? new Date(proposal.published_at).toLocaleString() : 'an unknown date'}. Evidence
-                  anchored on-chain.
-                </div>
-              )}
-
-              {proposal.published_version_id && proposal.analysis_status !== 'complete' && (
-                <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-                  <p>
-                    Published as version <span className="font-mono">{proposal.published_version_id}</span> by{' '}
-                    {proposal.published_by || 'an unknown publisher'} on{' '}
-                    {proposal.published_at ? new Date(proposal.published_at).toLocaleString() : 'an unknown date'}.
-                  </p>
-                  <p className="mt-1 font-medium">
-                    Published successfully. Evidence anchoring is processing.
-                  </p>
-                  <Button
-                    variant="outline"
-                    className="mt-3"
-                    disabled={busyId === proposal.proposal_id}
-                    onClick={() => void retryAnalysis(proposal)}
-                  >
-                    {busyId === proposal.proposal_id ? 'Retrying...' : 'Retry evidence anchoring'}
-                  </Button>
-                </div>
-              )}
-
-              {isReviewable(proposal) && canReview && (
-                <div className="space-y-3 border-t border-gray-100 pt-4">
-                  <label className="block text-sm font-medium text-gray-700">
-                    Review comment (optional)
-                    <textarea
-                      value={comments[proposal.proposal_id] || ''}
-                      onChange={(event) =>
-                        setComments((prev) => ({ ...prev, [proposal.proposal_id]: event.target.value }))
-                      }
-                      className="mt-2 block w-full rounded border border-gray-300 px-3 py-2 text-sm font-normal"
-                      rows={2}
-                      placeholder="Add context for this decision (optional)"
-                    />
-                  </label>
-                  <div className="flex flex-wrap gap-3">
-                    <Button
-                      variant="default"
-                      disabled={busyId === proposal.proposal_id}
-                      onClick={() => void submitReview(proposal, 'APPROVED')}
-                    >
-                      <CheckCircle2 className="h-4 w-4" />
-                      {busyId === proposal.proposal_id ? 'Saving...' : 'Approve'}
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      disabled={busyId === proposal.proposal_id}
-                      onClick={() => void submitReview(proposal, 'REJECTED')}
-                    >
-                      <XCircle className="h-4 w-4" />
-                      {busyId === proposal.proposal_id ? 'Saving...' : 'Reject'}
-                    </Button>
+        <div className="space-y-6">
+          {proposals.map((proposal) => (
+            <Card key={proposal.proposal_id}>
+              <CardHeader>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Finding</p>
+                    <CardTitle>{proposal.title || 'Untitled finding'}</CardTitle>
+                    <CardDescription className="mt-1 break-all font-mono">{proposal.proposal_id}</CardDescription>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {proposal.severity && <Badge variant={severityVariant(proposal.severity)}>{proposal.severity}</Badge>}
+                    <Badge variant={statusVariant(proposal.status)}>{proposal.status}</Badge>
+                    {proposal.is_overdue && <Badge variant="tampered">Overdue</Badge>}
+                    {!proposal.is_overdue && dueLabel(proposal) && (
+                      <Badge variant="pending">Due {dueLabel(proposal)}</Badge>
+                    )}
                   </div>
                 </div>
-              )}
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {(proposal.reason || proposal.recommendation) && (
+                  <div className="space-y-1 text-sm text-gray-700 dark:text-gray-300">
+                    {proposal.reason && (
+                      <p>
+                        <span className="font-semibold">Why it matters: </span>
+                        {proposal.reason}
+                      </p>
+                    )}
+                    {proposal.recommendation && (
+                      <p>
+                        <span className="font-semibold">Recommendation: </span>
+                        {proposal.recommendation}
+                      </p>
+                    )}
+                  </div>
+                )}
 
-              {isPublishable(proposal) && canPublish && (
-                <div className="border-t border-gray-100 pt-4">
-                  <Button
-                    variant="default"
-                    disabled={busyId === proposal.proposal_id}
-                    onClick={() => void publishProposal(proposal)}
-                  >
-                    <UploadCloud className="h-4 w-4" />
-                    {busyId === proposal.proposal_id ? 'Publishing...' : 'Publish as new version'}
-                  </Button>
+                <div>
+                  <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                    <Link2 className="h-3.5 w-3.5" />
+                    Source Evidence
+                  </p>
+                  {proposal.evidence_id ? (
+                    <p className="break-all font-mono text-xs text-gray-500 dark:text-gray-400">{proposal.evidence_id}</p>
+                  ) : (
+                    <p className="text-xs text-gray-400 dark:text-gray-500">No evidence record linked to this finding yet.</p>
+                  )}
                 </div>
-              )}
 
-              {canShare && currentOrg?.org_id && (
-                <ShareWithCounterparty
-                  orgId={currentOrg.org_id}
-                  contractId={proposal.contract_id}
-                  proposalId={proposal.proposal_id}
-                />
-              )}
-            </CardContent>
-          </Card>
-        ))}
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                    Original Clause vs. Proposed Redline
+                  </p>
+                  <ClauseDiff originalText={proposal.original_text} proposedText={proposal.proposed_text} />
+                </div>
+
+                {proposal.review && (
+                  <div className="rounded-[var(--radius-md,0.5rem)] border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
+                    <p>
+                      <span className="font-semibold">{proposal.review.decision}</span> by {proposal.review.reviewer_id}{' '}
+                      on {new Date(proposal.review.created_at).toLocaleString()}
+                    </p>
+                    {proposal.review.comment && <p className="mt-1 italic">&quot;{proposal.review.comment}&quot;</p>}
+                  </div>
+                )}
+
+                {(proposal.published_version_id || isPublishable(proposal)) && (
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                      Publication &amp; Evidence
+                    </p>
+                    {proposal.published_version_id && proposal.proof_status === 'confirmed' && (
+                      <div className="rounded-[var(--radius-md,0.5rem)] border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-300">
+                        Published as version <span className="font-mono">{proposal.published_version_id}</span> by{' '}
+                        {proposal.published_by || 'an unknown publisher'} on{' '}
+                        {proposal.published_at ? new Date(proposal.published_at).toLocaleString() : 'an unknown date'}. Evidence
+                        <span className="mt-1 block font-medium">Confirmed. Proof verified from persisted evidence anchors.</span>
+                      </div>
+                    )}
+
+                    {proposal.published_version_id && proposal.proof_status !== 'confirmed' && (
+                      <div className="rounded-[var(--radius-md,0.5rem)] border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+                        <p>
+                          Published as version <span className="font-mono">{proposal.published_version_id}</span> by{' '}
+                          {proposal.published_by || 'an unknown publisher'} on{' '}
+                          {proposal.published_at ? new Date(proposal.published_at).toLocaleString() : 'an unknown date'}.
+                        </p>
+                        <p className="mt-1 font-medium">
+                          {proposal.proof_status === 'processing'
+                            ? 'Published successfully. Analysis and evidence verification are processing.'
+                            : proposal.proof_status === 'failed'
+                              ? 'Published successfully, but processing failed before proof confirmation.'
+                              : 'Published successfully, but proof is incomplete or inconsistent.'}
+                        </p>
+                        {proposal.recommended_action === 'retry' && (
+                          <Button
+                            variant="outline"
+                            className="mt-3"
+                            disabled={busyId === proposal.proposal_id}
+                            onClick={() => void retryAnalysis(proposal)}
+                          >
+                            {busyId === proposal.proposal_id ? 'Retrying...' : 'Retry analysis'}
+                          </Button>
+                        )}
+                      </div>
+                    )}
+
+                    {isPublishable(proposal) && canPublish && (
+                      <Button
+                        variant="default"
+                        disabled={busyId === proposal.proposal_id}
+                        onClick={() => void publishProposal(proposal)}
+                      >
+                        <UploadCloud className="h-4 w-4" />
+                        {busyId === proposal.proposal_id ? 'Publishing...' : 'Publish as new version'}
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                {isReviewable(proposal) && canReview && (
+                  <div className="space-y-3 border-t border-gray-100 pt-5 dark:border-gray-700">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Review Decision</p>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Review comment (optional)
+                      <textarea
+                        value={comments[proposal.proposal_id] || ''}
+                        onChange={(event) =>
+                          setComments((prev) => ({ ...prev, [proposal.proposal_id]: event.target.value }))
+                        }
+                        className="mt-2 block w-full rounded-[var(--radius-md,0.5rem)] border border-gray-300 px-3 py-2 text-sm font-normal text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                        rows={2}
+                        placeholder="Add context for this decision (optional)"
+                      />
+                    </label>
+                    <div className="flex flex-wrap gap-3">
+                      <Button
+                        variant="default"
+                        disabled={busyId === proposal.proposal_id}
+                        onClick={() => void submitReview(proposal, 'APPROVED')}
+                      >
+                        <CheckCircle2 className="h-4 w-4" />
+                        {busyId === proposal.proposal_id ? 'Saving...' : 'Approve'}
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        disabled={busyId === proposal.proposal_id}
+                        onClick={() => void submitReview(proposal, 'REJECTED')}
+                      >
+                        <XCircle className="h-4 w-4" />
+                        {busyId === proposal.proposal_id ? 'Saving...' : 'Reject'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {canShare && currentOrg?.org_id && (
+                  <div className="border-t border-gray-100 pt-5 dark:border-gray-700">
+                    <ShareWithCounterparty
+                      orgId={currentOrg.org_id}
+                      contractId={proposal.contract_id}
+                      proposalId={proposal.proposal_id}
+                    />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       </div>
-    </div>
+    </PageContainer>
   );
 }

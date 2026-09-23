@@ -7,6 +7,8 @@ import {
   counterpartyShareUrl,
   createCounterpartyLinkRequest,
   listCounterpartyLinksPath,
+  sendCounterpartyEsignatureRequest,
+  simulateCounterpartyEsignatureRequest,
 } from '../lib/counterparty'
 import { Button } from './ui/button'
 import { EmptyState } from './EmptyState'
@@ -21,6 +23,9 @@ export type ExistingCounterpartyLink = {
   countersign_evidence_id?: string | null
   counterparty_name?: string | null
   counterparty_email?: string | null
+  esignature_provider?: string | null
+  esignature_status?: string | null
+  esignature_envelope_id?: string | null
 }
 
 type ShareWithCounterpartyProps = {
@@ -46,6 +51,7 @@ export function ShareWithCounterparty({ orgId, contractId, proposalId }: ShareWi
   const [copied, setCopied] = useState(false)
   const [links, setLinks] = useState<ExistingCounterpartyLink[]>([])
   const [linksLoading, setLinksLoading] = useState(false)
+  const [esignBusy, setEsignBusy] = useState<Record<string, boolean>>({})
 
   const loadLinks = useCallback(async () => {
     if (!orgId || !contractId || !proposalId) return
@@ -104,6 +110,44 @@ export function ShareWithCounterparty({ orgId, contractId, proposalId }: ShareWi
     if (!shareUrl) return
     await navigator.clipboard.writeText(shareUrl)
     setCopied(true)
+  }
+
+  async function sendEsignature(tokenId: string) {
+    setEsignBusy((prev) => ({ ...prev, [tokenId]: true }))
+    setError('')
+    try {
+      const request = sendCounterpartyEsignatureRequest(orgId, contractId, tokenId)
+      const response = await apiFetch(request.path, { method: request.method })
+      if (!response.ok) {
+        throw new Error((await response.json().catch(() => null))?.detail || 'Unable to send for e-signature')
+      }
+      await loadLinks()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to send for e-signature')
+    } finally {
+      setEsignBusy((prev) => ({ ...prev, [tokenId]: false }))
+    }
+  }
+
+  async function simulateEsignature(tokenId: string, decline: boolean) {
+    setEsignBusy((prev) => ({ ...prev, [tokenId]: true }))
+    setError('')
+    try {
+      const request = simulateCounterpartyEsignatureRequest(orgId, contractId, tokenId, decline)
+      const response = await apiFetch(request.path, {
+        method: request.method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request.body),
+      })
+      if (!response.ok) {
+        throw new Error((await response.json().catch(() => null))?.detail || 'Unable to update the e-signature status')
+      }
+      await loadLinks()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to update the e-signature status')
+    } finally {
+      setEsignBusy((prev) => ({ ...prev, [tokenId]: false }))
+    }
   }
 
   return (
@@ -197,6 +241,50 @@ export function ShareWithCounterparty({ orgId, contractId, proposalId }: ShareWi
                       ? ` · Countersigned${link.countersign_evidence_id ? ` (${link.countersign_evidence_id})` : ''}`
                       : ' · Not yet countersigned'}
                   </p>
+                  {!link.revoked && !link.countersigned && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {!link.esignature_envelope_id && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-7 px-2 text-xs"
+                          disabled={!!esignBusy[link.token_id]}
+                          onClick={() => void sendEsignature(link.token_id)}
+                        >
+                          {esignBusy[link.token_id] ? 'Sending…' : 'Send for e-signature'}
+                        </Button>
+                      )}
+                      {link.esignature_envelope_id && (
+                        <span className="text-xs text-gray-500">
+                          E-signature ({link.esignature_provider}): {link.esignature_status || 'sent'}
+                        </span>
+                      )}
+                      {link.esignature_envelope_id &&
+                        link.esignature_provider === 'stub' &&
+                        link.esignature_status === 'sent' && (
+                          <>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-7 px-2 text-xs"
+                              disabled={!!esignBusy[link.token_id]}
+                              onClick={() => void simulateEsignature(link.token_id, false)}
+                            >
+                              Simulate signer completes (demo)
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-7 px-2 text-xs"
+                              disabled={!!esignBusy[link.token_id]}
+                              onClick={() => void simulateEsignature(link.token_id, true)}
+                            >
+                              Simulate signer declines (demo)
+                            </Button>
+                          </>
+                        )}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

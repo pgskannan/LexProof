@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from itertools import count
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
@@ -48,8 +49,15 @@ _CHANNEL_NAMES: dict[str, str] = {"slack_webhook_url": "slack", "teams_webhook_u
 HttpPost = Callable[[str, dict[str, Any]], "httpx.Response"]
 
 
+_now_seq = count()
+
+
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    # Windows datetime resolution can repeat across back-to-back notify_org()
+    # calls. Append a monotonic 6-digit suffix so created_at still sorts
+    # newest-first when the clock has not moved.
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S") + f".{now.microsecond:06d}{next(_now_seq):012d}+00:00"
 
 
 def _default_post(url: str, payload: dict[str, Any]) -> httpx.Response:
@@ -159,11 +167,12 @@ class ChatNotificationService:
         return records
 
     def list_deliveries(self, org_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        rows = [row for row in self.deliveries.stream() if row.get("org_id") == org_id]
-        rows.sort(key=lambda row: row.get("created_at") or "", reverse=True)
-        if limit and len(rows) > limit:
-            rows = rows[:limit]
-        return rows
+        return self.deliveries.query(
+            equal={"org_id": org_id},
+            order_by="created_at",
+            descending=True,
+            limit=limit or None,
+        )
 
     def _record(
         self,

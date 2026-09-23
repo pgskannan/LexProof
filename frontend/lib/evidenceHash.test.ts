@@ -60,6 +60,21 @@ describe('evidence hash', () => {
     expect(await hashEvidenceItem(original)).not.toBe(await hashEvidenceItem(changed))
   })
 
+  it('treats JavaScript 95 and 95.0 as the same number', async () => {
+    const asInt = { ...GOLDEN_FIXTURE, risk_impact: 95 }
+    const asFloat = { ...GOLDEN_FIXTURE, risk_impact: 95.0 }
+    expect(await hashEvidenceItem(asInt)).toBe(await hashEvidenceItem(asFloat))
+  })
+
+  it('does not emit Python json.dumps float form 95.0', () => {
+    // Server hashlib uses json.dumps(95.0) == "95.0". This client serializer
+    // cannot distinguish IEEE numbers, so a float-stored risk_impact can
+    // disagree with the Python/on-chain digest. Do not change v1 bytes.
+    expect(serializeCanonicalValue(95)).toBe('95')
+    expect(serializeCanonicalValue(95.0)).toBe('95')
+    expect(serializeCanonicalValue(95.0)).not.toBe('95.0')
+  })
+
   it('changes when passport_id changes', async () => {
     const original = { ...GOLDEN_FIXTURE, passport_id: 'p-1' }
     const changed = { ...GOLDEN_FIXTURE, passport_id: 'p-2' }

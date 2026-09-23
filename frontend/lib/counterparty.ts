@@ -41,3 +41,23 @@ export function externalCommentPath(token: string): string {
 export function externalCountersignPath(token: string): string {
   return `/api/external/${encodeURIComponent(token)}/countersign`
 }
+
+export function sendCounterpartyEsignatureRequest(orgId: string, contractId: string, tokenId: string) {
+  return {
+    path: `/api/orgs/${encodeURIComponent(orgId)}/contracts/${encodeURIComponent(contractId)}/counterparty-links/${encodeURIComponent(tokenId)}/esignature`,
+    method: 'POST' as const,
+  }
+}
+
+export function simulateCounterpartyEsignatureRequest(
+  orgId: string,
+  contractId: string,
+  tokenId: string,
+  decline = false,
+) {
+  return {
+    path: `/api/orgs/${encodeURIComponent(orgId)}/contracts/${encodeURIComponent(contractId)}/counterparty-links/${encodeURIComponent(tokenId)}/esignature/simulate`,
+    method: 'POST' as const,
+    body: { decline },
+  }
+}

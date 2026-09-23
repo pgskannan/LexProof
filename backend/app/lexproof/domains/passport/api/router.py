@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import Any, Dict, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from ..service import PassportService
@@ -24,8 +24,18 @@ from ..models import (
     EvidenceItemSummary,
     PassportStatus,
 )
-from ....repositories.firestore import EvidenceAnchorRepository, EvidenceRecordRepository, FirestoreRepository
+from ....repositories.firestore import (
+    EvidenceAnchorRepository,
+    EvidenceRecordRepository,
+    FirestoreRepository,
+    PassportAnchorRepository,
+)
 from ....services.auth import get_current_user
+from ....services.passport_root_anchor_service import (
+    PassportEligibilityError,
+    PassportRootConflictError,
+    get_passport_root_anchor_service,
+)
 from ..integrity import verify_passport_integrity
 from ..proof_package import build_proof_package
 
@@ -43,6 +53,9 @@ _evidence_service = EvidenceService(
     passport_repository=FirestoreRepository("legal_passports"),
     anchor_repository=_evidence_anchor_repository,
 )
+# Additive: passport ROOT anchors live in their own collection, never mixed
+# into evidence_anchors (see docs/PASSPORT_ROOT_ANCHOR_ARCHITECTURE.md §10).
+_passport_anchor_repository = PassportAnchorRepository("passport_anchors")
 
 # What configure_passport_service() actually needs to share across requests is
 # the analysis engine + repository the app was armed with at startup (real
@@ -443,24 +456,15 @@ async def get_evidence_statistics(
     return statistics
 
 
-@router.post("/{passport_id}/verify")
-async def verify_passport_integrity_endpoint(
-    passport_id: UUID,
-    user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Verify passport integrity by recomputing hashes.
+async def _load_authorized_passport_and_evidence(
+    passport_id_value: str,
+    user: Dict[str, Any],
+) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Shared, already-authorized load used by both /verify and /anchor-root.
 
-    This endpoint never trusts the frontend hash. It recomputes all
-    cryptographic hashes from the persisted data and compares them
-    with the stored hash in metadata.passport_hash.
-
-    Args:
-        passport_id: Passport ID to verify
-
-    Returns:
-        Verification result with verified status and component details
+    Raises HTTPException(404) if the passport doesn't exist or isn't visible
+    to the signed-in caller (same org-aware rule as GET /passports/{id}).
     """
-    passport_id_value = str(passport_id)
     passport_service = get_read_passport_service(user)
 
     passport_doc: Dict[str, Any] | None = None
@@ -522,4 +526,110 @@ async def verify_passport_integrity_endpoint(
 
             evidence_items = await asyncio.to_thread(_scan_evidence_for_passport)
 
-    return verify_passport_integrity(passport_doc, evidence_items=evidence_items)
+    return passport_doc, evidence_items
+
+
+@router.post("/{passport_id}/verify")
+async def verify_passport_integrity_endpoint(
+    passport_id: UUID,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Verify passport integrity by recomputing hashes, extended with the
+    additive Sepolia passport-root anchor state (see
+    docs/PASSPORT_ROOT_ANCHOR_ARCHITECTURE.md §16, §23).
+
+    This endpoint never trusts the frontend hash. It recomputes all
+    cryptographic hashes from the persisted data and compares them
+    with the stored hash in metadata.passport_hash. It then separately
+    reports whether a matching root exists on the additive
+    LexProofPassportRegistry contract -- an on-chain "anchor_status" field
+    alongside (never instead of) the original document/policy/analysis/
+    evidence/passport_hash statuses. A blockchain match can never turn a
+    local FAIL or UNVERIFIABLE result into PASS.
+
+    Args:
+        passport_id: Passport ID to verify
+
+    Returns:
+        Verification result with verified status, component details, and
+        the passport-root anchor_status.
+    """
+    passport_id_value = str(passport_id)
+    passport_doc, evidence_items = await _load_authorized_passport_and_evidence(passport_id_value, user)
+    integrity = verify_passport_integrity(passport_doc, evidence_items=evidence_items)
+
+    anchor_service = await asyncio.to_thread(
+        get_passport_root_anchor_service,
+        repository=_passport_anchor_repository,
+    )
+    return await anchor_service.verify_passport_root_status(passport_id_value, integrity)
+
+
+@router.post("/{passport_id}/anchor-root")
+async def anchor_passport_root_endpoint(
+    passport_id: UUID,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Anchor this Legal Passport's ROOT commitment (metadata.passport_hash)
+    on the additive LexProofPassportRegistry Sepolia contract.
+
+    SECURITY: the client supplies only the passport_id in the URL -- no
+    hashes, scores, or other values are accepted from the request body. The
+    server independently loads the passport (through the same org-aware
+    authorization as every other /passports/{id} route), recomputes and
+    verifies its integrity, and only ever anchors the server-recomputed
+    root. A passport is eligible only when every claimed component
+    (document/policy/analysis/evidence) AND the stored passport_hash binding
+    are PASS; UNVERIFIABLE (legacy / evidence-only snapshots) and FAIL are
+    both refused. This call is idempotent: re-anchoring an already-anchored
+    passport returns the existing anchor without a new transaction, and a
+    passport that already has a DIFFERENT anchored root is refused outright
+    (a root, once anchored, is never overwritten).
+
+    This is a NEW, dedicated endpoint -- it does not reuse and is not
+    reachable through the legacy, unsafe `POST /passports/{id}/anchor`
+    route (see api/blockchain.py), which accepted client-supplied hashes
+    and called the unrelated `registerProof` primitive.
+    """
+    passport_id_value = str(passport_id)
+    passport_doc, evidence_items = await _load_authorized_passport_and_evidence(passport_id_value, user)
+    integrity = verify_passport_integrity(passport_doc, evidence_items=evidence_items)
+
+    anchor_service = await asyncio.to_thread(
+        get_passport_root_anchor_service,
+        repository=_passport_anchor_repository,
+    )
+
+    try:
+        return await anchor_service.anchor_passport_root(
+            passport_id_value,
+            passport_doc,
+            integrity,
+            actor_id=str(user.get("uid") or "system"),
+            org_id=passport_doc.get("org_id"),
+        )
+    except PassportEligibilityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": str(exc),
+                "reasons": exc.reasons,
+            },
+        ) from exc
+    except PassportRootConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        message = str(exc)
+        if "not configured" in message.lower():
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=message) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Passport root anchoring is temporarily unavailable: {exc}",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - surfaced as a 500 like every other route here
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error anchoring passport root to Ethereum: {exc}",
+        ) from exc

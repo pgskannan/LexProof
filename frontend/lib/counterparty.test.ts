@@ -7,6 +7,8 @@ import {
   externalCommentPath,
   externalCountersignPath,
   listCounterpartyLinksPath,
+  sendCounterpartyEsignatureRequest,
+  simulateCounterpartyEsignatureRequest,
 } from './counterparty'
 
 describe('counterparty access helpers', () => {
@@ -50,5 +52,25 @@ describe('counterparty access helpers', () => {
 
   it('keeps the attestation wording explicit and stable', () => {
     expect(COUNTERPARTY_ATTESTATION).toBe('I have reviewed this redline and agree to be bound by it')
+  })
+
+  it('builds the internal request to send a link for e-signature', () => {
+    expect(sendCounterpartyEsignatureRequest('org 1', 'contract 1', 'token-id 1')).toEqual({
+      path: '/api/orgs/org%201/contracts/contract%201/counterparty-links/token-id%201/esignature',
+      method: 'POST',
+    })
+  })
+
+  it('builds the stub-only simulate-completion request, defaulting to completion not decline', () => {
+    expect(simulateCounterpartyEsignatureRequest('org-1', 'contract-1', 'token-1')).toEqual({
+      path: '/api/orgs/org-1/contracts/contract-1/counterparty-links/token-1/esignature/simulate',
+      method: 'POST',
+      body: { decline: false },
+    })
+    expect(simulateCounterpartyEsignatureRequest('org-1', 'contract-1', 'token-1', true)).toEqual({
+      path: '/api/orgs/org-1/contracts/contract-1/counterparty-links/token-1/esignature/simulate',
+      method: 'POST',
+      body: { decline: true },
+    })
   })
 })

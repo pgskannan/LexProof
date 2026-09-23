@@ -8,11 +8,14 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "ethers": "^6.13.2",
     "firebase": "^12.18.0",
+    "jspdf": "^2.5.2",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.468.0",
     "next": "^14.2.35",
     "qrcode.react": "^4.2.0",
@@ -22,6 +25,7 @@
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.2",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.0.0",
     "@types/node": "^20.17.0",
     "@types/react": "^18.3.12",

@@ -1,9 +1,58 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
 import { Bell, CheckCheck, FileWarning, FileCheck2 } from 'lucide-react'
 import { apiFetch } from '../lib/api'
+
+type UnreadListener = () => void
+
+let unreadCount = 0
+let pollTimer: ReturnType<typeof setInterval> | null = null
+let pollInFlight: Promise<void> | null = null
+const unreadListeners = new Set<UnreadListener>()
+
+async function pollUnreadCount() {
+  if (pollInFlight) return pollInFlight
+  pollInFlight = (async () => {
+    try {
+      const response = await apiFetch('/api/notifications/unread-count')
+      if (!response.ok) return
+      const body = await response.json()
+      unreadCount = body.count || 0
+      unreadListeners.forEach((listener) => listener())
+    } catch {
+      // Best-effort -- a failed poll leaves the last known count.
+    } finally {
+      pollInFlight = null
+    }
+  })()
+  return pollInFlight
+}
+
+function subscribeUnreadCount(listener: UnreadListener) {
+  unreadListeners.add(listener)
+  if (unreadListeners.size === 1) {
+    void pollUnreadCount()
+    pollTimer = setInterval(() => void pollUnreadCount(), 30000)
+  }
+  return () => {
+    unreadListeners.delete(listener)
+    if (unreadListeners.size === 0 && pollTimer) {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
+  }
+}
+
+function getUnreadCount() {
+  return unreadCount
+}
+
+function setUnreadCount(next: number) {
+  unreadCount = Math.max(0, next)
+  unreadListeners.forEach((listener) => listener())
+}
 
 type Notification = {
   id: string
@@ -39,20 +88,9 @@ export function NotificationBell() {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [notifications, setNotifications] = useState<Notification[]>([])
-  const [unreadCount, setUnreadCount] = useState(0)
+  const currentUnreadCount = useSyncExternalStore(subscribeUnreadCount, getUnreadCount, () => 0)
   const [loading, setLoading] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
-
-  async function refreshUnreadCount() {
-    try {
-      const response = await apiFetch('/api/notifications/unread-count')
-      if (!response.ok) return
-      const body = await response.json()
-      setUnreadCount(body.count || 0)
-    } catch {
-      // Best-effort -- a failed poll just leaves the last known count.
-    }
-  }
 
   async function loadNotifications() {
     setLoading(true)
@@ -63,12 +101,6 @@ export function NotificationBell() {
       setLoading(false)
     }
   }
-
-  useEffect(() => {
-    void refreshUnreadCount()
-    const interval = setInterval(() => void refreshUnreadCount(), 30000)
-    return () => clearInterval(interval)
-  }, [])
 
   useEffect(() => {
     function onDocumentClick(event: MouseEvent) {
@@ -88,7 +120,7 @@ export function NotificationBell() {
     setOpen(false)
     if (!notification.read) {
       setNotifications((current) => current.map((item) => (item.id === notification.id ? { ...item, read: true } : item)))
-      setUnreadCount((count) => Math.max(0, count - 1))
+      setUnreadCount(unreadCount - 1)
       void apiFetch(`/api/notifications/${encodeURIComponent(notification.id)}/read`, { method: 'POST' })
     }
     if (notification.url) router.push(notification.url)
@@ -111,9 +143,9 @@ export function NotificationBell() {
         className="relative flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-700"
       >
         <Bell className="h-5 w-5" />
-        {unreadCount > 0 && (
+        {currentUnreadCount > 0 && (
           <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white">
-            {unreadCount > 9 ? '9+' : unreadCount}
+            {currentUnreadCount > 9 ? '9+' : currentUnreadCount}
           </span>
         )}
       </button>
@@ -124,7 +156,7 @@ export function NotificationBell() {
         >
           <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2">
             <p className="text-sm font-semibold text-gray-900">Notifications</p>
-            {unreadCount > 0 && (
+            {currentUnreadCount > 0 && (
               <button
                 type="button"
                 onClick={() => void onMarkAllRead()}

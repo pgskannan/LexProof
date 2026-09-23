@@ -184,13 +184,34 @@ def _is_visible_to_user(
     uid: str,
     *,
     organization_id: str | None = None,
+    member_by_org: dict[str, Any] | None = None,
 ) -> bool:
     """Use organization membership for org-owned records and owner fallback for legacy data."""
     record_org_id = record.get("org_id") or organization_id
     if record_org_id:
-        return bool(get_organization_service().get_active_member(str(record_org_id), uid))
+        org_id = str(record_org_id)
+        if member_by_org is not None:
+            return bool(member_by_org.get(org_id))
+        return bool(get_organization_service().get_active_member(org_id, uid))
     owner_id = record.get("owner_id")
     return not owner_id or owner_id == uid
+
+
+def _member_lookup(records: list[dict[str, Any]], uid: str) -> dict[str, Any]:
+    """Resolve get_active_member once per org instead of once per list row."""
+    org_ids = {str(record["org_id"]) for record in records if record.get("org_id")}
+    orgs = get_organization_service()
+    return {org_id: orgs.get_active_member(org_id, uid) for org_id in org_ids}
+
+
+def _passport_index(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for item in records:
+        if item.get("id"):
+            indexed[str(item["id"])] = item
+        if item.get("passport_id"):
+            indexed[str(item["passport_id"])] = item
+    return indexed
 
 
 def _passport_contract_name(passport: dict[str, Any]) -> str:
@@ -229,8 +250,20 @@ def _contract_summary(
 
 
 @router.get("")
-async def list_contracts(user: dict[str, Any] = Depends(get_current_user)):
-    """List the signed-in user's contracts with their current passport summary."""
+async def list_contracts(
+    user: dict[str, Any] = Depends(get_current_user),
+    x_org_id: Annotated[str | None, Header(alias="X-Org-Id")] = None,
+):
+    """List the signed-in user's contracts with their current passport summary.
+
+    The findings contract picker and dashboard both call this on first paint.
+    Streaming every contracts/versions/passports/proposals document made the
+    picker sit on "No contracts match" long enough that the golden-path E2E
+    timed out waiting for demo-golden-path-master-services-agreement. When
+    the client sends X-Org-Id (OrgProvider always does after login), query
+    that org and get_many the current versions instead of scanning the
+    whole workspace.
+    """
     uid = str(user["uid"])
     contracts, versions, _ = _repositories()
     passports = FirestoreRepository("legal_passports")
@@ -238,12 +271,43 @@ async def list_contracts(user: dict[str, Any] = Depends(get_current_user)):
     evidence_records = FirestoreRepository("evidence_records")
     evidence_anchors = EvidenceAnchorRepository("evidence_anchors")
     findings = FirestoreRepository("risk_findings")
-    contract_records = [contract for contract in contracts.stream() if _is_visible_to_user(contract, uid)]
-    version_records = list(versions.stream())
-    version_by_id = {item.get("id"): item for item in version_records}
-    passport_records = list(passports.stream())
-    passport_by_id = {item.get("passport_id") or item.get("id"): item for item in passport_records}
-    proposal_records = list(proposals.stream())
+    org_id = (x_org_id or "").strip() or None
+    if org_id:
+        if not get_organization_service().get_active_member(org_id, uid):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not an active member of this organization",
+            )
+        contract_records = contracts.query(equal={"org_id": org_id})
+        passport_records = passports.query(equal={"org_id": org_id})
+        proposal_records = proposals.query(equal={"org_id": org_id})
+        member_by_org = {org_id: True}
+    else:
+        streamed_contracts = list(contracts.stream())
+        member_by_org = _member_lookup(streamed_contracts, uid)
+        contract_records = [
+            contract
+            for contract in streamed_contracts
+            if _is_visible_to_user(contract, uid, member_by_org=member_by_org)
+        ]
+        passport_records = list(passports.stream())
+        proposal_records = list(proposals.stream())
+    version_ids = [
+        contract.get("current_version_id")
+        for contract in contract_records
+        if contract.get("current_version_id")
+    ]
+    version_by_id = versions.get_many(version_ids) if version_ids else {}
+    version_records = list(version_by_id.values())
+    passport_by_id = _passport_index(passport_records)
+    missing_passport_ids = [
+        version.get("passport_id")
+        for version in version_records
+        if version.get("passport_id") and str(version.get("passport_id")) not in passport_by_id
+    ]
+    if missing_passport_ids:
+        passport_records = [*passport_records, *passports.get_many(missing_passport_ids).values()]
+        passport_by_id = _passport_index(passport_records)
     published_version_ids = {
         item.get("published_version_id")
         for item in proposal_records
@@ -293,7 +357,7 @@ async def list_contracts(user: dict[str, Any] = Depends(get_current_user)):
     # the current-version row built above.
     latest_orphan_passport_by_contract: dict[str, dict[str, Any]] = {}
     for passport in passport_records:
-        if not _is_visible_to_user(passport, uid):
+        if not _is_visible_to_user(passport, uid, member_by_org=member_by_org):
             continue
         contract_id = passport.get("contract_id")
         if not contract_id or contract_id in existing_contract_ids:
@@ -312,12 +376,18 @@ async def get_contract(contract_id: str, user: dict[str, Any] = Depends(get_curr
     uid = str(user["uid"])
     contracts, versions, _ = _repositories()
     contract = contracts.get(contract_id)
+    if contract is not None and not _is_visible_to_user(contract, uid):
+        # Same 404 as a missing contract. Do not fall through to a full
+        # legal_passports stream: that scan turned cross-tenant denials into
+        # 500s under real Firestore load (cross-tenant isolation E2E).
+        raise HTTPException(status_code=404, detail="Contract not found")
+
     passports = FirestoreRepository("legal_passports")
-    proposals = FirestoreRepository("redline_proposals")
-    evidence_records = FirestoreRepository("evidence_records")
-    evidence_anchors = EvidenceAnchorRepository("evidence_anchors")
-    findings = FirestoreRepository("risk_findings")
-    if contract and _is_visible_to_user(contract, uid):
+    if contract is not None:
+        proposals = FirestoreRepository("redline_proposals")
+        evidence_records = FirestoreRepository("evidence_records")
+        evidence_anchors = EvidenceAnchorRepository("evidence_anchors")
+        findings = FirestoreRepository("risk_findings")
         current_version = versions.get(contract.get("current_version_id")) if contract.get("current_version_id") else None
         return _contract_summary(
             contract,
@@ -335,8 +405,8 @@ async def get_contract(contract_id: str, user: dict[str, Any] = Depends(get_curr
 
     legacy_passports = [
         passport
-        for passport in passports.stream()
-        if passport.get("contract_id") == contract_id and _is_visible_to_user(passport, uid)
+        for passport in passports.query(equal={"contract_id": contract_id})
+        if _is_visible_to_user(passport, uid)
     ]
     if not legacy_passports:
         raise HTTPException(status_code=404, detail="Contract not found")

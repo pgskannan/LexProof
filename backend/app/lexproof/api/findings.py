@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..repositories.firestore import FirestoreRepository
@@ -53,16 +53,51 @@ class FindingResponse(BaseModel):
 def _visible(
     record: dict[str, Any],
     uid: str,
-    contracts: FirestoreRepository | None = None,
+    *,
+    contract_by_id: dict[str, dict[str, Any]],
+    member_by_org: dict[str, Any],
 ) -> bool:
     contract_id = record.get("contract_id")
     if contract_id:
-        contract = contracts.get(contract_id) if contracts else FirestoreRepository("contracts").get(contract_id)
+        contract = contract_by_id.get(str(contract_id))
         org_id = (contract or {}).get("org_id") or record.get("org_id")
         if org_id:
-            return bool(get_organization_service().get_active_member(str(org_id), uid))
+            return bool(member_by_org.get(str(org_id)))
     owner_id = record.get("owner_id")
     return not owner_id or owner_id == uid
+
+
+def _visibility_lookups(
+    records: list[dict[str, Any]],
+    uid: str,
+    contracts: FirestoreRepository,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """Batch the per-record Firestore work _visible() used to do inline.
+
+    The dashboard calls GET /api/findings with no contract_id. Looking up
+    contracts.get() + get_active_member() once per risk_findings document
+    made that unscoped request take 20s+ (~180 demo findings), and a
+    still-running copy blocked the contract-scoped findings page used by
+    the golden-path E2E test when the suite runs smoke + workflow in order.
+    Unique contract ids and org ids are resolved once, then reused.
+    """
+    contract_ids = list(
+        dict.fromkeys(
+            str(record["contract_id"])
+            for record in records
+            if record.get("contract_id") and not record.get("org_id")
+        )
+    )
+    contract_by_id = contracts.get_many(contract_ids) if contract_ids else {}
+    org_ids: set[str] = set()
+    for record in records:
+        contract = contract_by_id.get(str(record.get("contract_id") or ""))
+        org_id = (contract or {}).get("org_id") or record.get("org_id")
+        if org_id:
+            org_ids.add(str(org_id))
+    orgs = get_organization_service()
+    member_by_org = {org_id: orgs.get_active_member(org_id, uid) for org_id in org_ids}
+    return contract_by_id, member_by_org
 
 
 def _response(record: dict[str, Any]) -> FindingResponse:
@@ -100,18 +135,47 @@ def list_findings(
     contract_id: Optional[str] = Query(None),
     version_id: Optional[str] = Query(None),
     user: dict[str, Any] = Depends(get_current_user),
+    x_org_id: Annotated[str | None, Header(alias="X-Org-Id")] = None,
 ) -> list[FindingResponse]:
     """Return persisted findings visible to the authenticated user."""
     uid = str(user["uid"])
     repository = FirestoreRepository("risk_findings")
     contracts = FirestoreRepository("contracts")
-    records = (
-        record for record in repository.stream()
-        if _visible(record, uid, contracts)
-        and (contract_id is None or record.get("contract_id") == contract_id)
-        and (version_id is None or record.get("version_id") == version_id)
-    )
-    return [_response(record) for record in records]
+    # Contract/version-scoped callers (the findings page, the golden-path E2E
+    # test) must not stream the whole risk_findings collection. Filtering in
+    # Python after repository.stream() still pays for every document, and
+    # once the collection grew to ~180 demo findings that made this endpoint
+    # take 20s+ -- long enough that the findings page never left its loading
+    # state inside Playwright's default 30s test timeout.
+    # Query a single equality field so Firestore can use an automatic
+    # single-field index; apply the second scope in memory to avoid a
+    # composite-index requirement on (contract_id, version_id).
+    if contract_id is not None:
+        records = repository.query(equal={"contract_id": contract_id})
+        if version_id is not None:
+            records = [record for record in records if record.get("version_id") == version_id]
+    elif version_id is not None:
+        records = repository.query(equal={"version_id": version_id})
+    elif x_org_id and x_org_id.strip():
+        # Dashboard widgets send X-Org-Id. Query that org instead of streaming
+        # every risk_findings document -- the unscoped scan was still in
+        # flight after login redirected to /dashboard, and it blocked the
+        # contract-scoped findings page used by the golden-path E2E suite.
+        org_id = x_org_id.strip()
+        if not get_organization_service().get_active_member(org_id, uid):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not an active member of this organization",
+            )
+        records = repository.query(equal={"org_id": org_id})
+    else:
+        records = list(repository.stream())
+    contract_by_id, member_by_org = _visibility_lookups(list(records), uid, contracts)
+    return [
+        _response(record)
+        for record in records
+        if _visible(record, uid, contract_by_id=contract_by_id, member_by_org=member_by_org)
+    ]
 
 
 class TranslateFindingsRequest(BaseModel):

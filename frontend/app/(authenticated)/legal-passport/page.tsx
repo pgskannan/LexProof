@@ -2,9 +2,13 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Shield, FileText, CheckCircle, AlertTriangle, Info, Clock, ArrowLeft, Copy, ExternalLink, XCircle } from 'lucide-react'
+import { Shield, FileText, CheckCircle, AlertTriangle, Info, Clock, ArrowLeft, Copy, ExternalLink, XCircle, Anchor, Scale, Sparkles, UserCheck, UploadCloud, Fingerprint, BadgeCheck, Search } from 'lucide-react'
 import AnchorProofButton from './components/AnchorProofButton'
+import PassportRootAnchorPanel, {
+  type PassportRootAnchorStatus,
+} from './components/PassportRootAnchorPanel'
 import { IndependentVerificationPanel } from './components/IndependentVerificationPanel'
+import { EvidencePackButton } from './components/EvidencePackButton'
 import { apiFetch } from '../../../lib/api'
 import {
   countLegalEvidenceFindings,
@@ -12,6 +16,11 @@ import {
 } from '../../../lib/passport/evidence'
 import { EmptyState } from '../../../components/EmptyState'
 import { Skeleton } from '../../../components/ui/skeleton'
+import { Button } from '../../../components/ui/button'
+import { Card, CardContent } from '../../../components/ui/card'
+import { DataTable } from '../../../components/ui/data-table'
+import { PageHeader } from '../../../components/ui/page-header'
+import { PageContainer } from '../../../components/ui/container'
 
 interface ContractPassport {
   passport_id: string
@@ -69,6 +78,8 @@ interface Statistics {
   avg_compliance_impact: number
 }
 
+type IntegrityComponentStatus = 'PASS' | 'FAIL' | 'UNVERIFIABLE'
+
 interface PassportIntegrityResult {
   verified: boolean
   document_verified: boolean
@@ -76,6 +87,40 @@ interface PassportIntegrityResult {
   analysis_verified: boolean
   evidence_verified: boolean
   passport_hash_verified: boolean
+  document_status?: IntegrityComponentStatus
+  policy_status?: IntegrityComponentStatus
+  analysis_status?: IntegrityComponentStatus
+  evidence_status?: IntegrityComponentStatus
+  passport_hash_status?: IntegrityComponentStatus
+  // Additive Sepolia passport-ROOT anchor state (see
+  // docs/PASSPORT_ROOT_ANCHOR_ARCHITECTURE.md §16, §23). Populated by the
+  // extended POST /passports/{id}/verify response; never derived locally --
+  // this is always the server's own recomputation, and a blockchain match
+  // can never turn a FAIL/UNVERIFIABLE component above into a PASS here.
+  anchor_status?: PassportRootAnchorStatus
+  anchor_ineligible_reasons?: string[]
+  anchor_error?: string
+  blockchain_network?: string | null
+  contract_address?: string | null
+  chain_id?: number | null
+  transaction_hash?: string | null
+  block_number?: number | null
+  on_chain_root?: string | null
+}
+
+function integrityStatusLabel(
+  verified: boolean,
+  status: IntegrityComponentStatus | undefined,
+  mismatchLabel: string,
+): { className: string; text: string } {
+  const resolved = status ?? (verified ? 'PASS' : 'FAIL')
+  if (resolved === 'PASS') {
+    return { className: 'text-green-700', text: '✓' }
+  }
+  if (resolved === 'UNVERIFIABLE') {
+    return { className: 'text-amber-800', text: '— not claimed in snapshot' }
+  }
+  return { className: 'text-red-700 font-medium', text: mismatchLabel }
 }
 
 export default function LegalPassportPage() {
@@ -99,12 +144,57 @@ export default function LegalPassportPage() {
   const [pickerContracts, setPickerContracts] = useState<ContractSummary[]>([])
   const [pickerLoading, setPickerLoading] = useState(false)
   const [needsPicker, setNeedsPicker] = useState(false)
+  // Hardening item #6 (Polish Legal Passport as centerpiece): the passport
+  // previously buried Ethereum anchor status inside each individual,
+  // collapsed evidence row -- a viewer had to expand every item to learn
+  // how much of this passport was actually anchored on-chain. Surfacing an
+  // "N/M anchored" count as its own headline stat (alongside risk score,
+  // compliance score, and evidence count) makes the passport read as one
+  // connected artifact at a glance, matching the Contract Lifecycle page's
+  // existing "Evidence N/M anchored" metric.
+  const [anchoredCount, setAnchoredCount] = useState<number | null>(null)
 
   const legalEvidence = useMemo(() => filterLegalEvidenceFindings(evidence), [evidence])
   const legalEvidenceCount = useMemo(
     () => passport?.evidence_count ?? countLegalEvidenceFindings(evidence),
     [passport?.evidence_count, evidence],
   )
+  const [search, setSearch] = useState('')
+
+  const filteredPickerContracts = useMemo(() => {
+    const query = search.trim().toLowerCase()
+    if (!query) return pickerContracts
+    return pickerContracts.filter((item) => {
+      const name = (item.name || item.contract_id).toLowerCase()
+      const passportId = (item.passport_id || '').toLowerCase()
+      return name.includes(query) || passportId.includes(query)
+    })
+  }, [pickerContracts, search])
+
+  useEffect(() => {
+    if (legalEvidence.length === 0) {
+      setAnchoredCount(evidenceLoading ? null : 0)
+      return
+    }
+    let cancelled = false
+    void Promise.all(
+      legalEvidence.map(async (item) => {
+        try {
+          const response = await apiFetch(`/api/evidence/${encodeURIComponent(item.evidence_id)}/status`)
+          if (!response.ok) return false
+          const body: { anchored?: boolean } = await response.json()
+          return Boolean(body.anchored)
+        } catch {
+          return false
+        }
+      }),
+    ).then((results) => {
+      if (!cancelled) setAnchoredCount(results.filter(Boolean).length)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [legalEvidence, evidenceLoading])
 
   // Load a specific passport when the URL has contract + version; otherwise
   // show a picker so the sidebar Legal Passport link is never a dead stub.
@@ -275,6 +365,12 @@ export default function LegalPassportPage() {
     return `${hash.substring(0, 8)}...${hash.substring(hash.length - 8)}`
   }
 
+  const formatPassportId = (value?: string | null) => {
+    if (!value) return '—'
+    if (value.length <= 16) return value
+    return `${value.slice(0, 8)}…${value.slice(-6)}`
+  }
+
   const copyEvidenceId = async (evidenceId: string) => {
     try {
       await navigator.clipboard.writeText(evidenceId)
@@ -287,176 +383,342 @@ export default function LegalPassportPage() {
 
   if (needsPicker) {
     return (
-      <div className="min-h-screen bg-gray-50 p-8">
-        <div className="mx-auto max-w-4xl">
-          <h1 className="text-3xl font-bold text-gray-900">Legal Passport</h1>
-          <p className="mt-2 text-gray-600">
-            Open the cryptographically verifiable record for a contract that has already been analyzed.
-          </p>
+      <PageContainer>
+        <PageHeader
+          eyebrow="Evidence"
+          title="Legal Passport"
+          description="Open the cryptographically verifiable record for a contract that has already been analyzed."
+        />
+        <div className="mt-6">
           {pickerLoading && (
-            <div className="mt-8 space-y-3">
+            <div className="space-y-3">
               <Skeleton className="h-20 w-full" />
               <Skeleton className="h-20 w-full" />
             </div>
           )}
           {!pickerLoading && pickerContracts.length === 0 && (
-            <div className="mt-8">
-              <EmptyState
-                title="No Legal Passports yet"
-                description="Upload a contract and run analysis to create a passport. The namesake record is created at the end of that workflow."
-                actionLabel="Go to contracts"
-                onAction={() => router.push('/dashboard/contracts')}
-                icon={<Shield className="h-6 w-6" />}
-              />
-            </div>
+            <EmptyState
+              compact
+              title="No Legal Passports yet"
+              description="Upload a contract and run analysis to create a passport. The namesake record is created at the end of that workflow."
+              actionLabel="Go to contracts"
+              onAction={() => router.push('/dashboard/contracts')}
+              icon={<Shield className="h-6 w-6" />}
+            />
           )}
           {!pickerLoading && pickerContracts.length > 0 && (
-            <div className="mt-8 space-y-3">
-              {pickerContracts.map((item) => (
-                <button
-                  key={item.contract_id}
-                  type="button"
-                  onClick={() =>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3 rounded-[var(--radius-lg,0.75rem)] border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+                <div className="relative flex-1">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                  <input
+                    aria-label="Search contract or passport ID"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search contract or passport ID"
+                    className="w-full rounded-[var(--radius-md,0.5rem)] border border-gray-200 bg-gray-50 py-2 pl-9 pr-3 text-sm text-gray-900 placeholder:text-gray-400 focus:border-[var(--brand-primary,#2563eb)] focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                  />
+                </div>
+                <div className="whitespace-nowrap text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                  {filteredPickerContracts.length} {filteredPickerContracts.length === 1 ? 'PASSPORT' : 'PASSPORTS'}
+                </div>
+              </div>
+
+              {filteredPickerContracts.length === 0 ? (
+                <EmptyState
+                  compact
+                  title="No matching passports"
+                  description="Try a different contract name or passport ID."
+                />
+              ) : (
+                <DataTable
+                  columns={[
+                    {
+                      key: 'contract',
+                      header: 'Contract',
+                      className: 'min-w-[220px]',
+                      render: (item) => (
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-gray-900 dark:text-gray-100">{item.name || item.contract_id}</div>
+                          <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{item.contract_id}</div>
+                        </div>
+                      ),
+                    },
+                    {
+                      key: 'version',
+                      header: 'Version',
+                      className: 'w-[110px] text-center',
+                      render: (item) => (
+                        <span className="inline-flex rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                          V{item.version ?? '—'}
+                        </span>
+                      ),
+                    },
+                    {
+                      key: 'passport',
+                      header: 'Passport ID',
+                      className: 'min-w-[180px]',
+                      render: (item) => (
+                        <span
+                          title={item.passport_id || '—'}
+                          className="block max-w-full truncate font-mono text-xs text-gray-500 dark:text-gray-400"
+                        >
+                          {formatPassportId(item.passport_id)}
+                        </span>
+                      ),
+                    },
+                    {
+                      key: 'action',
+                      header: 'Action',
+                      className: 'w-[160px] text-right',
+                      render: (item) => (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="justify-center"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            router.push(
+                              `/legal-passport?contractId=${encodeURIComponent(item.contract_id)}&contractVersion=${item.version ?? 1}`,
+                            );
+                          }}
+                        >
+                          Open passport →
+                        </Button>
+                      ),
+                    },
+                  ]}
+                  data={filteredPickerContracts}
+                  rowKey={(item) => `${item.contract_id}:${item.version ?? 'unknown'}`}
+                  pageSize={10}
+                  onRowClick={(item) =>
                     router.push(
-                      `/legal-passport?contractId=${encodeURIComponent(item.contract_id)}&contractVersion=${item.version}`,
+                      `/legal-passport?contractId=${encodeURIComponent(item.contract_id)}&contractVersion=${item.version ?? 1}`,
                     )
                   }
-                  className="w-full rounded-lg border border-gray-200 bg-white p-4 text-left hover:border-blue-400 hover:bg-blue-50"
-                >
-                  <p className="font-semibold text-gray-900">{item.name || item.contract_id}</p>
-                  <p className="mt-1 font-mono text-xs text-gray-500">
-                    Version {item.version} · Passport {item.passport_id}
-                  </p>
-                </button>
-              ))}
+                  emptyTitle="No matching passports"
+                  emptyDescription="Try a different contract name or passport ID."
+                />
+              )}
             </div>
           )}
         </div>
-      </div>
+      </PageContainer>
     )
   }
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 p-8">
-        <div className="mx-auto max-w-6xl space-y-4">
-          <Skeleton className="h-10 w-64" />
-          <Skeleton className="h-40 w-full" />
-          <Skeleton className="h-64 w-full" />
+      <PageContainer>
+        <div className="space-y-6">
+          <div className="space-y-2">
+            <Skeleton className="h-3 w-28" />
+            <Skeleton className="h-8 w-72" />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Skeleton className="h-28 w-full" />
+            <Skeleton className="h-28 w-full" />
+            <Skeleton className="h-28 w-full" />
+            <Skeleton className="h-28 w-full" />
+          </div>
+          <Skeleton className="h-32 w-full" />
         </div>
-      </div>
+      </PageContainer>
     )
   }
 
   if (!passport) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
+      <div className="flex min-h-[60vh] items-center justify-center">
         <div className="text-center">
           <Shield className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-          <h2 className="text-2xl font-semibold text-gray-700 mb-2">{error || 'Passport unavailable'}</h2>
-          <p className="text-gray-600 mb-4">Check your session or try loading the contract again.</p>
+          <h2 className="text-2xl font-semibold text-gray-700 dark:text-gray-200 mb-2">{error || 'Passport unavailable'}</h2>
+          <p className="text-gray-600 dark:text-gray-400 mb-4">Check your session or try loading the contract again.</p>
           {passportRequest && (
-            <button
+            <Button
               type="button"
               onClick={() => void fetchPassport(passportRequest.contractId, passportRequest.contractVersion)}
-              className="px-4 py-2 mr-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+              className="mr-2"
             >
               Retry
-            </button>
+            </Button>
           )}
-          <button
-            onClick={() => router.push('/dashboard/contracts')}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-          >
+          <Button onClick={() => router.push('/dashboard/contracts')}>
             Back to Contracts
-          </button>
+          </Button>
         </div>
       </div>
     )
   }
 
+  const provenanceSteps = [
+    { key: 'contract', label: 'Contract', icon: FileText, done: true, detail: contract?.name || passport.contract_id },
+    { key: 'analysis', label: 'AI Analysis', icon: Sparkles, done: true, detail: `Risk ${passport.risk_score} · Compliance ${passport.compliance_score}` },
+    { key: 'finding', label: 'Risk Finding', icon: AlertTriangle, done: legalEvidenceCount > 0, detail: `${legalEvidenceCount} finding${legalEvidenceCount === 1 ? '' : 's'} recorded` },
+    { key: 'review', label: 'Human Review', icon: UserCheck, done: passport.audit_events.some((event) => /review|approve/i.test(event.event_type)), detail: `${passport.audit_events.length} audit event${passport.audit_events.length === 1 ? '' : 's'}` },
+    { key: 'published', label: 'Published Version', icon: UploadCloud, done: passport.status === 'created' || passport.status === 'pending' || Boolean(passport.contract_version), detail: `Version ${passport.contract_version} · ${passport.status}` },
+    { key: 'fingerprint', label: 'Evidence Fingerprint', icon: Fingerprint, done: Boolean(passport.metadata?.passport_hash), detail: passport.metadata?.passport_hash ? 'SHA-256 sealed' : 'Pending' },
+    { key: 'anchor', label: 'Ethereum Anchor', icon: Anchor, done: (anchoredCount ?? 0) > 0, detail: anchoredCount === null ? 'Checking…' : `${anchoredCount}/${legalEvidenceCount} anchored` },
+    { key: 'verify', label: 'Independent Verification', icon: BadgeCheck, done: integrity?.verified === true, detail: integrityLoading ? 'Checking…' : integrity ? (integrity.verified ? 'Verified' : 'Needs attention') : 'Not yet run' },
+  ]
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <div className="bg-white border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <button
-                onClick={() => router.push('/dashboard/contracts')}
-                className="text-blue-600 hover:text-blue-700 mb-2 inline-flex items-center"
-              >
-                <ArrowLeft className="w-4 h-4 mr-1" />
-                Back to Contracts
-              </button>
-              <h1 className="text-3xl font-bold text-gray-900">Legal Passport</h1>
-              <p className="text-gray-600 mt-1">{contract?.name || 'Cryptographically verifiable legal intelligence record'}</p>
+    <PageContainer>
+      <PageHeader
+        eyebrow="Evidence"
+        title="Legal Passport"
+        description={contract?.name || 'Cryptographically verifiable legal intelligence record'}
+        actions={
+          <>
+            <EvidencePackButton
+              passportId={passport.passport_id}
+              contractId={passport.contract_id}
+              contractVersion={passport.contract_version}
+              contractName={contract?.name || passport.contract_id}
+              passportStatus={passport.status}
+              riskScore={passport.risk_score}
+              complianceScore={passport.compliance_score}
+              evidence={legalEvidence}
+            />
+            <div className={`flex items-center gap-2 rounded-[var(--radius-md,0.5rem)] px-3.5 py-2 text-sm ${getStatusColor(passport.status)}`}>
+              {getStatusIcon(passport.status)}
+              <span className={`font-medium capitalize ${getStatusColor(passport.status)}`}>
+                {passport.status}
+              </span>
             </div>
-            <div className="flex items-center space-x-4">
-              <div className={`flex items-center space-x-2 px-4 py-2 rounded-lg ${getStatusColor(passport.status)}`}>
-                {getStatusIcon(passport.status)}
-                <span className={`font-medium capitalize ${getStatusColor(passport.status)}`}>
-                  {passport.status}
-                </span>
+          </>
+        }
+      />
+      <button
+        onClick={() => router.push('/dashboard/contracts')}
+        className="mt-4 inline-flex items-center text-sm text-[var(--brand-primary,#2563eb)] hover:underline"
+      >
+        <ArrowLeft className="w-4 h-4 mr-1" />
+        Back to Contracts
+      </button>
+      <p className="mt-2 max-w-3xl text-xs text-gray-400 dark:text-gray-500">
+        One record tying together AI risk analysis, human-reviewed findings, regulatory citations, a SHA-256 fingerprint, and an independently verifiable Ethereum anchor.
+      </p>
+
+      <div className="mt-6 space-y-6">
+        {/* Score Cards -- risk, compliance, evidence, and on-chain anchor
+            status together, so the passport reads as one connected record
+            rather than four separate facts a viewer has to piece together. */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+          <Card>
+            <CardContent className="py-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">Risk Score</h3>
+                <Shield className="w-5 h-5 text-red-500" />
               </div>
-            </div>
-          </div>
+              <div className="text-4xl font-bold text-gray-900 dark:text-gray-100">{passport.risk_score}</div>
+              <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden dark:bg-gray-700">
+                <div
+                  className="h-full bg-red-500 rounded-full transition-all duration-500"
+                  style={{ width: `${passport.risk_score}%` }}
+                />
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">Out of 100</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="py-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">Compliance Score</h3>
+                <CheckCircle className="w-5 h-5 text-green-500" />
+              </div>
+              <div className="text-4xl font-bold text-gray-900 dark:text-gray-100">{passport.compliance_score}</div>
+              <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden dark:bg-gray-700">
+                <div
+                  className="h-full bg-green-500 rounded-full transition-all duration-500"
+                  style={{ width: `${passport.compliance_score}%` }}
+                />
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">Out of 100</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="py-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">Evidence Items</h3>
+                <FileText className="w-5 h-5 text-blue-500" />
+              </div>
+              <div className="text-4xl font-bold text-gray-900 dark:text-gray-100">{legalEvidenceCount}</div>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">Supporting artifacts</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="py-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">Ethereum Anchored</h3>
+                <Anchor className="w-5 h-5 text-purple-500" />
+              </div>
+              <div className="text-4xl font-bold text-gray-900 dark:text-gray-100">
+                {anchoredCount === null ? '—' : `${anchoredCount}/${legalEvidenceCount}`}
+              </div>
+              <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden dark:bg-gray-700">
+                <div
+                  className="h-full bg-purple-500 rounded-full transition-all duration-500"
+                  style={{
+                    width: `${anchoredCount === null || legalEvidenceCount === 0 ? 0 : (anchoredCount / legalEvidenceCount) * 100}%`,
+                  }}
+                />
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">Verifiable on Sepolia</p>
+            </CardContent>
+          </Card>
         </div>
-      </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Score Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-medium text-gray-500">Risk Score</h3>
-              <Shield className="w-5 h-5 text-red-500" />
+        {/* Provenance chain -- a subtle, business-meaning-first timeline
+            (not a crypto-explorer table) connecting every stage this
+            passport already represents, using only data already fetched
+            above (passport / integrity / anchoredCount). Purely
+            presentational: no new requests, no new state. */}
+        <Card>
+          <CardContent className="py-6">
+            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-5">Provenance Chain</h2>
+            <div className="flex flex-wrap gap-x-2 gap-y-4 sm:flex-nowrap sm:overflow-x-auto">
+              {provenanceSteps.map((step, index) => {
+                const StepIcon = step.icon
+                return (
+                  <div key={step.key} className="flex items-center">
+                    <div className="flex flex-col items-center text-center" style={{ width: '108px' }}>
+                      <div
+                        className={`flex h-10 w-10 items-center justify-center rounded-full border-2 ${
+                          step.done
+                            ? 'border-emerald-400 bg-emerald-50 text-emerald-600 dark:border-emerald-600 dark:bg-emerald-950 dark:text-emerald-400'
+                            : 'border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-500'
+                        }`}
+                      >
+                        <StepIcon className="h-4.5 w-4.5" />
+                      </div>
+                      <p className="mt-2 text-xs font-semibold text-gray-800 dark:text-gray-200">{step.label}</p>
+                      <p className="mt-0.5 text-[11px] leading-snug text-gray-500 dark:text-gray-400">{step.detail}</p>
+                    </div>
+                    {index < provenanceSteps.length - 1 && (
+                      <div className={`mx-1 h-0.5 w-6 flex-shrink-0 sm:w-10 ${step.done ? 'bg-emerald-300 dark:bg-emerald-700' : 'bg-gray-200 dark:bg-gray-700'}`} />
+                    )}
+                  </div>
+                )
+              })}
             </div>
-            <div className="text-4xl font-bold text-gray-900">{passport.risk_score}</div>
-            <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-red-500 rounded-full transition-all duration-500"
-                style={{ width: `${passport.risk_score}%` }}
-              />
-            </div>
-            <p className="text-sm text-gray-600 mt-2">Out of 100</p>
-          </div>
-
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-medium text-gray-500">Compliance Score</h3>
-              <CheckCircle className="w-5 h-5 text-green-500" />
-            </div>
-            <div className="text-4xl font-bold text-gray-900">{passport.compliance_score}</div>
-            <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-green-500 rounded-full transition-all duration-500"
-                style={{ width: `${passport.compliance_score}%` }}
-              />
-            </div>
-            <p className="text-sm text-gray-600 mt-2">Out of 100</p>
-          </div>
-
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-medium text-gray-500">Evidence Items</h3>
-              <FileText className="w-5 h-5 text-blue-500" />
-            </div>
-            <div className="text-4xl font-bold text-gray-900">{legalEvidenceCount}</div>
-            <p className="text-sm text-gray-600 mt-2">Supporting artifacts</p>
-          </div>
-        </div>
+          </CardContent>
+        </Card>
 
         {/* Tabs */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-          <div className="border-b border-gray-200">
+        <Card className="overflow-hidden">
+          <div className="border-b border-gray-200 dark:border-gray-700">
             <nav className="flex space-x-8 px-6">
               <button
                 onClick={() => setActiveTab('overview')}
                 className={`py-4 px-1 border-b-2 font-medium text-sm transition ${
                   activeTab === 'overview'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-[var(--brand-primary,#2563eb)] text-[var(--brand-primary,#1d4ed8)]'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
                 }`}
               >
                 Overview
@@ -465,8 +727,8 @@ export default function LegalPassportPage() {
                 onClick={() => setActiveTab('evidence')}
                 className={`py-4 px-1 border-b-2 font-medium text-sm transition ${
                   activeTab === 'evidence'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-[var(--brand-primary,#2563eb)] text-[var(--brand-primary,#1d4ed8)]'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
                 }`}
               >
                 Evidence ({legalEvidenceCount})
@@ -475,8 +737,8 @@ export default function LegalPassportPage() {
                 onClick={() => setActiveTab('fingerprint')}
                 className={`py-4 px-1 border-b-2 font-medium text-sm transition ${
                   activeTab === 'fingerprint'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-[var(--brand-primary,#2563eb)] text-[var(--brand-primary,#1d4ed8)]'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
                 }`}
               >
                 Fingerprint
@@ -489,7 +751,7 @@ export default function LegalPassportPage() {
               <div className="space-y-6">
                 {/* Passport Integrity */}
                 <div>
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Passport Integrity</h2>
+                  <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Passport Integrity</h2>
                   {integrityLoading && (
                     <Skeleton className="h-24 w-full" />
                   )}
@@ -509,14 +771,14 @@ export default function LegalPassportPage() {
                         <span>PASS / VERIFIED</span>
                       </div>
                       <p className="text-sm text-green-700 mb-4">
-                        All passport components match the canonical SHA-256 fingerprint.
+                        No claimed snapshot component failed. PASS means the stored fingerprint matched; “not claimed in snapshot” is legacy/unrecomputable, not a silent pass.
                       </p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-green-800">
-                        <div>Document ✓</div>
-                        <div>Policy ✓</div>
-                        <div>Analysis ✓</div>
-                        <div>Evidence ✓</div>
-                        <div className="sm:col-span-2">Full Passport ✓</div>
+                        <div>Document {integrityStatusLabel(integrity.document_verified, integrity.document_status, '').text}</div>
+                        <div>Policy {integrityStatusLabel(integrity.policy_verified, integrity.policy_status, '').text}</div>
+                        <div>Analysis {integrityStatusLabel(integrity.analysis_verified, integrity.analysis_status, '').text}</div>
+                        <div>Evidence {integrityStatusLabel(integrity.evidence_verified, integrity.evidence_status, '').text}</div>
+                        <div className="sm:col-span-2">Full Passport {integrityStatusLabel(integrity.passport_hash_verified, integrity.passport_hash_status, '').text}</div>
                       </div>
                     </div>
                   )}
@@ -527,24 +789,30 @@ export default function LegalPassportPage() {
                         <span>FAIL / INTEGRITY CHECK FAILED</span>
                       </div>
                       <div className="space-y-1 text-sm">
-                        <div className={integrity.document_verified ? 'text-green-700' : 'text-red-700 font-medium'}>
-                          Document {integrity.document_verified ? '✓' : '✗ — fingerprint mismatch'}
-                        </div>
-                        <div className={integrity.policy_verified ? 'text-green-700' : 'text-red-700 font-medium'}>
-                          Policy {integrity.policy_verified ? '✓' : '✗ — fingerprint mismatch'}
-                        </div>
-                        <div className={integrity.analysis_verified ? 'text-green-700' : 'text-red-700 font-medium'}>
-                          Analysis {integrity.analysis_verified ? '✓' : '✗ — fingerprint mismatch'}
-                        </div>
-                        <div className={integrity.evidence_verified ? 'text-green-700' : 'text-red-700 font-medium'}>
-                          Evidence {integrity.evidence_verified ? '✓' : '✗ — package mismatch'}
-                        </div>
-                        <div className={integrity.passport_hash_verified ? 'text-green-700' : 'text-red-700 font-medium'}>
-                          Full Passport {integrity.passport_hash_verified ? '✓' : '✗ — passport hash mismatch'}
-                        </div>
+                        {([
+                          ['Document', integrity.document_verified, integrity.document_status, '✗ — fingerprint mismatch'],
+                          ['Policy', integrity.policy_verified, integrity.policy_status, '✗ — fingerprint mismatch'],
+                          ['Analysis', integrity.analysis_verified, integrity.analysis_status, '✗ — fingerprint mismatch'],
+                          ['Evidence', integrity.evidence_verified, integrity.evidence_status, '✗ — package mismatch'],
+                          ['Full Passport', integrity.passport_hash_verified, integrity.passport_hash_status, '✗ — passport hash mismatch'],
+                        ] as const).map(([label, verified, status, mismatch]) => {
+                          const line = integrityStatusLabel(verified, status, mismatch)
+                          return (
+                            <div key={label} className={line.className}>
+                              {label} {line.text}
+                            </div>
+                          )
+                        })}
                       </div>
                     </div>
                   )}
+
+                  <PassportRootAnchorPanel
+                    passportId={passport.passport_id}
+                    integrity={integrity}
+                    integrityLoading={integrityLoading}
+                    onAnchored={() => fetchIntegrity(passport.passport_id)}
+                  />
                 </div>
 
                 <IndependentVerificationPanel
@@ -648,7 +916,10 @@ export default function LegalPassportPage() {
                   const sourceSection = item.metadata?.source_section || item.contract_reference
                   const evidenceQuote = item.metadata?.evidence_quote
                   const recommendation = item.metadata?.recommendation
-                  
+                  const regulatoryCitations: string[] = Array.isArray(item.metadata?.regulatory_citations)
+                    ? item.metadata.regulatory_citations
+                    : []
+
                   return (
                     <div
                       key={item.evidence_id}
@@ -679,6 +950,15 @@ export default function LegalPassportPage() {
                                   Compliance Impact: {item.compliance_impact.toFixed(0)}
                                 </span>
                               )}
+                              {regulatoryCitations.map((citation) => (
+                                <span
+                                  key={citation}
+                                  className="inline-flex items-center gap-1 text-xs px-2.5 py-1 bg-purple-50 text-purple-700 rounded border border-purple-200 font-medium"
+                                >
+                                  <Scale className="h-3 w-3" />
+                                  {citation}
+                                </span>
+                              ))}
                             </div>
                           </div>
                           <div className="ml-4 text-gray-400">
@@ -818,10 +1098,10 @@ export default function LegalPassportPage() {
               </div>
             )}
           </div>
-        </div>
+        </Card>
 
       </div>
-    </div>
+    </PageContainer>
   )
 }
 

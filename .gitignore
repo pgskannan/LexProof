@@ -69,6 +69,13 @@ node_modules/
 .dataconnect
 # Frontend environment
 frontend/.env.local
+frontend/.env.e2e.local
+
+# Playwright (Phase 3J-A E2E foundation)
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/playwright/.cache/
 
 # Next.js build output
 frontend/.next/
@@ -78,3 +85,11 @@ frontend/out/
 frontend/*.tsbuildinfo
 # Contract build artifacts (regenerate via contracts/compile.sh)
 contracts/build/
+
+# Local scratch/session working files (not part of the app)
+_scratch/
+backend/_scratch/
+Claude outputs/
+backend/retrospective.json
+ocr_test_scan.png
+.vscode/

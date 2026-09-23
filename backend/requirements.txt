@@ -20,3 +20,11 @@ Pillow>=10.0.0
 pytesseract>=0.3.10
 PyMuPDF>=1.24.0
 PyJWT[crypto]>=2.8.0
+
+# Test-only: an in-process local Ethereum test chain (PyEVM backend) used by
+# tests/lexproof/blockchain/test_passport_registry_contract.py to deploy and
+# exercise the real compiled LexProofPassportRegistry bytecode without any
+# external node (no Anvil/Hardhat exists in this repo). Never imported by
+# application runtime code -- production still talks to real Sepolia via
+# ETHEREUM_RPC_URL, unchanged.
+eth-tester[py-evm]>=0.14.0b1

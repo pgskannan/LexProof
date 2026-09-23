@@ -219,95 +219,41 @@ class EvidencePublicVerificationResult(BaseModel):
 
 @router.post(
     "/passports/{passport_id}/anchor",
-    response_model=ProofAnchoringResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Anchor proof to blockchain"
+    status_code=status.HTTP_410_GONE,
+    summary="[DISABLED] Legacy passport proof anchoring",
 )
-async def anchor_proof_to_blockchain(
-    passport_id: str,
-    request: ProofAnchoringRequest,
-    background_tasks: BackgroundTasks
-) -> ProofAnchoringResponse:
-    """
-    Anchor a legal passport proof to Ethereum Sepolia blockchain
-    
-    SECURITY: Only hashes and non-sensitive metadata are stored on-chain.
-    Never stores contract content, PII, contract text, or AI findings.
-    
-    Args:
-        passport_id: Legal passport ID
-        request: Proof anchoring request with hashes and scores
-        background_tasks: Background tasks for async verification
-        
-    Returns:
-        Proof anchoring response with transaction details
-    """
-    try:
-        # Convert hex strings to bytes
-        contract_hash_bytes = bytes.fromhex(request.contract_hash.replace('0x', ''))
-        policy_hash_bytes = bytes.fromhex(request.policy_hash.replace('0x', ''))
-        analysis_hash_bytes = bytes.fromhex(request.analysis_hash.replace('0x', ''))
-        evidence_hash_bytes = bytes.fromhex(request.evidence_hash.replace('0x', ''))
+async def anchor_proof_to_blockchain(passport_id: str) -> Dict[str, Any]:
+    """DISABLED. This route is permanently locked down, not merely deprecated.
 
-        # Blockchain service construction (RPC round-trip) and the register_proof
-        # transaction (submit + wait for receipt) are both blocking web3.py calls;
-        # run them on a worker thread so they don't stall the event loop and, with
-        # it, every other request (see status-and-plan.md §2c/§11f).
-        def _register_proof_sync():
-            blockchain = create_blockchain_service()
-            proof_id = blockchain.proof_id_for_hashes(
-                contract_hash_bytes, policy_hash_bytes, analysis_hash_bytes, evidence_hash_bytes
-            ).hex()
-            tx_hash, block_number = blockchain.register_proof(
-                contract_hash=contract_hash_bytes,
-                policy_hash=policy_hash_bytes,
-                analysis_hash=analysis_hash_bytes,
-                evidence_hash=evidence_hash_bytes,
-                risk_score=request.risk_score,
-                compliance_score=request.compliance_score,
-                policy_version=request.policy_version,
-                evidence_count=request.evidence_count,
-                max_fee_per_gas=request.max_fee_per_gas,
-                max_priority_fee_per_gas=request.max_priority_fee_per_gas
-            )
-            return blockchain, proof_id, tx_hash, block_number
+    Audit finding (docs/PASSPORT_ROOT_ANCHOR_ARCHITECTURE.md §2.3, §22): this
+    endpoint accepted CLIENT-SUPPLIED hashes and risk/compliance scores with
+    no ownership/tenant check on `passport_id`, and called `registerProof` --
+    a primitive that is explicitly not a safe reuse target for passport-root
+    anchoring (it identifies proofs by Keccak-256 of four bytes32s rather
+    than the v1 SHA-256 `metadata.passport_hash`, stores scores and policy
+    version on-chain, and is not wired to `verify_passport_integrity`). No
+    frontend code has ever called this route.
 
-        blockchain, proof_id, tx_hash, block_number = await asyncio.to_thread(_register_proof_sync)
-        
-        # Store transaction status
-        transaction_store.add_transaction(proof_id, tx_hash, block_number)
-        transaction_store.update_status(proof_id, TransactionStatus.CONFIRMED.value)
-        
-        # Add background task to verify transaction
-        background_tasks.add_task(
-            verify_proof_on_chain,
-            proof_id,
-            request.contract_hash,
-            request.policy_hash,
-            request.analysis_hash,
-            request.evidence_hash
-        )
-        
-        return ProofAnchoringResponse(
-            proof_id=proof_id,
-            transaction_hash=tx_hash,
-            block_number=block_number,
-            status=TransactionStatus.CONFIRMED.value,
-            timestamp=datetime.now(),
-            network="ethereum-sepolia",
-            contract_address=blockchain.contract_address
-        )
-        
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error anchoring proof: {str(e)}"
-        )
+    Legal Passport root anchoring is now served exclusively by
+    `POST /api/passports/{passport_id}/anchor-root`
+    (domains/passport/api/router.py::anchor_passport_root_endpoint), which:
+    requires authentication AND the existing org-aware passport visibility
+    check; refuses any client-supplied hash; recomputes and requires full
+    (all-PASS) passport integrity before anchoring; and anchors to the
+    additive `LexProofPassportRegistry` contract, never `registerProof` or
+    the existing item `LexProofRegistry`.
+
+    This handler never touches `create_blockchain_service()`,
+    `register_proof`, or `transaction_store` -- it is intentionally inert.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "This endpoint has been permanently disabled: it accepted client-supplied "
+            "hashes with no passport ownership check and used the unsafe registerProof "
+            "primitive. Use POST /api/passports/{passport_id}/anchor-root instead."
+        ),
+    )
 
 
 @router.get(
@@ -546,6 +492,75 @@ async def public_verify_evidence(evidence_id: str) -> EvidencePublicVerification
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error verifying evidence: {str(e)}"
+        )
+
+
+class PassportRootPublicVerificationResult(BaseModel):
+    """Response model for public, existence-only passport-root verification.
+
+    Deliberately minimal: this proves ONLY that a matching root exists on the
+    expected LexProofPassportRegistry contract for this passport_id. It is
+    NOT proof of full passport integrity, which requires the confidential
+    verification_snapshot and the authenticated
+    POST /api/passports/{id}/verify endpoint instead.
+    """
+    passport_id: str
+    exists: bool
+    status: str
+    blockchain_network: Optional[str] = None
+    contract_address: Optional[str] = None
+    chain_id: Optional[int] = None
+
+
+@public_verify_router.get(
+    "/passport/{passport_id}",
+    response_model=PassportRootPublicVerificationResult,
+    summary="Public passport-root existence verification portal",
+)
+async def public_verify_passport_root(passport_id: str, passport_hash: str) -> PassportRootPublicVerificationResult:
+    """Public, unauthenticated, EXISTENCE-ONLY check for a Legal Passport
+    root anchor on the additive LexProofPassportRegistry contract.
+
+    This answers only "does a root matching `passport_hash` exist on the
+    expected passport registry for this passport_id" -- it never loads or
+    exposes the confidential verification_snapshot, and on-chain existence
+    is explicitly a weaker claim than full passport integrity (see
+    docs/PASSPORT_ROOT_ANCHOR_ARCHITECTURE.md §21, §24). A caller wanting
+    full integrity + chain verification must use the authenticated
+    POST /api/passports/{passport_id}/verify endpoint instead.
+
+    Args:
+        passport_id: Passport identifier
+        passport_hash: The 64-character hex SHA-256 `metadata.passport_hash`
+            to check for (query parameter) -- never trusted as authoritative
+            for anything beyond this existence check itself.
+    """
+    if not passport_id or not passport_id.strip():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Passport ID is required")
+
+    from ..services.passport_root_anchor_service import get_passport_root_anchor_service
+    from ..repositories.firestore import PassportAnchorRepository
+
+    try:
+        anchor_service = await asyncio.to_thread(
+            get_passport_root_anchor_service,
+            repository=PassportAnchorRepository("passport_anchors", settings=get_settings()),
+        )
+        result = await anchor_service.public_root_existence(passport_id, passport_hash)
+        return PassportRootPublicVerificationResult(
+            passport_id=passport_id,
+            exists=bool(result.get("exists", False)),
+            status=result.get("status", "UNKNOWN"),
+            blockchain_network=result.get("blockchain_network"),
+            contract_address=result.get("contract_address"),
+            chain_id=result.get("chain_id"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error verifying passport root: {str(e)}"
         )
 
 

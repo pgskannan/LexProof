@@ -71,12 +71,10 @@ def test_cross_owner_cannot_read_another_users_contract(monkeypatch):
         contracts_api, "_repositories",
         lambda: (FakeRepository("contracts"), FakeRepository("contract_versions"), object()),
     )
-    # get_contract()'s legacy-passport fallback (reached whenever the primary
-    # owner_id check denies access, exactly the path this test exercises)
-    # constructs its own FirestoreRepository("legal_passports") directly
-    # rather than through _repositories() -- patch the class itself so that
-    # fallback also reads from FakeRepository.stores instead of trying a real
-    # Firestore connection.
+    # Denied GETs must 404 from the contract document itself. They used to
+    # fall through to FirestoreRepository("legal_passports").stream() and
+    # 500 under load; patch the class so a missing-contract legacy lookup
+    # still stays on FakeRepository if it is reached.
     monkeypatch.setattr(contracts_api, "FirestoreRepository", FakeRepository)
     monkeypatch.setattr(contracts_api, "get_organization_service", make_orgs)
     app = create_app()
@@ -87,6 +85,62 @@ def test_cross_owner_cannot_read_another_users_contract(monkeypatch):
 
     assert response.status_code == 404
     assert "attacker" not in response.text
+
+
+def test_other_org_member_cannot_read_contract_and_does_not_scan_passports(monkeypatch):
+    """A real member of org-B must get the same 404 as a missing contract
+    when guessing org-A's id, without streaming legal_passports. That
+    full-collection scan is what returned 500 in the cross-tenant E2E."""
+
+    class CountingRepository(FakeRepository):
+        streamed: list[str] = []
+
+        def stream(self):
+            type(self).streamed.append(self.collection)
+            return super().stream()
+
+    CountingRepository.streamed = []
+    FakeRepository.stores = {
+        "contracts": {
+            "tenant-a-contract": {
+                "id": "tenant-a-contract",
+                "owner_id": "owner-a",
+                "org_id": "org-a",
+                "current_version_id": "version-a",
+            },
+        },
+        "contract_versions": {"version-a": {"id": "version-a", "contract_id": "tenant-a-contract"}},
+        "legal_passports": {
+            "passport-a": {"id": "passport-a", "contract_id": "tenant-a-contract", "org_id": "org-a"},
+        },
+        "organizations": {
+            "org-a": {"org_id": "org-a", "status": "active"},
+            "org-b": {"org_id": "org-b", "status": "active"},
+        },
+        "organizations/org-a/members": {
+            "owner-a": {"user_id": "owner-a", "roles": ["contract_owner"], "status": "active", "org_id": "org-a"},
+        },
+        "organizations/org-b/members": {
+            "owner-b": {"user_id": "owner-b", "roles": ["contract_owner"], "status": "active", "org_id": "org-b"},
+        },
+        "users": {},
+        "organization_invites": {},
+    }
+    monkeypatch.setattr(
+        contracts_api,
+        "_repositories",
+        lambda: (CountingRepository("contracts"), CountingRepository("contract_versions"), object()),
+    )
+    monkeypatch.setattr(contracts_api, "FirestoreRepository", CountingRepository)
+    monkeypatch.setattr(contracts_api, "get_organization_service", make_orgs)
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: {"uid": "owner-b"}
+    client = TestClient(app)
+
+    response = client.get("/api/contracts/tenant-a-contract")
+
+    assert response.status_code == 404
+    assert "legal_passports" not in CountingRepository.streamed
 
 
 def test_owner_can_read_their_own_contract(monkeypatch):

@@ -2,28 +2,34 @@
 
 import { onAuthStateChanged, User } from "firebase/auth"
 import { usePathname, useRouter } from "next/navigation"
-import { createContext, useContext, useEffect, useState } from "react"
-import { auth, login, logout } from "../lib/auth"
+import { createContext, useContext, useEffect, useMemo, useState } from "react"
+import { auth, AUTHENTICATED, AUTH_INITIALIZING, login, logout, setAuthState, type AuthState, UNAUTHENTICATED } from "../lib/auth"
 import { isPublicPath } from "../lib/publicRoutes"
 import { Skeleton } from "./ui/skeleton"
 
-type AuthContextValue = { user: User | null; loading: boolean; login: typeof login; logout: typeof logout }
+type AuthContextValue = { user: User | null; authState: AuthState; loading: boolean; login: typeof login; logout: typeof logout }
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
+  const [authState, setAuthStatus] = useState<AuthState>(AUTH_INITIALIZING)
   const [loading, setLoading] = useState(true)
   const pathname = usePathname()
   const router = useRouter()
   const isPublicRoute = isPublicPath(pathname)
 
   useEffect(() => onAuthStateChanged(auth, currentUser => {
+    const nextAuthState = currentUser ? AUTHENTICATED : UNAUTHENTICATED
+    setAuthState(nextAuthState)
+    setAuthStatus(nextAuthState)
     setUser(currentUser)
     setLoading(false)
     if (!currentUser && !isPublicRoute) router.replace("/login")
   }), [isPublicRoute, pathname, router])
 
-  if (loading) {
+  const value = useMemo(() => ({ user, authState, loading, login, logout }), [authState, loading, user])
+
+  if (authState === AUTH_INITIALIZING || loading) {
     return (
       <div className="flex min-h-screen bg-gray-50">
         <div className="w-64 space-y-4 border-r border-gray-200 bg-white p-6">
@@ -42,7 +48,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     )
   }
   if (!user && !isPublicRoute) return null
-  return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
 export function useAuth() {

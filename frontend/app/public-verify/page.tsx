@@ -241,6 +241,28 @@ export default function PublicVerifyPage() {
                     ? 'Recomputed hash does NOT match the on-chain hash. This evidence has been altered since it was anchored.'
                     : 'No matching evidence and/or Ethereum anchor was found for this ID.'}
                 </p>
+                {/* Hardening item #7 (Polish public verification -- the
+                    VERIFIED/TAMPERED "money shot"): the transaction link
+                    previously only appeared buried in the Proof Metadata
+                    grid below. The review specifically asked for a "View
+                    Ethereum Proof" link to be part of the headline moment,
+                    not something a visitor has to scroll to find. */}
+                {result.transaction_hash && (
+                  <a
+                    href={sepoliaTxUrl(result.transaction_hash)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`mt-6 inline-flex items-center gap-2 rounded-lg border-2 px-6 py-3 text-base font-bold transition-colors ${
+                      statusInfo.tone === 'green'
+                        ? 'border-green-600 bg-white text-green-700 hover:bg-green-50'
+                        : statusInfo.tone === 'red'
+                        ? 'border-red-600 bg-white text-red-700 hover:bg-red-50'
+                        : 'border-amber-600 bg-white text-amber-700 hover:bg-amber-50'
+                    }`}
+                  >
+                    View Ethereum Proof ↗
+                  </a>
+                )}
               </div>
             </div>
 
@@ -420,54 +442,79 @@ export default function PublicVerifyPage() {
               </div>
             </div>
 
-            {/* Hash Comparison */}
+            {/* Fingerprint Comparison -- the review's explicit "money shot":
+                document fingerprint vs. blockchain fingerprint, shown side
+                by side with an unmissable MATCH/MISMATCH verdict between
+                them, rather than two same-looking boxes a visitor has to
+                read and compare by eye. */}
             {(result.evidence_hash_on_chain || result.computed_hash) && (
               <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
                 <div className="px-8 py-6 border-b border-gray-200 bg-gray-50">
-                  <h3 className="text-lg font-bold text-gray-900">Hash Comparison</h3>
+                  <h3 className="text-lg font-bold text-gray-900">Fingerprint Comparison</h3>
                   <p className="text-sm text-gray-600 mt-1">
                     {result.status === 'ANCHOR_NOT_FOUND'
-                      ? 'This evidence has never been anchored on-chain, so there is nothing to compare the recomputed hash against.'
+                      ? 'This evidence has never been anchored on-chain, so there is nothing to compare the document fingerprint against.'
                       : result.verified
-                      ? 'The hashes match — the evidence has not been tampered with.'
-                      : 'The hashes do not match — the stored evidence has been altered since anchoring.'}
+                      ? 'The document fingerprint and the blockchain fingerprint match — the evidence has not been tampered with.'
+                      : 'The document fingerprint does NOT match the blockchain fingerprint — the stored evidence has been altered since anchoring.'}
                   </p>
                 </div>
                 <div className="p-8">
-                  <div className="space-y-6">
-                    {result.evidence_hash_on_chain && (
-                      <div>
-                        <div className="flex items-center justify-between mb-3">
-                          <h4 className="text-sm font-semibold text-gray-900">On-Chain Hash</h4>
-                          <button
-                            onClick={() => copyToClipboard(result.evidence_hash_on_chain!)}
-                            className="text-xs px-3 py-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
-                          >
-                            Copy
-                          </button>
-                        </div>
-                        <p className="font-mono text-xs break-all bg-green-50 p-4 rounded-lg border border-green-200 text-gray-900">
-                          {result.evidence_hash_on_chain}
-                        </p>
-                      </div>
-                    )}
-
-                    {result.computed_hash && (
-                      <div>
-                        <div className="flex items-center justify-between mb-3">
-                          <h4 className="text-sm font-semibold text-gray-900">Recomputed Hash</h4>
+                  <div className="grid items-center gap-4 lg:grid-cols-[1fr_auto_1fr]">
+                    <div>
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-sm font-semibold text-gray-900">Document Fingerprint</h4>
+                        {result.computed_hash && (
                           <button
                             onClick={() => copyToClipboard(result.computed_hash!)}
                             className="text-xs px-3 py-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
                           >
                             Copy
                           </button>
-                        </div>
-                        <p className="font-mono text-xs break-all bg-amber-50 p-4 rounded-lg border border-amber-200 text-gray-900">
-                          {result.computed_hash}
-                        </p>
+                        )}
                       </div>
-                    )}
+                      <p className="font-mono text-xs break-all bg-amber-50 p-4 rounded-lg border-2 border-amber-200 text-gray-900 min-h-[4.5rem]">
+                        {result.computed_hash ?? 'Not available'}
+                      </p>
+                      <p className="mt-1 text-xs text-gray-500">Recomputed from the evidence as stored today</p>
+                    </div>
+
+                    <div className="flex justify-center py-2 lg:py-0">
+                      {result.status === 'ANCHOR_NOT_FOUND' || !result.evidence_hash_on_chain || !result.computed_hash ? (
+                        <div className="flex flex-col items-center text-gray-400">
+                          <span className="text-3xl font-bold">?</span>
+                          <span className="text-xs font-semibold uppercase tracking-wide">No comparison</span>
+                        </div>
+                      ) : result.verified ? (
+                        <div className="flex flex-col items-center text-green-600">
+                          <span className="text-4xl font-bold leading-none">=</span>
+                          <span className="mt-1 rounded-full bg-green-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-green-800">Match</span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center text-red-600">
+                          <span className="text-4xl font-bold leading-none">≠</span>
+                          <span className="mt-1 rounded-full bg-red-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-red-800">Mismatch</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-sm font-semibold text-gray-900">Blockchain Fingerprint</h4>
+                        {result.evidence_hash_on_chain && (
+                          <button
+                            onClick={() => copyToClipboard(result.evidence_hash_on_chain!)}
+                            className="text-xs px-3 py-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
+                          >
+                            Copy
+                          </button>
+                        )}
+                      </div>
+                      <p className="font-mono text-xs break-all bg-green-50 p-4 rounded-lg border-2 border-green-200 text-gray-900 min-h-[4.5rem]">
+                        {result.evidence_hash_on_chain ?? 'Not available'}
+                      </p>
+                      <p className="mt-1 text-xs text-gray-500">Read from the Ethereum Sepolia anchor</p>
+                    </div>
                   </div>
                 </div>
               </div>

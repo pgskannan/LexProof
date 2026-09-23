@@ -286,6 +286,49 @@ def compute_passport_hash(
     return compute_sha256_hash(passport_data)
 
 
+def compute_passport_key(passport_id: str) -> str:
+    """Compute the on-chain identity key for a Legal Passport root anchor.
+
+    This is deliberately Keccak-256 (Ethereum's hash function), NOT the SHA-256
+    used everywhere else in this module -- it is a storage/identity key for the
+    additive LexProofPassportRegistry contract, never a cryptographic commitment
+    of passport content, and it is computed independently of, and does not
+    change, ``compute_passport_hash`` (the SHA-256 v1 passport root).
+
+    passportKey = keccak256(UTF-8(passport_id))
+
+    The passport_id UUID itself is never sent as plaintext calldata; only this
+    32-byte key and the 32-byte passport root are ever put on-chain.
+
+    Args:
+        passport_id: Passport identifier (UUID string)
+
+    Returns:
+        Lowercase 64-character hexadecimal string (no "0x" prefix), matching
+        the format convention of the other hash functions in this module.
+    """
+    if not isinstance(passport_id, str) or not passport_id:
+        raise ValueError("passport_id must be a non-empty string")
+
+    # Imported locally (not at module scope) so this SHA-256 hashing module,
+    # used throughout passport CREATE/VERIFY, does not gain a hard dependency
+    # on web3 for callers that never touch blockchain anchoring.
+    from web3 import Web3
+
+    return Web3.keccak(text=passport_id).hex().removeprefix("0x").lower()
+
+
+def passport_root_bytes32(passport_hash: str) -> bytes:
+    """Decode the existing v1 hex `metadata.passport_hash` into the bytes32
+    value submitted on-chain as `passportRoot`. Pure formatting -- does not
+    recompute or alter the hash itself.
+    """
+    normalized = passport_hash.lower().removeprefix("0x")
+    if len(normalized) != 64:
+        raise ValueError("passport_hash must be a 64-character hexadecimal SHA-256 hash")
+    return bytes.fromhex(normalized)
+
+
 def verify_hash_consistency(
     computed_hash: str,
     original_hash: str,

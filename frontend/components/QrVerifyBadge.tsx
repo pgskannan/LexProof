@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
-import { Copy, ExternalLink } from 'lucide-react'
+import { Code2, Copy, ExternalLink } from 'lucide-react'
 import { toast } from 'sonner'
 import { publicVerifyUrl } from '../lib/verifyLink'
+import { defaultApiBase, embedSnippet } from '../lib/embedWidget'
 import { Button } from './ui/button'
 import { EmptyState } from './EmptyState'
 
@@ -38,6 +39,18 @@ export function QrVerifyBadge({ evidenceId, size = 180 }: QrVerifyBadgeProps) {
     toast.success('Verification link copied')
   }
 
+  async function copyEmbedCode() {
+    if (!origin) return
+    const snippet = embedSnippet({
+      evidenceId,
+      scriptOrigin: origin,
+      apiBase: defaultApiBase(origin, process.env.NEXT_PUBLIC_API_URL),
+      verifyPageOrigin: origin,
+    })
+    await navigator.clipboard.writeText(snippet)
+    toast.success('Embed code copied — paste it into any website to show a live verification badge')
+  }
+
   return (
     <div className="flex flex-col items-start gap-3">
       <div className="rounded-lg border border-gray-200 bg-white p-3">
@@ -52,6 +65,10 @@ export function QrVerifyBadge({ evidenceId, size = 180 }: QrVerifyBadgeProps) {
         <Button type="button" size="sm" variant="outline" onClick={() => void copyLink()} disabled={!url}>
           <Copy className="h-4 w-4" />
           Copy verification link
+        </Button>
+        <Button type="button" size="sm" variant="outline" onClick={() => void copyEmbedCode()} disabled={!url}>
+          <Code2 className="h-4 w-4" />
+          Copy embed code
         </Button>
         {url ? (
           <a

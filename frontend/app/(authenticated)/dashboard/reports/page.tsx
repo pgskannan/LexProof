@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { BarChart3, Clock, Coins, ShieldCheck } from 'lucide-react';
+import { BarChart3, Clock, Coins, Download, FileText, ShieldCheck } from 'lucide-react';
 import { apiFetch } from '../../../../lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../../../components/ui/card';
 import { Skeleton } from '../../../../components/ui/skeleton';
+import { Button } from '../../../../components/ui/button';
+import { PageHeader } from '../../../../components/ui/page-header';
+import { PageContainer } from '../../../../components/ui/container';
 
 // Evidence and per-evidence anchor lookups can transiently 503 under this
 // dev backend's known event-loop-blocking load (see status-and-plan.md's
@@ -62,6 +65,11 @@ type PassportSummary = {
   compliance_score?: number;
   created_at?: string;
   status?: string;
+  // Real, measured wall-clock duration (ms) of the Gemini analysis call that
+  // produced this passport, timed directly around that call on the backend
+  // (hardening item #3). Absent on passports created before this field
+  // existed -- see aiAnalysisIsRealMeasurement below for the fallback.
+  ai_analysis_duration_ms?: number | null;
 };
 
 type EvidenceRow = { evidence_id: string };
@@ -80,6 +88,30 @@ function formatMinutes(minutes: number): string {
   const hours = Math.floor(minutes / 60);
   const rest = Math.round(minutes % 60);
   return `${hours} hr ${rest} min`;
+}
+
+function slugify(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-+|-+$)/g, '') || 'contract';
+}
+
+function dateStamp(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function csvEscape(value: string): string {
+  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
+  return value;
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 // Enterprise-grade input styling shared by every editable assumption field on
@@ -144,12 +176,30 @@ export default function Reports() {
         apiFetch(`/api/contracts/${encodeURIComponent(id)}/redline-proposals`),
         apiFetch(`/api/passports?contract_id=${encodeURIComponent(id)}&limit=100`),
       ]);
-      for (const response of [versionsRes, findingsRes, proposalsRes, passportsRes]) {
+      // Legacy/orphan contracts (imported straight to a passport record, with
+      // no contracts/ + contract_versions/ documents -- see the comment in
+      // list_contracts, backend/app/lexproof/api/contracts.py) are a real,
+      // selectable entry in this page's own contract dropdown. Two endpoints
+      // require an owned contracts/ doc and 404 for these: the version list,
+      // and redline proposals (RedlineProposalService._require_contract_member
+      // / _org_id_for_contract, backend/app/lexproof/services/redline_proposals.py)
+      // since proposals are scoped to an org derived from that doc. Both are
+      // expected "nothing here" states for an orphan contract, not load
+      // failures -- treat them as empty lists (driving clean "Not available" /
+      // zero-count metrics below) instead of a misleading "Contract not
+      // found" error banner over an otherwise-loadable report.
+      if (!versionsRes.ok && versionsRes.status !== 404) {
+        throw new Error((await versionsRes.json().catch(() => null))?.detail || 'Unable to load contract metrics');
+      }
+      if (!proposalsRes.ok && proposalsRes.status !== 404) {
+        throw new Error((await proposalsRes.json().catch(() => null))?.detail || 'Unable to load contract metrics');
+      }
+      for (const response of [findingsRes, passportsRes]) {
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail || 'Unable to load contract metrics');
       }
-      const versionRows: ContractVersion[] = await versionsRes.json();
+      const versionRows: ContractVersion[] = versionsRes.ok ? await versionsRes.json() : [];
       const findingRows: Finding[] = await findingsRes.json();
-      const proposalRows: Proposal[] = await proposalsRes.json();
+      const proposalRows: Proposal[] = proposalsRes.ok ? await proposalsRes.json() : [];
       const passportPayload = await passportsRes.json();
       const passportRows: PassportSummary[] = Array.isArray(passportPayload) ? passportPayload : passportPayload.passports ?? [];
 
@@ -195,8 +245,20 @@ export default function Reports() {
   );
 
   // 1. Review-time savings ---------------------------------------------------
-  const manualEstimateMinutes = findings.length * minutesPerFinding;
-  const measuredAiMinutes = current && currentPassport ? minutesBetween(current.created_at, currentPassport.created_at) : null;
+  // Prefer the real, measured Gemini call duration (timed directly around the
+  // AI call on the backend) over the old lifecycle-timestamp estimate, which
+  // can silently include upload delay, developer debugging/restarts, or a
+  // later re-analysis gap between version upload and passport creation --
+  // see status-and-plan.md hardening item #3. The lifecycle estimate is kept
+  // only as a fallback for passports created before this field existed, and
+  // is labeled as an estimate rather than "measured" wherever shown.
+  const realAiAnalysisMinutes = currentPassport?.ai_analysis_duration_ms != null
+    ? currentPassport.ai_analysis_duration_ms / 60000
+    : null;
+  const lifecycleEstimateMinutes = current && currentPassport ? minutesBetween(current.created_at, currentPassport.created_at) : null;
+  const aiAnalysisIsRealMeasurement = realAiAnalysisMinutes !== null;
+  const measuredAiMinutes = realAiAnalysisMinutes ?? lifecycleEstimateMinutes;
+  const manualEstimateMinutes = minutesPerFinding * findings.length;
   const savingsPercent = measuredAiMinutes !== null && manualEstimateMinutes > 0
     ? Math.max(0, Math.min(100, 100 * (1 - measuredAiMinutes / manualEstimateMinutes)))
     : null;
@@ -226,42 +288,129 @@ export default function Reports() {
       ? { ring: 'border-amber-300', bg: 'bg-amber-50', text: 'text-amber-700', label: 'Developing' }
       : { ring: 'border-red-300', bg: 'bg-red-50', text: 'text-red-700', label: 'Needs attention' };
 
+  const contractName = contracts.find((item) => item.contract_id === contractId)?.name || contractId;
+
+  function buildReportRows(): [string, string][] {
+    return [
+      ['Contract', contractName],
+      ['Contract ID', contractId],
+      ['Current version', current?.version_number != null ? String(current.version_number) : 'Not available'],
+      ['Findings count', String(findings.length)],
+      ['Assumed manual review time per finding (min)', String(minutesPerFinding)],
+      ['Estimated manual review time', formatMinutes(manualEstimateMinutes)],
+      ['LexProof AI analysis time', measuredAiMinutes !== null ? `${formatMinutes(measuredAiMinutes)} (${aiAnalysisIsRealMeasurement ? 'measured' : 'estimated from lifecycle timestamps'})` : 'Not available'],
+      ['Estimated time saved', savingsPercent !== null ? `${savingsPercent.toFixed(0)}%` : 'Not available'],
+      ['Gas per anchor', String(gasPerAnchor)],
+      ['Gas price (gwei)', String(gasPriceGwei)],
+      ['ETH/USD', String(ethUsd)],
+      ['L2 discount %', String(l2DiscountPercent)],
+      ['L1 cost per anchor (USD)', l1CostPerAnchorUsd.toFixed(2)],
+      ['L1 total cost for this contract (USD)', l1TotalUsd.toFixed(2)],
+      ['L2 cost per anchor (USD)', l2CostPerAnchorUsd.toFixed(4)],
+      ['L2 total cost for this contract (USD)', l2TotalUsd.toFixed(2)],
+      ['Evidence items', String(evidenceCount)],
+      ['Evidence anchored', `${anchoredCount}/${evidenceCount} (${evidenceAnchoredPct.toFixed(0)}%)`],
+      ['Redline proposals reviewed', `${reviewedProposals}/${proposals.length} (${proposalsReviewedPct.toFixed(0)}%)`],
+      ['Publication status', publishedPct === 100 ? 'Published' : publishedPct === 50 ? 'Approved, unpublished' : 'Not published'],
+      ['Current version analysis status', current?.analysis_status || 'Not available'],
+      ['Audit-readiness score', `${auditReadinessScore} / 100 (${scoreBand.label})`],
+      ['Report generated', new Date().toLocaleString()],
+    ];
+  }
+
+  function exportCsv() {
+    const rows = buildReportRows();
+    const lines = ['Metric,Value', ...rows.map(([label, value]) => `${csvEscape(label)},${csvEscape(value)}`)];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    downloadBlob(blob, `lexproof-report-${slugify(contractName)}-${dateStamp()}.csv`);
+  }
+
+  async function exportPdf() {
+    const rows = buildReportRows();
+    const { jsPDF } = await import('jspdf');
+    const doc = new jsPDF();
+    doc.setFontSize(16);
+    doc.text('LexProof \u2014 Contract Report', 14, 18);
+    doc.setFontSize(10);
+    doc.setTextColor(120);
+    doc.text(`Generated ${new Date().toLocaleString()}`, 14, 25);
+    doc.setTextColor(30);
+    let y = 36;
+    doc.setFontSize(11);
+    for (const [label, value] of rows) {
+      const wrapped = doc.splitTextToSize(value, 92);
+      const rowHeight = 6 * Math.max(1, wrapped.length) + 2;
+      if (y + rowHeight > 285) {
+        doc.addPage();
+        y = 20;
+      }
+      doc.setFont('helvetica', 'bold');
+      doc.text(label, 14, y);
+      doc.setFont('helvetica', 'normal');
+      doc.text(wrapped, 108, y);
+      y += rowHeight;
+    }
+    doc.save(`lexproof-report-${slugify(contractName)}-${dateStamp()}.pdf`);
+  }
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Reports</h1>
-        <p className="mt-2 text-base text-gray-600">
-          Metrics that matter: what LexProof&apos;s AI analysis and blockchain anchoring are actually worth, computed from
-          this contract&apos;s real data plus assumptions you can see and edit.
-        </p>
-      </div>
+    <PageContainer>
+      <PageHeader
+        eyebrow="Contract intelligence"
+        title="Reports"
+        description="What LexProof's AI analysis and blockchain anchoring are actually worth, computed from this contract's real data plus assumptions you can see and edit."
+      />
 
-      <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
-        <label className={EYEBROW}>
-          Contract
-          <select
-            value={contractId}
-            onChange={(event) => selectContract(event.target.value)}
-            className="mt-2 block w-full max-w-xl rounded-lg border border-gray-300 px-3 py-2.5 text-sm font-normal text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
-            disabled={contractsLoading || contracts.length === 0}
-          >
-            {contracts.length === 0 && <option value="">No contracts available</option>}
-            {contracts.map((contract) => (
-              <option key={contract.contract_id} value={contract.contract_id}>
-                {(contract.name || contract.contract_id) + (contract.version ? ` (V${contract.version})` : '')}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <div className="mt-6 space-y-6">
+      <Card>
+        <CardContent>
+          <label className={EYEBROW}>
+            Contract
+            <select
+              value={contractId}
+              onChange={(event) => selectContract(event.target.value)}
+              className="mt-2 block w-full max-w-xl rounded-lg border border-gray-300 px-3 py-2.5 text-sm font-normal text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+              disabled={contractsLoading || contracts.length === 0}
+            >
+              {contracts.length === 0 && <option value="">No contracts available</option>}
+              {contracts.map((contract) => (
+                <option key={contract.contract_id} value={contract.contract_id}>
+                  {(contract.name || contract.contract_id) + (contract.version ? ` (V${contract.version})` : '')}
+                </option>
+              ))}
+            </select>
+          </label>
+        </CardContent>
+      </Card>
 
-      {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</p>}
+      {error && <p role="alert" className="rounded-[var(--radius-lg,0.75rem)] border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-400">{error}</p>}
+
+      {contractId && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg,0.75rem)] border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+          <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Export this report</p>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={exportCsv}>
+              <Download className="h-4 w-4" />
+              Export CSV
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void exportPdf()}>
+              <FileText className="h-4 w-4" />
+              Export PDF
+            </Button>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="grid gap-6 xl:grid-cols-3">
-          <Skeleton className="h-64 w-full" />
-          <Skeleton className="h-64 w-full" />
-          <Skeleton className="h-64 w-full" />
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div key={index} className="rounded-[var(--radius-lg,0.75rem)] border border-gray-200 p-6 dark:border-gray-700">
+              <Skeleton className="h-5 w-40" />
+              <Skeleton className="mt-2 h-3.5 w-56" />
+              <Skeleton className="mt-5 h-16 w-full" />
+              <Skeleton className="mt-3 h-16 w-full" />
+            </div>
+          ))}
         </div>
       ) : contractId ? (
         <div className="grid gap-6 xl:grid-cols-3">
@@ -292,12 +441,16 @@ export default function Reports() {
                 <p className="mt-1 text-xs text-gray-500">{findings.length} finding{findings.length === 1 ? '' : 's'} × {minutesPerFinding} min (your assumption)</p>
               </div>
               <div className="rounded-lg border border-green-200 bg-green-50 p-4">
-                <p className={`text-xs font-bold uppercase tracking-wide text-green-700`}>LexProof AI analysis (measured)</p>
+                <p className={`text-xs font-bold uppercase tracking-wide text-green-700`}>
+                  LexProof AI analysis ({aiAnalysisIsRealMeasurement ? 'measured' : 'estimated'})
+                </p>
                 <p className="mt-1 text-3xl font-bold tabular-nums tracking-tight text-green-900">{measuredAiMinutes !== null ? formatMinutes(measuredAiMinutes) : 'Not available'}</p>
                 <p className="mt-1 text-xs text-green-700">
-                  {measuredAiMinutes !== null
-                    ? 'Real elapsed time from version upload to Legal Passport creation.'
-                    : 'Needs both a version timestamp and a Legal Passport for the current version.'}
+                  {aiAnalysisIsRealMeasurement
+                    ? 'Real elapsed time of the Gemini analysis call itself, timed directly around it.'
+                    : measuredAiMinutes !== null
+                      ? 'This passport predates real AI-timing instrumentation, so this is elapsed time from version upload to Legal Passport creation instead, which can include non-AI delay.'
+                      : 'Needs both a version timestamp and a Legal Passport for the current version.'}
                 </p>
               </div>
               {savingsPercent !== null && (
@@ -397,10 +550,11 @@ export default function Reports() {
           </Card>
         </div>
       ) : (
-        <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
-          <p className="flex items-center gap-2 text-sm text-gray-500"><BarChart3 className="h-4 w-4" /> Select a contract above to see its metrics.</p>
+        <div className="rounded-[var(--radius-lg,0.75rem)] border border-gray-200 bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
+          <p className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400"><BarChart3 className="h-4 w-4" /> Select a contract above to see its metrics.</p>
         </div>
       )}
-    </div>
+      </div>
+    </PageContainer>
   );
 }

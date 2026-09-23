@@ -11,7 +11,23 @@ export type Finding = {
   evidence_quote: string | null;
   source_section: string | null;
   recommendation: string | null;
+  reasoning: string | null;
+  confidence: number | null;
+  clause_type: string | null;
+  playbook_alignment: string | null;
+  playbook_notes: string | null;
+  regulatory_citations: string[];
+  evidence_quote_masked: string | null;
+  contains_pii: boolean;
+  detected_language: string | null;
+  detected_language_name: string | null;
   created_at: string | null;
+};
+
+export const playbookAlignmentStyles: Record<string, string> = {
+  ALIGNED: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  DEVIATION: 'border-red-200 bg-red-50 text-red-700',
+  NOT_COVERED: 'border-slate-200 bg-slate-50 text-slate-600',
 };
 
 export const severityOrder = ['critical', 'high', 'medium', 'low'];
@@ -42,4 +58,20 @@ export function findingCounts(findings: Finding[]) {
     result[severity] = findings.filter((finding) => finding.severity?.toLowerCase() === severity).length;
     return result;
   }, {});
+}
+
+export function findingCountLabel(count: number, loading: boolean) {
+  return loading ? '—' : String(count);
+}
+
+export function findingsLoadState(loading: boolean, error: string, count: number) {
+  if (loading) return 'loading' as const;
+  if (error) return 'error' as const;
+  return count === 0 ? 'empty' as const : 'success' as const;
+}
+
+export function getVisibleFindings(findings: Finding[], page: number, pageSize: number) {
+  const safePage = Math.max(1, page);
+  const safePageSize = Math.max(1, pageSize);
+  return findings.slice((safePage - 1) * safePageSize, safePage * safePageSize);
 }

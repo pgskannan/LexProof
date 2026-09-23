@@ -15,6 +15,10 @@ from app.lexproof.services.vertex_ai import VertexGeminiProvider, VertexAIError
 from app.lexproof.config import firebase_credentials
 
 
+async def _no_backoff(*_args, **_kwargs):
+    return None
+
+
 def test_firebase_credentials_from_environment():
     settings = LexProofSettings(
         firebase_project_id="project",
@@ -143,6 +147,53 @@ async def test_vertex_provider_uses_llm_compatible_response(settings):
     result = await VertexGeminiProvider(settings, model=Model()).complete(Request())
     assert result.content == "verified"
     assert result.provider == "vertex_ai"
+
+
+@pytest.mark.asyncio
+async def test_vertex_provider_retries_rate_limit_then_succeeds(settings, monkeypatch):
+    """A single 429 from Gemini used to fail analyze immediately; the
+    full-lifecycle E2E then waited for a passport redirect that never came."""
+    monkeypatch.setattr("app.lexproof.services.vertex_ai.asyncio.sleep", _no_backoff)
+    calls = {"n": 0}
+
+    class Response:
+        text = "verified-after-retry"
+
+    class Model:
+        async def generate_content_async(self, prompt):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RuntimeError("429 Resource exhausted. Please try again later.")
+            return Response()
+
+    class Request:
+        prompt = "check this"
+        system_prompt = None
+        model = None
+
+    result = await VertexGeminiProvider(settings, model=Model()).complete(Request())
+    assert result.content == "verified-after-retry"
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_vertex_provider_stops_retrying_persistent_rate_limits(settings, monkeypatch):
+    monkeypatch.setattr("app.lexproof.services.vertex_ai.asyncio.sleep", _no_backoff)
+    calls = {"n": 0}
+
+    class Model:
+        async def generate_content_async(self, prompt):
+            calls["n"] += 1
+            raise RuntimeError("429 Resource exhausted. Please try again later.")
+
+    class Request:
+        prompt = "check this"
+        system_prompt = None
+        model = None
+
+    with pytest.raises(VertexAIError, match="429"):
+        await VertexGeminiProvider(settings, model=Model()).complete(Request())
+    assert calls["n"] == 4
 
 
 @pytest.mark.asyncio

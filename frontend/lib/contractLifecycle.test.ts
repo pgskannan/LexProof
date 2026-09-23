@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { lifecycleStages, type LifecycleData } from './contractLifecycle'
+import { lifecycleStages, proofStatusLabel, type LifecycleData } from './contractLifecycle'
 
 function data(overrides: Partial<LifecycleData> = {}): LifecycleData {
   return {
@@ -48,12 +48,62 @@ describe('contract lifecycle', () => {
 
   it.each(['pending', 'processing', 'complete', 'failed'])('maps V2 %s state', (status) => {
     const stage = lifecycleStages(data({
-      versions: [{ version_id: 'version-2', version_number: 2, analysis_status: status, is_current: true }],
+      versions: [{ version_id: 'version-2', version_number: 2, analysis_status: status, proof_status: status === 'complete' ? 'confirmed' : status === 'pending' || status === 'processing' ? 'processing' : 'failed', is_current: true }],
       contract: { contract_id: 'contract-1', version: 2 },
       passports: [],
       evidenceCount: 0,
       anchoredEvidenceCount: 0,
     })).find((item) => item.key === 'v2-analysis')
-    expect(stage?.status).toBe(status === 'processing' ? 'active' : status)
+    expect(stage?.status).toBe(status === 'processing' || status === 'pending' ? 'active' : status === 'complete' ? 'complete' : 'failed')
+  })
+
+  it('prefers confirmed proof over stale failed analysis', () => {
+    const stages = lifecycleStages(data({
+      versions: [{ version_id: 'version-2', version_number: 2, analysis_status: 'failed', proof_status: 'confirmed', recommended_action: 'none', is_current: true }],
+      proposals: [{ proposal_id: 'proposal-1', status: 'PUBLISHED', published_version_id: 'version-2', analysis_status: 'failed', proof_status: 'confirmed', recommended_action: 'none' }],
+      contract: { contract_id: 'contract-1', version: 2, analysis_status: 'failed' },
+    }))
+    expect(proofStatusLabel('confirmed')).toBe('Confirmed')
+    expect(stages.find((stage) => stage.key === 'v2-analysis')?.status).toBe('complete')
+    expect(stages.find((stage) => stage.key === 'anchor')?.status).toBe('complete')
+  })
+
+  it('keeps Human review active while a proposal is awaiting review and the workflow is in_review', () => {
+    const stages = lifecycleStages(data({
+      proposals: [{ proposal_id: 'proposal-1', status: 'PROPOSED', workflow_instance_id: 'wf-1' }],
+    }))
+
+    expect(stages.find((stage) => stage.key === 'review')?.status).toBe('active')
+    expect(stages.find((stage) => stage.key === 'review')?.detail).toBe('Pending review')
+    expect(stages.find((stage) => stage.key === 'publication')?.status).toBe('pending')
+  })
+
+  it('keeps the Human review stage visible when the workflow is active but the current user cannot review', () => {
+    const stages = lifecycleStages(data({
+      proposals: [{ proposal_id: 'proposal-1', status: 'PROPOSED', workflow_instance_id: 'wf-1' }],
+    }))
+
+    expect(stages.find((stage) => stage.key === 'review')).toBeTruthy()
+    expect(stages.find((stage) => stage.key === 'review')?.status).toBe('active')
+    expect(stages.find((stage) => stage.key === 'review')?.detail).toBe('Pending review')
+  })
+
+  it('marks Human review complete after approval and leaves publish pending until publication', () => {
+    const stages = lifecycleStages(data({
+      proposals: [{ proposal_id: 'proposal-1', status: 'APPROVED', review: { decision: 'APPROVED' } }],
+    }))
+
+    expect(stages.find((stage) => stage.key === 'review')?.status).toBe('complete')
+    expect(stages.find((stage) => stage.key === 'publication')?.status).toBe('active')
+  })
+
+  it('marks Human review and approval as complete when the proposal is published', () => {
+    const stages = lifecycleStages(data({
+      proposals: [{ proposal_id: 'proposal-1', status: 'PUBLISHED', published_version_id: 'version-2', review: { decision: 'APPROVED' } }],
+      versions: [{ version_id: 'version-2', version_number: 2, analysis_status: 'complete', proof_status: 'confirmed', published: true, is_current: true }],
+    }))
+
+    expect(stages.find((stage) => stage.key === 'review')?.status).toBe('complete')
+    expect(stages.find((stage) => stage.key === 'publication')?.status).toBe('complete')
   })
 })

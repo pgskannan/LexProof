@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { History } from 'lucide-react'
 import { apiFetch } from '../../../../../lib/api'
 import { useOrg } from '../../../../../components/OrgProvider'
@@ -44,9 +45,11 @@ function formatTimestamp(iso?: string | null): string {
 }
 
 export default function AuditLogPage() {
+  const searchParams = useSearchParams()
   const { currentOrg, roles, loading: orgLoading } = useOrg()
   const orgId = currentOrg?.org_id
   const canView = roles.includes('admin') || roles.includes('auditor')
+  const contractFilter = searchParams.get('contract_id') ?? ''
   const [entries, setEntries] = useState<AuditLogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -56,7 +59,9 @@ export default function AuditLogPage() {
     setLoading(true)
     setError('')
     try {
-      const response = await apiFetch('/api/audit-log?limit=200')
+      const query = new URLSearchParams({ limit: '200' })
+      if (contractFilter) query.set('contract_id', contractFilter)
+      const response = await apiFetch(`/api/audit-log?${query.toString()}`)
       if (response.status === 403) throw new Error('Admin or Auditor role required to view the audit log')
       if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail || 'Unable to load audit log')
       setEntries(await response.json())
@@ -70,7 +75,7 @@ export default function AuditLogPage() {
   useEffect(() => {
     void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgId, canView])
+  }, [orgId, canView, contractFilter])
 
   if (orgLoading) {
     return (
@@ -110,8 +115,12 @@ export default function AuditLogPage() {
     <PageContainer>
       <PageHeader
         eyebrow="Organization"
-        title="Audit log"
-        description="Everything that happened in this organization, most recent first — contract uploads, AI analysis, redline decisions, and compliance approvals."
+        title={contractFilter ? 'Contract audit log' : 'Audit log'}
+        description={
+          contractFilter
+            ? `Showing the chronicle for contract ${contractFilter} only. Use the global audit log to review organization-wide investigations.`
+            : 'Everything that happened in this organization, most recent first — contract uploads, AI analysis, redline decisions, and compliance approvals.'
+        }
       />
 
       <div className="mt-6 space-y-6">
@@ -126,8 +135,12 @@ export default function AuditLogPage() {
       {!loading && entries.length === 0 && !error && (
         <EmptyState
           icon={<History className="h-6 w-6" />}
-          title="No activity yet"
-          description="Actions like contract uploads, AI analysis, redline approvals, and compliance decisions will appear here as they happen."
+          title={contractFilter ? 'No activity for this contract yet' : 'No activity yet'}
+          description={
+            contractFilter
+              ? 'Actions for this contract will appear here once uploads, AI analysis, review decisions, or compliance events are recorded.'
+              : 'Actions like contract uploads, AI analysis, redline approvals, and compliance decisions will appear here as they happen.'
+          }
         />
       )}
 

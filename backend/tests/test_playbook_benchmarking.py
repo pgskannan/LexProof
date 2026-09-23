@@ -9,26 +9,7 @@ from app.lexproof.api import findings as findings_api
 from app.lexproof.main import create_app
 from app.lexproof.services.auth import get_current_user
 from app.lexproof.services.organizations import DEFAULT_PLAYBOOK_CLAUSES
-
-
-class FakeRepository:
-    stores: dict[str, dict[str, dict]] = {}
-
-    def __init__(self, collection: str):
-        self.collection = collection
-
-    def get(self, document_id: str):
-        return self.stores.setdefault(self.collection, {}).get(document_id)
-
-    def set(self, document_id: str, data: dict, merge: bool = False):
-        collection = self.stores.setdefault(self.collection, {})
-        if merge:
-            collection.setdefault(document_id, {}).update(data)
-        else:
-            collection[document_id] = dict(data)
-
-    def stream(self):
-        return iter({"id": key, **value} for key, value in self.stores.setdefault(self.collection, {}).items())
+from tests.fakes import FakeRepository
 
 
 ANALYSIS_WITH_PLAYBOOK_FIELDS = {

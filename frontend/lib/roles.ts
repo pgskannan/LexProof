@@ -21,3 +21,7 @@ export function hasRole(roles: string[] | undefined, role: OrgRole): boolean {
 export function isAdmin(roles: string[] | undefined): boolean {
   return hasRole(roles, 'admin')
 }
+
+export function canAccessEvaluation(roles: string[] | undefined): boolean {
+  return hasRole(roles, 'admin') || hasRole(roles, 'reviewer') || hasRole(roles, 'auditor')
+}

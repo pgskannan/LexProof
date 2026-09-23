@@ -80,6 +80,9 @@ export function serializeCanonicalValue(value: unknown): string {
       return `${mantissa}e${exponent >= 0 ? '+' : '-'}${padded}`
     }
 
+    // v1: whole numbers omit ".0". Python json.dumps(95.0) emits "95.0".
+    // See docs/EVIDENCE_CANONICALIZATION_SPEC.md. Do not change without a
+    // new canonicalization_version; existing Sepolia item hashes use Python.
     return value.toString().replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '')
   }
   if (Array.isArray(value)) {

@@ -1,9 +1,17 @@
 "use client"
 
 import { FormEvent, useEffect, useState } from "react"
+import { Sparkles } from "lucide-react"
 import { apiFetch } from "../../../../lib/api"
-import { proposalPublishRequest, proposalQuery, proposalReviewRequest, proposalSaveRequest } from "../../../../lib/redlineProposals"
+import { proposalPublishRequest, proposalQuery, proposalReviewRequest, proposalSaveRequest, redlineSuggestionRequest } from "../../../../lib/redlineProposals"
 import { Skeleton } from "../../../../components/ui/skeleton"
+import { Badge } from "../../../../components/ui/badge"
+import { Button } from "../../../../components/ui/button"
+import { Card, CardContent } from "../../../../components/ui/card"
+import { PageHeader } from "../../../../components/ui/page-header"
+import { PageContainer } from "../../../../components/ui/container"
+import { useOrg } from "../../../../components/OrgProvider"
+import { hasRole, isAdmin as isAdminRole } from "../../../../lib/roles"
 
 type FindingContext = {
   findingId: string
@@ -50,7 +58,32 @@ type Review = {
   updated_at: string
 }
 
+const SEVERITY_VARIANT: Record<string, 'critical' | 'high' | 'medium' | 'low' | 'secondary'> = {
+  CRITICAL: 'critical',
+  HIGH: 'high',
+  MEDIUM: 'medium',
+  LOW: 'low',
+}
+
+function statusVariant(status: string | undefined): 'verified' | 'tampered' | 'pending' | 'secondary' {
+  if (status === 'APPROVED' || status === 'PUBLISHED') return 'verified'
+  if (status === 'REJECTED') return 'tampered'
+  if (!status) return 'secondary'
+  return 'pending'
+}
+
 export default function RemediationPage() {
+  // UI role gating (defense in depth alongside the backend's real
+  // enforcement): mirrors the allowed_roles for the "approve"/"reject"
+  // workflow transitions (["reviewer", "admin"] -- workflow_catalog.py)
+  // and the established isAdmin(roles) || hasRole(roles, X) idiom already
+  // used for the same purpose in dashboard/contracts/reviews/page.tsx
+  // (canReview/canPublish/canShare). The backend's real 403 from
+  // workflow_engine.py's role + requires_not_actor checks remains the
+  // actual authorization boundary -- this only controls whether the
+  // button is offered as an actionable control to begin with.
+  const { roles } = useOrg()
+  const canReview = isAdminRole(roles) || hasRole(roles, 'reviewer')
   const [context, setContext] = useState<FindingContext | null>(null)
   const [proposal, setProposal] = useState<Proposal | null>(null)
   const [proposedText, setProposedText] = useState("")
@@ -60,6 +93,9 @@ export default function RemediationPage() {
   const [reviewing, setReviewing] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState("")
+  const [suggesting, setSuggesting] = useState(false)
+  const [suggestionRationale, setSuggestionRationale] = useState("")
+  const [suggestionError, setSuggestionError] = useState("")
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -80,17 +116,34 @@ export default function RemediationPage() {
       setLoading(false)
       return
     }
+    let cancelled = false
+    const controller = new AbortController()
     const query = proposalQuery(nextContext.findingId, nextContext.versionId)
-    void apiFetch(`/api/contracts/${encodeURIComponent(nextContext.contractId)}/redline-proposals?${query}`)
+    void apiFetch(`/api/contracts/${encodeURIComponent(nextContext.contractId)}/redline-proposals?${query}`, {
+      signal: controller.signal,
+    })
       .then(async (response) => {
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail || "Unable to load proposals")
         const proposals: Proposal[] = await response.json()
+        if (cancelled) return
         const existing = proposals.at(-1) ?? null
         setProposal(existing)
-        setProposedText(existing?.proposed_text ?? "")
+        // Do not blank a clause the reviewer already typed. React Strict Mode
+        // remounts this effect in next dev; the slower first GET used to land
+        // after fill and save an empty DRAFT.
+        setProposedText((current) => current || existing?.proposed_text || "")
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Unable to load proposals"))
-      .finally(() => setLoading(false))
+      .catch((reason) => {
+        if (cancelled || (reason instanceof DOMException && reason.name === "AbortError")) return
+        setError(reason instanceof Error ? reason.message : "Unable to load proposals")
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
   }, [])
 
   async function saveProposal(event: FormEvent<HTMLFormElement>) {
@@ -112,6 +165,28 @@ export default function RemediationPage() {
       setError(reason instanceof Error ? reason.message : "Unable to save proposal")
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function suggestWithAI() {
+    if (!context) return
+    setSuggesting(true)
+    setSuggestionError("")
+    try {
+      const request = redlineSuggestionRequest(context.contractId, context.findingId)
+      const response = await apiFetch(request.path, {
+        method: request.method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request.body),
+      })
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail || "Unable to generate an AI suggestion")
+      const suggestion: { suggested_text: string; rationale: string } = await response.json()
+      setProposedText(suggestion.suggested_text)
+      setSuggestionRationale(suggestion.rationale)
+    } catch (reason) {
+      setSuggestionError(reason instanceof Error ? reason.message : "Unable to generate an AI suggestion")
+    } finally {
+      setSuggesting(false)
     }
   }
 
@@ -155,46 +230,183 @@ export default function RemediationPage() {
 
   const originalText = proposal?.original_text || context?.evidenceQuote || context?.currentLanguage || "Evidence not recorded"
   const recommendation = proposal?.recommendation || context?.recommendation || "Recommendation not recorded"
+  const severityKey = (context?.severity || '').toUpperCase()
 
   return (
-    <main className="min-h-screen bg-slate-950 px-6 py-12 text-slate-100">
-      <section className="mx-auto max-w-5xl">
-        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">LexProof / redline proposals</p>
-        <h1 className="mt-3 text-4xl font-semibold">Reviewable redline proposal</h1>
-        <p className="mt-3 max-w-2xl text-slate-400">Preserve the finding context and prepare language for later human review.</p>
+    <PageContainer>
+      <PageHeader
+        eyebrow="Compliance / redline proposals"
+        title="Reviewable redline proposal"
+        description="Preserve the finding context and prepare language for later human review."
+      />
 
-        {loading && (
-          <div className="mt-10 space-y-4">
-            <Skeleton className="h-32 w-full" />
-            <Skeleton className="h-64 w-full" />
+      {loading && (
+        <div className="mt-6 space-y-6">
+          <Skeleton className="h-24 w-full" />
+          <div className="grid gap-5 md:grid-cols-2">
+            <Skeleton className="h-56 w-full" />
+            <Skeleton className="h-56 w-full" />
           </div>
-        )}
-        {context && !loading && <>
-          <section className="mt-8 border border-cyan-800 bg-cyan-950/40 p-5">
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-cyan-300">Finding context</p>
-            <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-              <div><p className="meta">Contract</p><p>{context.contractId || "-"}</p></div>
-              <div><p className="meta">Source version</p><p>{context.versionId || "-"}</p></div>
-              <div><p className="meta">Finding</p><p>{context.title || context.findingId || "-"}</p></div>
-              <div><p className="meta">Severity</p><p className="uppercase">{context.severity || "-"}</p></div>
-            </div>
-          </section>
+        </div>
+      )}
 
-          <form onSubmit={saveProposal} className="mt-8 space-y-5">
+      {context && !loading && (
+        <div className="mt-6 space-y-6">
+          <Card>
+            <CardContent>
+              <p className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Finding context</p>
+              <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Contract</p>
+                  <p className="mt-1 font-mono text-xs text-gray-900 dark:text-gray-100">{context.contractId || "-"}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Source version</p>
+                  <p className="mt-1 font-mono text-xs text-gray-900 dark:text-gray-100">{context.versionId || "-"}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Finding</p>
+                  <p className="mt-1 text-gray-900 dark:text-gray-100">{context.title || context.findingId || "-"}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Severity</p>
+                  <div className="mt-1">
+                    <Badge variant={SEVERITY_VARIANT[severityKey] || 'secondary'}>{context.severity || "-"}</Badge>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <form onSubmit={saveProposal} className="space-y-6">
             <div className="grid gap-5 md:grid-cols-2">
-              <article className="panel"><h2>Current clause</h2><p>{originalText}</p><h3>Recommendation</h3><p>{recommendation}</p><h3>Reason</h3><p>{proposal?.reason || context.description || "Reason not recorded"}</p></article>
-              <article className="panel"><h2>Proposed clause</h2><textarea aria-label="Proposed text" value={proposedText} onChange={(event) => setProposedText(event.target.value)} placeholder="Enter proposed contractual language, or leave blank to save a draft." className="field min-h-48 w-full" /><p className="mt-2 text-xs text-slate-500">No legal language is generated or approved by this step.</p></article>
+              <Card>
+                <CardContent className="space-y-4">
+                  <div>
+                    <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Current clause</h2>
+                    <p className="mt-2 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">{originalText}</p>
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Recommendation</h3>
+                    <p className="mt-1 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">{recommendation}</p>
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Reason</h3>
+                    <p className="mt-1 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">{proposal?.reason || context.description || "Reason not recorded"}</p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardContent className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Proposed clause</h2>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={suggesting || !context.versionId}
+                      onClick={() => void suggestWithAI()}
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      {suggesting ? "Drafting…" : "Suggest with AI"}
+                    </Button>
+                  </div>
+                  <textarea
+                    aria-label="Proposed text"
+                    value={proposedText}
+                    onChange={(event) => setProposedText(event.target.value)}
+                    placeholder="Enter proposed contractual language, leave blank to save a draft, or use Suggest with AI for a starting point."
+                    className="min-h-48 w-full rounded border border-gray-300 p-3 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                  />
+                  {suggestionError && <p className="text-xs text-red-600 dark:text-red-400">{suggestionError}</p>}
+                  {suggestionRationale && !suggestionError && <p className="text-xs text-gray-500 dark:text-gray-400">AI rationale: {suggestionRationale}</p>}
+                  <p className="text-xs text-gray-500 dark:text-gray-400">AI can draft a starting point below; nothing is proposed or approved until you review it and save.</p>
+                </CardContent>
+              </Card>
             </div>
-            <div className="panel flex flex-wrap items-center justify-between gap-4"><div><p className="meta">Persisted status</p><p className="mt-1 font-semibold text-cyan-200">{proposal?.status || "Not saved"}</p>{proposal && <p className="mt-1 text-xs text-slate-500">Proposal {proposal.proposal_id} · Updated {new Date(proposal.updated_at).toLocaleString()}</p>}</div><button type="submit" disabled={saving || !context.versionId} className="bg-cyan-300 px-5 py-3 font-semibold text-slate-950 disabled:opacity-50">{saving ? "Saving..." : "Save proposal"}</button></div>
+
+            <Card>
+              <CardContent className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Persisted status</p>
+                  <div className="mt-1"><Badge variant={statusVariant(proposal?.status)}>{proposal?.status || "Not saved"}</Badge></div>
+                  {proposal && (
+                    <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                      Proposal <span className="font-mono">{proposal.proposal_id}</span> · Updated {new Date(proposal.updated_at).toLocaleString()}
+                    </p>
+                  )}
+                </div>
+                <Button type="submit" disabled={saving || !context.versionId}>
+                  {saving ? "Saving..." : "Save proposal"}
+                </Button>
+              </CardContent>
+            </Card>
           </form>
-        </>}
-        {proposal && proposal.status !== "APPROVED" && proposal.status !== "REJECTED" && <section className="panel mt-5"><p className="meta">Human review</p><h2 className="mt-2 text-xl font-semibold text-cyan-200">Human decision</h2><textarea aria-label="Review comment" value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} placeholder="Add a review comment" className="field mt-4 min-h-24 w-full" /><div className="mt-4 flex flex-wrap gap-3"><button type="button" disabled={reviewing} onClick={() => void submitReview("REJECTED")} className="border border-rose-400 px-4 py-3 text-rose-300 disabled:opacity-50">{reviewing ? "Saving..." : "Reject"}</button><button type="button" disabled={reviewing} onClick={() => void submitReview("APPROVED")} className="bg-emerald-300 px-4 py-3 font-semibold text-slate-950 disabled:opacity-50">{reviewing ? "Saving..." : "Approve"}</button></div></section>}
-        {proposal?.review && <section className="panel mt-5"><p className="meta">Human decision</p><p className={`mt-2 text-2xl font-semibold ${proposal.review.decision === "APPROVED" ? "text-emerald-300" : "text-rose-300"}`}>{proposal.review.decision}</p><p className="mt-2 text-sm text-slate-400">Reviewed by {proposal.review.reviewer_id} on {new Date(proposal.review.created_at).toLocaleString()}</p><p className="mt-3 whitespace-pre-wrap text-slate-300">{proposal.review.comment || "No comment recorded."}</p></section>}
-        {proposal?.status === "APPROVED" && !proposal.published_version_id && <section className="panel mt-5"><p className="meta">Publication</p><p className="mt-2 text-xl font-semibold text-amber-200">Ready to publish</p><p className="mt-2 text-sm text-slate-400">Approved does not mean published. The source version remains unchanged until this action succeeds.</p><button type="button" disabled={publishing} onClick={() => void publishProposal()} className="mt-4 bg-amber-300 px-4 py-3 font-semibold text-slate-950 disabled:opacity-50">{publishing ? "Publishing..." : "Publish new version"}</button></section>}
-        {proposal?.published_version_id && <section className="panel mt-5"><p className="meta">Publication</p><p className="mt-2 text-2xl font-semibold text-emerald-300">PUBLISHED</p><p className="mt-2 text-sm text-slate-300">Created version: {proposal.published_version_id}</p><p className="mt-1 text-sm text-slate-400">Parent version: {proposal.source_version_id}</p><p className="mt-1 text-sm text-slate-400">Published by {proposal.published_by} on {proposal.published_at && new Date(proposal.published_at).toLocaleString()}</p></section>}
-        {error && <p role="alert" className="mt-5 text-rose-300">{error}</p>}
-      </section>
-      <style jsx>{`.field{border:1px solid #334155;background:#0f172a;border-radius:.375rem;padding:.75rem;color:#f8fafc}.panel{border:1px solid #334155;background:#0f172a;border-radius:.75rem;padding:1.25rem}.panel h2{font-size:1.05rem;font-weight:600;color:#67e8f9;margin-bottom:.75rem;text-transform:uppercase;letter-spacing:.08em}.panel h3{font-size:.75rem;text-transform:uppercase;letter-spacing:.12em;color:#94a3b8;margin-top:1.25rem;margin-bottom:.35rem}.panel p{color:#cbd5e1;white-space:pre-wrap}.meta{font-size:.68rem;text-transform:uppercase;letter-spacing:.12em;color:#67e8f9;margin-bottom:.3rem}`}</style>
-    </main>
+
+          {proposal && proposal.status !== "APPROVED" && proposal.status !== "REJECTED" && canReview && (
+            <Card>
+              <CardContent>
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Human review</p>
+                <h2 className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">Human decision</h2>
+                <textarea
+                  aria-label="Review comment"
+                  value={reviewComment}
+                  onChange={(event) => setReviewComment(event.target.value)}
+                  placeholder="Add a review comment"
+                  className="mt-4 min-h-24 w-full rounded border border-gray-300 p-3 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                />
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <Button type="button" variant="destructive" disabled={reviewing} onClick={() => void submitReview("REJECTED")}>
+                    {reviewing ? "Saving..." : "Reject"}
+                  </Button>
+                  <Button type="button" disabled={reviewing} onClick={() => void submitReview("APPROVED")}>
+                    {reviewing ? "Saving..." : "Approve"}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {proposal?.review && (
+            <Card>
+              <CardContent>
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Human decision</p>
+                <div className="mt-2"><Badge variant={proposal.review.decision === "APPROVED" ? 'verified' : 'tampered'}>{proposal.review.decision}</Badge></div>
+                <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">Reviewed by {proposal.review.reviewer_id} on {new Date(proposal.review.created_at).toLocaleString()}</p>
+                <p className="mt-3 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">{proposal.review.comment || "No comment recorded."}</p>
+              </CardContent>
+            </Card>
+          )}
+
+          {proposal?.status === "APPROVED" && !proposal.published_version_id && (
+            <Card>
+              <CardContent>
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Publication</p>
+                <div className="mt-1"><Badge variant="pending">Ready to publish</Badge></div>
+                <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">Approved does not mean published. The source version remains unchanged until this action succeeds.</p>
+                <Button type="button" className="mt-4" disabled={publishing} onClick={() => void publishProposal()}>
+                  {publishing ? "Publishing..." : "Publish new version"}
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {proposal?.published_version_id && (
+            <Card>
+              <CardContent>
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Publication</p>
+                <div className="mt-1"><Badge variant="verified">Published</Badge></div>
+                <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">Created version: <span className="font-mono text-xs">{proposal.published_version_id}</span></p>
+                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Parent version: <span className="font-mono text-xs">{proposal.source_version_id}</span></p>
+                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Published by {proposal.published_by} on {proposal.published_at && new Date(proposal.published_at).toLocaleString()}</p>
+              </CardContent>
+            </Card>
+          )}
+
+          {error && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+        </div>
+      )}
+    </PageContainer>
   )
 }
