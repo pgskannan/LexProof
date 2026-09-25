@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   Eye,
   BarChart3,
+  FileBarChart2,
   Settings,
   ListChecks,
   GitPullRequest,
@@ -66,6 +67,7 @@ export const navigationItems = [
   { label: 'Verification', href: '/dashboard/verification', icon: Eye },
   { label: 'Reports', href: '/dashboard/reports', icon: BarChart3 },
   { label: 'Portfolio Trends', href: '/dashboard/reports/trends', icon: TrendingUp },
+  { label: 'Board Report', href: '/dashboard/reports/board', icon: FileBarChart2 },
   // Hardening item #10: the brutally honest demo-ready vs. production-ready
   // status table.
   { label: 'Production Readiness', href: '/dashboard/production-readiness', icon: ClipboardCheck },

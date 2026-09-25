@@ -27,6 +27,27 @@ def _matches_scope(evidence: dict[str, Any], proposal: dict[str, Any], finding: 
     return bool(finding_id and evidence.get("source_id") == finding_id)
 
 
+def effective_analysis_status(
+    version: dict[str, Any],
+    proposal: dict[str, Any],
+    *,
+    proof_confirmed: bool,
+) -> str | None:
+    """Resolve the analysis status a published version should report.
+
+    The proposal's ``analysis_status`` is written by the post-publish
+    background task. If that run failed and the version was later
+    re-analyzed through the Analyze Version retry path, only the version
+    document is updated, so the proposal keeps a stale "failed". A version
+    that reports "complete" -- or whose evidence is fully anchored and
+    hash-matched on chain -- has finished analysis, whatever the proposal
+    still says.
+    """
+    if proof_confirmed or version.get("analysis_status") == "complete":
+        return "complete"
+    return proposal.get("analysis_status") or version.get("analysis_status")
+
+
 def project_published_version_status(
     version: dict[str, Any] | None,
     proposal: dict[str, Any] | None,
@@ -41,7 +62,6 @@ def project_published_version_status(
     proposal = proposal or {}
     version_id = version.get("id") or version.get("version_id")
     is_published = bool(proposal.get("published_version_id") == version_id)
-    analysis_status = proposal.get("analysis_status") or version.get("analysis_status")
 
     passport = None
     passport_id = version.get("passport_id")
@@ -88,6 +108,7 @@ def project_published_version_status(
 
     evidence_count = len(expected_evidence)
     proof_confirmed = is_published and evidence_count > 0 and matched_count == evidence_count
+    analysis_status = effective_analysis_status(version, proposal, proof_confirmed=proof_confirmed)
     if proof_confirmed:
         proof_status = STATUS_CONFIRMED
         recommended_action = "none"
@@ -173,8 +194,8 @@ def project_published_version_status_batch(
             and hash_evidence_item(item).lower().removeprefix("0x")
             == str(anchor.get("evidence_hash") or "").lower().removeprefix("0x")
         )
-        analysis_status = proposal.get("analysis_status") or version.get("analysis_status")
         proof_confirmed = bool(proposal.get("published_version_id") == version_id and expected_evidence and matched_count == len(expected_evidence))
+        analysis_status = effective_analysis_status(version, proposal, proof_confirmed=proof_confirmed)
         if proof_confirmed:
             proof_status, recommended_action = STATUS_CONFIRMED, "none"
         elif analysis_status in {"pending", "processing"}:

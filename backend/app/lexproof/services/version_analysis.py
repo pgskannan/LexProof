@@ -285,6 +285,9 @@ class VersionAnalysisService:
                 finding_record = {
                     "id": finding_id,
                     "owner_id": user_id,
+                    # Org-scoped reads (GET /api/findings with X-Org-Id) query
+                    # by org_id; without it these findings were invisible there.
+                    "org_id": contract.get("org_id"),
                     "contract_id": contract_id,
                     "version_id": version_id,
                     "contract_version": version["version_number"],

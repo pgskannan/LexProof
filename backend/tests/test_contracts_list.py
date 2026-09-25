@@ -168,3 +168,58 @@ def test_unscoped_list_keeps_legacy_owner_visibility(monkeypatch):
     assert [item["contract_id"] for item in response.json()] == ["legacy-1"]
     assert "contracts" in CountingRepository.stream_collections
     assert "contract_versions" not in CountingRepository.stream_collections
+
+
+def test_org_list_finds_published_version_passport_without_org_id(monkeypatch):
+    """CONTRACT_04 regression: list said "Failed — retry", detail said Confirmed.
+
+    The published version's passport predates org scoping (no org_id), so the
+    org-scoped passport query missed it; the list then saw no passport and no
+    evidence. The list must resolve it by contract, like the detail page does.
+    """
+    from app.lexproof.domains.passport.utils.hashing import hash_evidence_item
+
+    client = make_client(monkeypatch)
+    stores = FakeRepository.stores
+    stores["contracts"]["demo-golden-path-master-services-agreement"]["current_version_id"] = "version-2"
+    stores["contract_versions"]["version-2"] = {
+        "id": "version-2",
+        "contract_id": "demo-golden-path-master-services-agreement",
+        "version_number": 2,
+        "analysis_status": "failed",
+    }
+    stores["legal_passports"]["passport-2"] = {
+        "id": "passport-2",
+        "passport_id": "passport-2",
+        "contract_id": "demo-golden-path-master-services-agreement",
+        "contract_version": 2,
+        "version_id": "version-2",
+    }
+    stores["redline_proposals"]["proposal-1"] = {
+        "id": "proposal-1",
+        "org_id": "org-1",
+        "contract_id": "demo-golden-path-master-services-agreement",
+        "published_version_id": "version-2",
+        "analysis_status": "failed",
+    }
+    evidence = {
+        "id": "evidence-1",
+        "evidence_id": "evidence-1",
+        "passport_id": "passport-2",
+        "evidence_type": "clause",
+        "title": "Termination",
+    }
+    stores["evidence_records"]["evidence-1"] = evidence
+    stores["evidence_anchors"]["evidence-1"] = {
+        "id": "evidence-1",
+        "evidence_id": "evidence-1",
+        "evidence_hash": hash_evidence_item(evidence),
+    }
+
+    response = client.get("/api/contracts", headers={"X-Org-Id": "org-1"})
+
+    assert response.status_code == 200
+    row = response.json()[0]
+    assert row["passport_id"] == "passport-2"
+    assert row["proof_status"] == "confirmed"
+    assert row["analysis_status"] == "complete"

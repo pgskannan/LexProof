@@ -134,3 +134,39 @@ def test_batch_projection_uses_snapshots_without_repository_scans():
 
     assert projections["version-2"]["proof_status"] == "confirmed"
     assert all(snapshot.stream_calls == 1 for snapshot in snapshots.values())
+
+
+def test_confirmed_proof_reports_complete_analysis_not_stale_proposal_failure():
+    """A post-publish background run failed, then Analyze Version succeeded.
+
+    Only the version was updated, so the proposal still says "failed". The
+    dashboard's "stuck on failed analysis" counter read that stale value and
+    kept counting a contract whose evidence was fully anchored.
+    """
+    version, proposal, repos = seed(version_status="failed", proposal_status="failed", anchored=True)
+    assert project(version, proposal, repos)["analysis_status"] == "complete"
+    batch = project_published_version_status_batch(
+        [version],
+        [proposal],
+        list(repos["passports"].stream()),
+        list(repos["evidence_records"].stream()),
+        list(repos["evidence_anchors"].stream()),
+        [],
+    )
+    assert batch["version-2"]["analysis_status"] == "complete"
+    assert batch["version-2"]["proof_status"] == "confirmed"
+
+
+def test_completed_version_overrides_stale_failed_proposal_status():
+    version, proposal, repos = seed(version_status="complete", proposal_status="failed", anchored=False)
+    result = project(version, proposal, repos)
+    assert result["analysis_status"] == "complete"
+    assert result["proof_status"] != "failed"
+
+
+def test_genuine_failure_still_reports_failed():
+    version, proposal, repos = seed(version_status="failed", proposal_status="failed", anchored=False)
+    result = project(version, proposal, repos)
+    assert result["analysis_status"] == "failed"
+    assert result["proof_status"] == "failed"
+    assert result["recommended_action"] == "retry"

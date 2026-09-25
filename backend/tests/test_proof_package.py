@@ -71,3 +71,53 @@ def test_proof_package_omits_empty_anchors():
     )
     assert bundle["evidence"][0]["anchor"] is None
     assert bundle["verification_snapshot"] is None
+
+
+def test_proof_package_prefers_live_anchored_evidence_over_snapshot_ids():
+    """Regression: snapshot evidence ids differ from the anchored evidence_records.
+
+    PassportService builds the snapshot's evidence_items with its own ids, while
+    version analysis anchors separate evidence_records. Preferring the snapshot
+    shipped a bundle with no anchors, so verify-offline.html said NOT ANCHORED
+    for evidence that is on Sepolia.
+    """
+    bundle = build_proof_package(
+        {
+            "passport_id": "passport-3",
+            "contract_id": "contract-3",
+            "contract_version": 1,
+            "metadata": {
+                "verification_snapshot": {
+                    "evidence_items": [{"evidence_id": "snapshot-only", "title": "Snapshot item", "hash": "33" * 32}],
+                },
+            },
+        },
+        evidence_items=[{"evidence_id": "live-1", "title": "Anchored clause"}],
+        anchors_by_id={
+            "live-1": {
+                "contract_address": "0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191",
+                "transaction_hash": "0xdef",
+                "evidence_hash": "44" * 32,
+            }
+        },
+    )
+    assert [item["evidence_id"] for item in bundle["evidence"]] == ["live-1"]
+    assert bundle["evidence"][0]["anchor"]["transaction_hash"] == "0xdef"
+    assert bundle["evidence"][0]["hash"] == "44" * 32
+
+
+def test_proof_package_falls_back_to_snapshot_without_live_records():
+    bundle = build_proof_package(
+        {
+            "passport_id": "passport-4",
+            "metadata": {
+                "verification_snapshot": {
+                    "evidence_items": [{"evidence_id": "snap-1", "title": "Snapshot item", "hash": "55" * 32}],
+                },
+            },
+        },
+        evidence_items=[],
+        anchors_by_id={},
+    )
+    assert [item["evidence_id"] for item in bundle["evidence"]] == ["snap-1"]
+    assert bundle["evidence"][0]["hash"] == "55" * 32

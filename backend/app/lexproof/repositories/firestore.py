@@ -112,6 +112,24 @@ class FirestoreRepository:
             query = query.limit(limit)
         return [{"id": snapshot.id, **(snapshot.to_dict() or {})} for snapshot in query.stream()]
 
+    def query_in(self, field: str, values: Iterable[Any]) -> list[dict[str, Any]]:
+        """Documents whose ``field`` equals any of ``values``.
+
+        Firestore caps an ``in`` filter at 30 values, so this issues one query
+        per 30 values -- the same chunking get_many() uses for document ids.
+        """
+        wanted = list(dict.fromkeys(value for value in values if value is not None))
+        if not wanted:
+            return []
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        records: list[dict[str, Any]] = []
+        for start in range(0, len(wanted), _MAX_IN_FILTER_VALUES):
+            chunk = wanted[start:start + _MAX_IN_FILTER_VALUES]
+            query = self._collection_ref().where(filter=FieldFilter(field, "in", chunk))
+            records.extend({"id": snapshot.id, **(snapshot.to_dict() or {})} for snapshot in query.stream())
+        return records
+
     def get_many(self, document_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         """Batched point reads keyed by document id.
 

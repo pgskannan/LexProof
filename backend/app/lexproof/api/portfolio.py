@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -15,6 +16,18 @@ from ..services.portfolio_analytics import (
 )
 
 router = APIRouter(tags=["portfolio-analytics"])
+
+# The executive summary aggregates six collections for the whole org and still
+# takes several seconds against real Firestore even after batching, which left
+# the "Why LexProof?" page on skeletons on every visit. A short per-org cache
+# makes repeat visits instant; one minute of staleness is fine for a KPI view.
+EXECUTIVE_SUMMARY_TTL_SECONDS = 60.0
+_executive_summary_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def reset_executive_summary_cache() -> None:
+    """Test hook: drop every cached executive summary."""
+    _executive_summary_cache.clear()
 
 
 def _service() -> PortfolioAnalyticsService:
@@ -63,6 +76,9 @@ def get_executive_summary(
     AI analysis time, contracts requiring attention) that only this
     dashboard needs. Any active org member can read it -- same access level
     as the Portfolio Trends endpoints above."""
+    cached = _executive_summary_cache.get(org_id)
+    if cached is not None and time.monotonic() - cached[0] < EXECUTIVE_SUMMARY_TTL_SECONDS:
+        return cached[1]
     service = _service()
     base_metrics = compute_portfolio_metrics(
         org_id,
@@ -80,4 +96,6 @@ def get_executive_summary(
         evidence_records=FirestoreRepository("evidence_records"),
         evidence_anchors=EvidenceAnchorRepository("evidence_anchors"),
     )
-    return {**base_metrics, **executive_metrics}
+    result = {**base_metrics, **executive_metrics}
+    _executive_summary_cache[org_id] = (time.monotonic(), result)
+    return result

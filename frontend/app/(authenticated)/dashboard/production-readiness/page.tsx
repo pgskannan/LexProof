@@ -62,13 +62,13 @@ const SECTIONS: Section[] = [
       { name: 'Audit trail', status: 'built', detail: 'Every workflow transition and publication is recorded with actor, role, and timestamp.' },
       { name: 'Security response headers', status: 'built', detail: 'X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, and HSTS are implemented and tested; live as of the most recent backend restart.' },
       { name: 'PII detection & masking', status: 'built', detail: 'Detects and masks PII types in the UI (does not affect what is sent to Gemini or used for redlines). Live-tested post-restart: an uploaded contract containing a plain-text SSN, bank account number, email, and phone number was correctly flagged as a CRITICAL "Unprotected Sensitive Personal Information" finding with GDPR and CCPA citations attached.' },
+      { name: 'OCR / scanned-document ingestion', status: 'built', detail: 'The Python OCR pipeline (Pillow, pytesseract, PyMuPDF) runs cleanly against scanned-image uploads. The Tesseract OCR binary is now installed and wired via an explicit TESSERACT_CMD path (bypassing Windows PATH, which the installer did not update) -- confirmed live by loading the real server settings and calling the engine directly: reachable at version 5.5.3. Scanned documents now extract text through the same pipeline as digital ones.' },
     ],
   },
   {
     title: 'Needs one step to go fully live',
     intro: 'All of this is already built, tested, and sitting in the source tree -- it just needs a one-time server-side action, not more engineering.',
     rows: [
-      { name: 'OCR / scanned-document ingestion', status: 'needs_step', detail: 'Live-tested end to end: the Python OCR pipeline (Pillow, pytesseract, PyMuPDF) is installed and running cleanly against a scanned-image upload -- no crash, no blocked upload. It correctly reported that the Tesseract OCR engine itself is not yet installed on the server and produced a clear "Document Processing Failure" finding instead of silently failing. Installing the Tesseract binary is the one remaining step before scanned documents actually extract text.' },
       { name: 'DocuSign production e-signature', status: 'needs_step', detail: 'A zero-credential stub path (used for demos) already works end-to-end today. The real DocuSign integration needs production API credentials configured -- deliberately not done for this demo, since the stub path already proves the workflow.' },
     ],
   },

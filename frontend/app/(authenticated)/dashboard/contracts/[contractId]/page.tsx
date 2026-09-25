@@ -57,7 +57,7 @@ async function fetchWithRetry(path: string, signal: AbortSignal, attempts = 2): 
 export default function ContractDetailPage() {
   const params = useParams<{ contractId: string }>()
   const contractId = decodeURIComponent(params.contractId)
-  const { currentOrg } = useOrg()
+  const { currentOrg, loading: orgLoading } = useOrg()
   const latestRequestIdRef = useRef(0)
   const latestRequestContextRef = useRef<string | null>(null)
   const latestSummaryRequestIdRef = useRef(0)
@@ -133,6 +133,13 @@ export default function ContractDetailPage() {
   }
 
   useEffect(() => {
+    // Wait for OrgProvider, like the contract selector does. Otherwise a first
+    // round starts under the 'none' context key, a second starts once
+    // currentOrg resolves, and the first is never aborted (its cleanup only
+    // aborts on a key change *from* a previous key) -- every contract,
+    // version, findings, passport, evidence and anchor request ran twice and
+    // the queued backend calls pushed the page past 10s.
+    if (orgLoading) return
     const requestContextKey = `${contractId}:${currentOrg?.org_id ?? 'none'}`
     const previousContextKey = latestRequestContextRef.current
     const requestId = latestRequestIdRef.current + 1
@@ -145,7 +152,7 @@ export default function ContractDetailPage() {
         controller.abort()
       }
     }
-  }, [contractId, currentOrg?.org_id])
+  }, [contractId, currentOrg?.org_id, orgLoading])
 
   // Loaded independently of the main lifecycle data: a contract with no
   // analyzed version yet is a normal, common state (not an error) and

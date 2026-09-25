@@ -47,7 +47,14 @@ def build_proof_package(
     snapshot = metadata.get("verification_snapshot") or {}
     snapshot_evidence = list(snapshot.get("evidence_items") or [])
     live_evidence = list(evidence_items or [])
-    items = snapshot_evidence or live_evidence
+    # Live evidence_records are what the passport page shows and what version
+    # analysis anchors on Sepolia. The snapshot's evidence_items are built
+    # separately by PassportService._create_evidence_items() with their own
+    # ids, so preferring the snapshot produced a bundle whose evidence ids had
+    # no anchors -- the offline verifier then reported "NOT ANCHORED" for
+    # evidence that is on chain. Fall back to the snapshot only for passports
+    # with no live evidence records.
+    items = live_evidence or snapshot_evidence
     anchors = anchors_by_id or {}
 
     evidence_payload = []
@@ -61,7 +68,7 @@ def build_proof_package(
             {
                 "evidence_id": evidence_id,
                 "title": item.get("title"),
-                "hash": item.get("hash"),
+                "hash": item.get("hash") or (anchor or {}).get("evidence_hash"),
                 "hash_algorithm": "sha256",
                 "anchor": anchor,
             }

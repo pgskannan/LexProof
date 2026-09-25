@@ -60,6 +60,21 @@ def _extension(filename: str) -> str:
     return "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
 
+def _configure_tesseract_cmd(pytesseract_module) -> None:
+    """Point pytesseract at an explicit binary path when PATH lookup won't work.
+
+    Some hosts (notably a stock Windows install via winget) never add
+    Tesseract-OCR to PATH, so the plain "tesseract" lookup pytesseract does by
+    default fails even though the binary is genuinely installed. Settings.
+    tesseract_cmd (env TESSERACT_CMD) lets an operator point at it directly,
+    e.g. "C:\\Program Files\\Tesseract-OCR\\tesseract.exe". Left unset, this
+    is a no-op and pytesseract's normal PATH-based lookup is used unchanged.
+    """
+    configured_path = get_settings().tesseract_cmd
+    if configured_path:
+        pytesseract_module.pytesseract.tesseract_cmd = configured_path
+
+
 def _ocr_engine_available() -> bool:
     """Whether the Tesseract OCR binary is actually installed on this host.
 
@@ -69,6 +84,7 @@ def _ocr_engine_available() -> bool:
     """
     try:
         import pytesseract
+        _configure_tesseract_cmd(pytesseract)
         pytesseract.get_tesseract_version()
         return True
     except Exception:
@@ -90,6 +106,7 @@ def _ocr_image_bytes(content: bytes) -> str:
     import pytesseract
     from PIL import Image
 
+    _configure_tesseract_cmd(pytesseract)
     return pytesseract.image_to_string(Image.open(io.BytesIO(content)))
 
 
@@ -100,6 +117,7 @@ def _ocr_pdf_bytes(content: bytes) -> str:
     import pytesseract
     from PIL import Image
 
+    _configure_tesseract_cmd(pytesseract)
     pages_text: list[str] = []
     with pymupdf.open(stream=content, filetype="pdf") as doc:
         for page in doc:
@@ -313,6 +331,38 @@ async def list_contracts(
         for item in proposal_records
         if item.get("published_version_id") in version_by_id
     }
+    if org_id and published_version_ids:
+        # The org-scoped passport query only returns passports that carry an
+        # org_id. Passports written for a published redline version by older
+        # analysis runs may not, and the full-scan path would still find them
+        # by version_id or (contract_id, version_number). Without this, the
+        # same contract showed "Failed — retry" in the list (no passport, no
+        # evidence) while its own detail page showed Confirmed.
+        linked_version_ids = {
+            item.get("version_id") for item in passport_records if item.get("version_id")
+        }
+        linked_contract_versions = {
+            (item.get("contract_id"), item.get("contract_version")) for item in passport_records
+        }
+        unresolved_contract_ids = {
+            version.get("contract_id")
+            for version_id, version in version_by_id.items()
+            if version_id in published_version_ids
+            and not version.get("passport_id")
+            and version_id not in linked_version_ids
+            and (version.get("contract_id"), version.get("version_number")) not in linked_contract_versions
+            and version.get("contract_id")
+        }
+        known_passport_ids = set(passport_by_id)
+        for contract_id in sorted(unresolved_contract_ids):
+            for item in passports.query(equal={"contract_id": contract_id}):
+                # The contract itself was already scoped to this org above.
+                if item.get("org_id") in (None, org_id):
+                    key = str(item.get("passport_id") or item.get("id"))
+                    if key not in known_passport_ids:
+                        passport_records.append(item)
+                        known_passport_ids.add(key)
+        passport_by_id = _passport_index(passport_records)
     evidence_record_snapshot = list(evidence_records.stream()) if published_version_ids else []
     evidence_anchor_snapshot = list(evidence_anchors.stream()) if published_version_ids else []
     finding_snapshot = list(findings.stream()) if published_version_ids else []

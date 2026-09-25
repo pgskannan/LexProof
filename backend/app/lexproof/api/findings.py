@@ -168,6 +168,23 @@ def list_findings(
                 detail="Not an active member of this organization",
             )
         records = repository.query(equal={"org_id": org_id})
+        # Findings written by version analysis have not carried org_id (fixed
+        # at the write site, but existing records still lack it), so an
+        # org_id-only query silently dropped every finding from recently
+        # analyzed contracts -- the dashboard's high/critical count and the
+        # board report both under-counted. Also pull findings by the org's
+        # contract ids (batched `in` queries, still no full-collection scan).
+        seen_ids = {str(record.get("id")) for record in records}
+        org_contract_ids = [
+            str(contract.get("id") or contract.get("contract_id"))
+            for contract in contracts.query(equal={"org_id": org_id})
+            if contract.get("id") or contract.get("contract_id")
+        ]
+        records = records + [
+            record
+            for record in repository.query_in("contract_id", org_contract_ids)
+            if str(record.get("id")) not in seen_ids
+        ]
     else:
         records = list(repository.stream())
     contract_by_id, member_by_org = _visibility_lookups(list(records), uid, contracts)

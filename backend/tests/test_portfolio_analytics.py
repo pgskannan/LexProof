@@ -248,3 +248,28 @@ def test_list_snapshots_scopes_to_org_sorts_ascending_and_respects_limit():
 
     limited = service.list_snapshots(ORG_ID, limit=2)
     assert [row["snapshot_date"] for row in limited] == ["2026-09-11", "2026-09-12"]
+
+
+def test_executive_summary_endpoint_caches_per_org_for_a_minute(monkeypatch):
+    """Repeat visits to "Why LexProof?" must not re-run the multi-second
+    aggregation; a different org, or an expired entry, recomputes."""
+    import app.lexproof.api.portfolio as portfolio_api
+
+    calls: list[str] = []
+
+    def fake_portfolio_metrics(org_id, **kwargs):
+        calls.append(org_id)
+        return {"contract_count": len(calls)}
+
+    monkeypatch.setattr(portfolio_api, "compute_portfolio_metrics", fake_portfolio_metrics)
+    monkeypatch.setattr(portfolio_api, "compute_executive_metrics", lambda org_id, **kwargs: {})
+    monkeypatch.setattr(portfolio_api, "_service", lambda: type("S", (), {"contracts": None, "findings": None, "proposals": None, "passports": None})())
+
+    first = portfolio_api.get_executive_summary("org-1", member={})
+    second = portfolio_api.get_executive_summary("org-1", member={})
+    other_org = portfolio_api.get_executive_summary("org-2", member={})
+    assert first == second == {"contract_count": 1}
+    assert other_org == {"contract_count": 2}
+
+    monkeypatch.setattr(portfolio_api, "EXECUTIVE_SUMMARY_TTL_SECONDS", 0.0)
+    assert portfolio_api.get_executive_summary("org-1", member={}) == {"contract_count": 3}

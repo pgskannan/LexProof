@@ -365,3 +365,31 @@ def test_org_header_scopes_unscoped_list_to_that_org(monkeypatch):
 
     assert response.status_code == 200
     assert [item["finding_id"] for item in response.json()] == ["finding-1"]
+
+
+def test_org_header_includes_org_contract_findings_that_lack_org_id(monkeypatch):
+    """Findings written by version analysis carried no org_id, so the org-scoped
+    list dropped every finding from recently analyzed contracts (CONTRACT_01's
+    retry, a fresh OCR upload). They must still appear via their contract --
+    and a finding for another org's contract must not.
+    """
+    client = make_org_findings_client(monkeypatch, "admin-1")
+    FakeRepository.stores["risk_findings"]["finding-tagged"] = {
+        "id": "finding-tagged",
+        "org_id": "org-1",
+        "owner_id": "owner-1",
+        "contract_id": "contract-1",
+        "title": "Tagged finding",
+    }
+    FakeRepository.stores["contracts"]["contract-2"] = {"id": "contract-2", "org_id": "org-2"}
+    FakeRepository.stores["risk_findings"]["finding-other-org-untagged"] = {
+        "id": "finding-other-org-untagged",
+        "owner_id": "someone-else",
+        "contract_id": "contract-2",
+        "title": "Other org, no org_id",
+    }
+
+    response = client.get("/api/findings", headers={"X-Org-Id": "org-1"})
+
+    assert response.status_code == 200
+    assert sorted(item["finding_id"] for item in response.json()) == ["finding-1", "finding-tagged"]

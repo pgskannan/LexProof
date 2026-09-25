@@ -61,6 +61,15 @@ class FakeRepository:
             records = records[:limit]
         return records
 
+    def query_in(self, field: str, values: Iterable[Any]) -> list[dict[str, Any]]:
+        """Mirrors FirestoreRepository.query_in()."""
+        wanted = {value for value in values if value is not None}
+        return [
+            {"id": key, **value}
+            for key, value in self.stores.setdefault(self.collection, {}).items()
+            if value.get(field) in wanted
+        ]
+
     def get_many(self, document_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         """Batched point reads, mirroring FirestoreRepository.get_many()."""
         wanted = {str(document_id) for document_id in document_ids}

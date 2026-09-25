@@ -220,7 +220,13 @@ async def get_proof_package(
         ((passport_doc.get("metadata") or {}).get("verification_snapshot") or {}).get("evidence_items")
         or []
     )
-    source = snapshot_items or live
+    # Prefer the live evidence records: they are the ones anchored on chain
+    # (see build_proof_package). Snapshot fields fill in when ids overlap.
+    source = live or snapshot_items
+    snapshot_by_id = {
+        str(item.get("evidence_id") or item.get("id") or ""): item
+        for item in snapshot_items
+    }
     live_by_id = {
         str(record.get("evidence_id") or record.get("id") or ""): record
         for record in live
@@ -229,7 +235,7 @@ async def get_proof_package(
     anchors: dict[str, dict[str, Any]] = {}
     for item in source:
         evidence_id = str(item.get("evidence_id") or item.get("id") or "")
-        combined = {**item, **(live_by_id.get(evidence_id) or {})}
+        combined = {**(snapshot_by_id.get(evidence_id) or {}), **item, **(live_by_id.get(evidence_id) or {})}
         merged.append(combined)
         if evidence_id:
             anchor = _evidence_anchor_repository.get(evidence_id)

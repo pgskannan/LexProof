@@ -66,6 +66,15 @@ class LexProofSettings(BaseSettings):
     docusign_base_url: str = Field(default="https://demo.docusign.net/restapi", validation_alias="DOCUSIGN_BASE_URL")
     docusign_auth_server: str = Field(default="account-d.docusign.com", validation_alias="DOCUSIGN_AUTH_SERVER")
     google_translate_api_key: SecretStr = Field(default=SecretStr(""), validation_alias="GOOGLE_TRANSLATE_API_KEY")
+    tesseract_cmd: str = Field(
+        default="",
+        validation_alias="TESSERACT_CMD",
+        description=(
+            "Absolute path to the tesseract binary, e.g. "
+            "C:\\Program Files\\Tesseract-OCR\\tesseract.exe on Windows when it "
+            "is not on PATH. Leave unset to rely on PATH (the default on Linux/mac)."
+        ),
+    )
 
     @property
     def project_id(self) -> str:

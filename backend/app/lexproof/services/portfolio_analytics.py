@@ -36,15 +36,39 @@ from typing import Any
 from ..repositories.firestore import FirestoreRepository
 
 
+def _org_contracts(contracts_repo: FirestoreRepository, org_id: str) -> list[dict[str, Any]]:
+    """The org's contracts via an org_id equality query (not a full scan)."""
+    if hasattr(contracts_repo, "query"):
+        return [contract for contract in contracts_repo.query(equal={"org_id": org_id}) if contract.get("org_id") == org_id]
+    return [contract for contract in contracts_repo.stream() if contract.get("org_id") == org_id]
+
+
 def _org_contract_ids(contracts_repo: FirestoreRepository, org_id: str) -> set[str]:
     ids: set[str] = set()
-    for contract in contracts_repo.stream():
-        if contract.get("org_id") != org_id:
-            continue
+    for contract in _org_contracts(contracts_repo, org_id):
         contract_id = str(contract.get("id") or contract.get("contract_id") or "")
         if contract_id:
             ids.add(contract_id)
     return ids
+
+
+def _records_for_contracts(repository: Any, contract_ids: set[str]) -> list[dict[str, Any]]:
+    """Records whose contract_id is one of ``contract_ids``.
+
+    Uses batched ``contract_id in [...]`` queries when the repository supports
+    them, so the executive summary no longer streams whole collections
+    (evidence_records alone carries every evidence payload); falls back to a
+    filtered stream for repositories without query_in.
+    """
+    if not contract_ids:
+        return []
+    if hasattr(repository, "query_in"):
+        return [
+            record
+            for record in repository.query_in("contract_id", sorted(contract_ids))
+            if str(record.get("contract_id") or "") in contract_ids
+        ]
+    return [record for record in repository.stream() if str(record.get("contract_id") or "") in contract_ids]
 
 
 def compute_portfolio_metrics(
@@ -61,7 +85,7 @@ def compute_portfolio_metrics(
 
     findings_total = 0
     severity_counts: dict[str, int] = {}
-    for finding in findings.stream():
+    for finding in _records_for_contracts(findings, contract_ids):
         if str(finding.get("contract_id") or "") not in contract_ids:
             continue
         findings_total += 1
@@ -70,7 +94,7 @@ def compute_portfolio_metrics(
 
     proposals_total = 0
     status_counts: dict[str, int] = {}
-    for proposal in proposals.stream():
+    for proposal in _records_for_contracts(proposals, contract_ids):
         if str(proposal.get("contract_id") or "") not in contract_ids:
             continue
         proposals_total += 1
@@ -81,7 +105,7 @@ def compute_portfolio_metrics(
     evidence_total = 0
     risk_scores: list[float] = []
     compliance_scores: list[float] = []
-    for passport in passports.stream():
+    for passport in _records_for_contracts(passports, contract_ids):
         if str(passport.get("contract_id") or "") not in contract_ids:
             continue
         passport_count += 1
@@ -144,7 +168,7 @@ def compute_executive_metrics(
     # real ai_analysis_duration_ms measurement across the org's passports.
     latest_passport_by_contract: dict[str, dict[str, Any]] = {}
     ai_durations_ms: list[float] = []
-    for passport in passports.stream():
+    for passport in _records_for_contracts(passports, contract_ids):
         contract_id = str(passport.get("contract_id") or "")
         if contract_id not in contract_ids:
             continue
@@ -160,7 +184,7 @@ def compute_executive_metrics(
     reviewed_total = 0
     published_total = 0
     published_contract_ids: set[str] = set()
-    for proposal in proposals.stream():
+    for proposal in _records_for_contracts(proposals, contract_ids):
         contract_id = str(proposal.get("contract_id") or "")
         if contract_id not in contract_ids:
             continue
@@ -175,25 +199,37 @@ def compute_executive_metrics(
     # contracts, cross-referenced against the create-once evidence_anchors
     # collection (the same source of truth AnchorProofButton's
     # /api/evidence/{id}/status endpoint reads).
-    evidence_records_total = 0
-    evidence_anchored_total = 0
-    for record in evidence_records.stream():
+    # One batched read for all anchors instead of one get() per evidence
+    # record: the per-record lookups were ~200 sequential Firestore round
+    # trips and made this endpoint take 13-15s, leaving the "Why LexProof?"
+    # page on skeletons.
+    org_evidence_ids: list[str] = []
+    for record in _records_for_contracts(evidence_records, contract_ids):
         contract_id = str(record.get("contract_id") or "")
         if contract_id not in contract_ids:
             continue
-        evidence_records_total += 1
-        evidence_id = str(record.get("evidence_id") or record.get("id") or "")
-        if evidence_id and evidence_anchors.get(evidence_id):
-            evidence_anchored_total += 1
+        org_evidence_ids.append(str(record.get("evidence_id") or record.get("id") or ""))
+    evidence_records_total = len(org_evidence_ids)
+    anchors_by_id = evidence_anchors.get_many([evidence_id for evidence_id in org_evidence_ids if evidence_id])
+    evidence_anchored_total = sum(
+        1 for evidence_id in org_evidence_ids if evidence_id and anchors_by_id.get(evidence_id)
+    )
 
     # Contracts requiring attention.
     attention: list[dict[str, Any]] = []
-    for contract in contracts.stream():
+    org_contracts = [
+        contract
+        for contract in _org_contracts(contracts, org_id)
+        if str(contract.get("id") or contract.get("contract_id") or "") in contract_ids
+    ]
+    # Batched, like the anchors above (was one versions.get() per contract).
+    versions_by_id = versions.get_many(
+        [str(contract["current_version_id"]) for contract in org_contracts if contract.get("current_version_id")]
+    )
+    for contract in org_contracts:
         contract_id = str(contract.get("id") or contract.get("contract_id") or "")
-        if contract_id not in contract_ids:
-            continue
         current_version_id = contract.get("current_version_id")
-        current_version = versions.get(current_version_id) if current_version_id else None
+        current_version = versions_by_id.get(str(current_version_id)) if current_version_id else None
         analysis_status = current_version.get("analysis_status") if current_version else None
         latest_passport = latest_passport_by_contract.get(contract_id)
         risk_score = latest_passport.get("risk_score") if latest_passport else None

@@ -26,6 +26,20 @@ type PageHeaderProps = {
 // each page's own header markup, which is explicitly out of scope for this
 // shell-only pass (see the Phase 2 report). It is built and ready for that
 // follow-up.
+// File-style titles (CONTRACT_03_SaaS_HighRisk.docx) are one unbreakable
+// token; offer soft break points after "_" and "." so they wrap at word-ish
+// boundaries instead of mid-word.
+function withSoftBreaks(title: string): ReactNode {
+  const parts = title.split(/(?<=[_.])/)
+  if (parts.length === 1) return title
+  return parts.map((part, index) => (
+    <span key={index}>
+      {part}
+      {index < parts.length - 1 && <wbr />}
+    </span>
+  ))
+}
+
 export function PageHeader({ eyebrow, title, description, actions, className = '' }: PageHeaderProps) {
   return (
     <div
@@ -37,7 +51,7 @@ export function PageHeader({ eyebrow, title, description, actions, className = '
             {eyebrow}
           </p>
         )}
-        <h1 className="text-3xl font-bold leading-tight tracking-tight text-gray-900 dark:text-gray-100">{title}</h1>
+        <h1 className="text-3xl font-bold leading-tight tracking-tight text-gray-900 [overflow-wrap:anywhere] dark:text-gray-100">{withSoftBreaks(title)}</h1>
         {description && (
           <p className="mt-1.5 max-w-2xl text-sm text-gray-500 dark:text-gray-400">{description}</p>
         )}

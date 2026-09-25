@@ -17,3 +17,14 @@ def settings() -> LexProofSettings:
 @pytest.fixture
 def integration_enabled() -> bool:
     return os.getenv("INTEGRATION_TESTS", "false").lower() == "true"
+
+
+@pytest.fixture(autouse=True)
+def _reset_executive_summary_cache():
+    """The org executive-summary endpoint caches per org for 60s; never let a
+    cached result from one test leak into another."""
+    from app.lexproof.api.portfolio import reset_executive_summary_cache
+
+    reset_executive_summary_cache()
+    yield
+    reset_executive_summary_cache()
