@@ -89,7 +89,7 @@ test('passport root anchoring: real eligible passport shows the real on-chain st
   // Real Gemini analysis plus a real Firebase login/logout cycle cannot fit
   // in Playwright's 30s default -- same budget as full-lifecycle-real-upload
   // .spec.ts, which this test's setup mirrors exactly.
-  test.setTimeout(300_000)
+  test.setTimeout(420_000)
   const env = getWorkflowE2EEnv()
   const doc = uniqueContractDocument()
   let contractId = ''
@@ -169,7 +169,11 @@ test('passport root anchoring: real eligible passport shows the real on-chain st
   } else {
     await test.step('Registry IS configured: perform the real anchor-root action', async () => {
       await panel.getByRole('button', { name: 'Anchor to Ethereum Sepolia' }).click()
-      await expect(page.getByText('Passport root anchored on Ethereum Sepolia')).toBeVisible({ timeout: 60_000 })
+      // A real Sepolia transaction: submit + mine + receipt. 60s was too tight --
+      // on 2026-09-25 a root anchor took ~3 minutes to mine (since fixed with a
+      // priority tip, services/blockchain_fees.py), so allow up to the
+      // backend's own 120s receipt wait plus headroom.
+      await expect(page.getByText('Passport root anchored on Ethereum Sepolia')).toBeVisible({ timeout: 150_000 })
       await expect(panel.getByText('Anchored', { exact: true })).toBeVisible({ timeout: 15_000 })
       await expect(panel.getByText(/Passport root anchored and matches this fingerprint/i)).toBeVisible()
     })

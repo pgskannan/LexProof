@@ -26,6 +26,8 @@ from typing import Any, Dict, Optional, Tuple
 from web3 import Web3
 from web3.exceptions import ContractLogicError, TimeExhausted, TransactionNotFound
 
+from .blockchain_fees import anchoring_fee_params
+
 logger = logging.getLogger(__name__)
 
 SEPOLIA_CHAIN_ID = 11155111
@@ -152,7 +154,7 @@ class PassportBlockchainService:
             "nonce": self.w3.eth.get_transaction_count(account.address),
             "chainId": self.chain_id,
             "gas": function.estimate_gas({"from": account.address}),
-            "gasPrice": self.w3.eth.gas_price,
+            **anchoring_fee_params(self.w3),
         })
         signed = self.w3.eth.account.sign_transaction(transaction, self.private_key)
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)

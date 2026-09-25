@@ -17,6 +17,7 @@ from web3 import eth
 from web3.contract import Contract
 from web3.exceptions import ContractLogicError, TransactionNotFound, TimeExhausted
 from web3.types import TxReceipt, TxData
+from .blockchain_fees import anchoring_fee_params
 
 logger = logging.getLogger(__name__)
 
@@ -390,7 +391,7 @@ class BlockchainService:
             "nonce": self.w3.eth.get_transaction_count(account.address),
             "chainId": self.chain_id,
             "gas": function.estimate_gas({"from": account.address}),
-            "gasPrice": self.w3.eth.gas_price,
+            **anchoring_fee_params(self.w3),
         })
         signed = self.w3.eth.account.sign_transaction(transaction, self.private_key)
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
