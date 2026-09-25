@@ -208,6 +208,30 @@ export default function LegalPassportPage() {
     const contractId = searchParams.get('contractId')
     const contractVersion = searchParams.get('contractVersion')
 
+    // A contract-only link (?contractId=... with no version: bookmarked,
+    // shared, or typed) used to fall through to the picker silently. Resolve
+    // the contract's current version and open that passport instead; only
+    // fall back to the picker if the contract can't be resolved.
+    if (contractId && !contractVersion) {
+      const controller = new AbortController()
+      setLoading(true)
+      void apiFetch(`/api/contracts/${encodeURIComponent(contractId)}`, { signal: controller.signal })
+        .then(async (response) => {
+          const contract: { version?: number | null } | null = response.ok ? await response.json() : null
+          if (contract?.version != null) {
+            router.replace(
+              `/legal-passport?contractId=${encodeURIComponent(contractId)}&contractVersion=${contract.version}`,
+            )
+            return
+          }
+          router.replace('/legal-passport')
+        })
+        .catch((error) => {
+          if (!isAbortError(error)) router.replace('/legal-passport')
+        })
+      return () => controller.abort()
+    }
+
     if (!contractId || !contractVersion) {
       setNeedsPicker(true)
       setLoading(false)
