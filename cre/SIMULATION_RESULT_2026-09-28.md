@@ -1,4 +1,6 @@
-# CRE simulation result: staging (2026-09-28)
+# CRE simulation results (2026-09-28): staging + tamper drill
+
+## Staging
 
 Run on the developer's Windows machine with CRE CLI v1.35.0, `@chainlink/cre-sdk` 1.22.0 and Bun 1.4.2, against the live LexProof backend and Ethereum Sepolia.
 
@@ -43,3 +45,37 @@ PS C:\Projects\LexProof\cre> cre workflow simulate lexproof-proof-monitor --targ
 ```
 
 Each `onchainHash` was read by the CRE EVM capability directly from the Sepolia registries at the last finalized block. Each evidence `offchainHash` came from LexProof's public verification API under DON identical-consensus. Cross-check: evidence `7fd45be6…` is the same item the public verifier and the offline proof package report as VERIFIED.
+
+---
+
+# Tamper drill: `drill-settings` (2026-09-28)
+
+Same workflow and binary (hash `dd374850…`). The drill config adds one entry claiming passport `8975e635…`'s root with **one altered hex digit** (`…400d8` instead of the real `…400d9`), as if someone edited a proof package.
+
+```
+PS C:\Projects\LexProof\cre> cre workflow simulate lexproof-proof-monitor --target drill-settings
+✓ Workflow compiled
+  Binary hash: dd3748509df317e1821d1736046ee9e02956c02f45c87f19e15ecbca5712e4f8
+  Config hash: 6f89ab61216958879ee8302da2e6f955ab1165f390e5a9779e5c24bf0f98e4c6
+2026-09-28T12:51:57Z [SIMULATION] Running trigger trigger=cron-trigger@1.0.0
+2026-09-28T12:52:03Z [USER LOG] Fetched 2 evidence fingerprint(s) from LexProof with DON consensus
+2026-09-28T12:52:03Z [USER LOG] [VERIFIED] evidence 7fd45be6-c028-4faf-a548-4158068f4e95
+2026-09-28T12:52:03Z [USER LOG] [VERIFIED] evidence b37c48ed-ba07-4f28-a440-590b6f3da26e
+2026-09-28T12:52:03Z [USER LOG] [ROOT_VERIFIED] passport root 8975e635-0db6-4334-83e5-939ae62a0caf (E2E-anchored passport)
+2026-09-28T12:52:03Z [USER LOG] [ROOT_MISMATCH] passport root 8975e635-0db6-4334-83e5-939ae62a0caf (TAMPER DRILL: proof package with one altered hex digit)
+2026-09-28T12:52:03Z [USER LOG] ALERT: 1 item(s) no longer match their on-chain anchor
+
+✓ Workflow Simulation Result (abridged; the three genuine items are identical to the staging run above):
+{
+  "alert": true, "checked": 4, "problems": 1, "verified": 3,
+  "items": [ ...,
+    { "kind": "passport-root", "id": "8975e635-0db6-4334-83e5-939ae62a0caf",
+      "label": "TAMPER DRILL: proof package with one altered hex digit",
+      "offchainHash": "5ad7a54ff0c88de57e846b3c6132914c0cdb827ae939d77c00891334ca3400d8",
+      "onchainHash":  "5ad7a54ff0c88de57e846b3c6132914c0cdb827ae939d77c00891334ca3400d9",
+      "verdict": "ROOT_MISMATCH" } ],
+  "network": "ethereum-testnet-sepolia"
+}
+```
+
+A single-character change in a claimed fingerprint is caught against the immutable on-chain root, while the genuine items in the same run still verify.
