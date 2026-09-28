@@ -1,0 +1,18 @@
+{
+  "schedule": "0 */10 * * * *",
+  "lexproofApiUrl": "http://localhost:8000",
+  "chainName": "ethereum-testnet-sepolia",
+  "evidenceRegistry": "0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191",
+  "passportRegistry": "0x21Ddd03549c2d4fb75336b616f18c34D4a9BFDE6",
+  "evidenceIds": [
+    "7fd45be6-c028-4faf-a548-4158068f4e95",
+    "b37c48ed-ba07-4f28-a440-590b6f3da26e"
+  ],
+  "passports": [
+    {
+      "label": "E2E-anchored passport",
+      "passportId": "8975e635-0db6-4334-83e5-939ae62a0caf",
+      "expectedRoot": "5ad7a54ff0c88de57e846b3c6132914c0cdb827ae939d77c00891334ca3400d9"
+    }
+  ]
+}

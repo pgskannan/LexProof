@@ -1,0 +1,20 @@
+{
+  "name": "lexproof-proof-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chainlink CRE workflow that independently re-verifies LexProof legal evidence and passport roots against Ethereum Sepolia.",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@chainlink/cre-sdk": "^1.22.0",
+    "viem": "^2.54.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.6.3"
+  },
+  "scripts": {
+    "postinstall": "bunx cre-setup",
+    "typecheck": "tsc --noEmit"
+  }
+}

@@ -1,0 +1,25 @@
+staging-settings:
+  user-workflow:
+    workflow-name: "lexproof-proof-monitor-staging"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.staging.json"
+    secrets-path: ""
+
+production-settings:
+  user-workflow:
+    workflow-name: "lexproof-proof-monitor"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.production.json"
+    secrets-path: ""
+
+# Same workflow, plus one deliberately altered expected root, to show the
+# monitor raising an alert: cre workflow simulate lexproof-proof-monitor --target drill-settings
+drill-settings:
+  user-workflow:
+    workflow-name: "lexproof-proof-monitor-drill"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.drill.json"
+    secrets-path: ""
