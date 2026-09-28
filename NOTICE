@@ -1,0 +1,9 @@
+LexProof
+Copyright 2026 Kannan Ganesan
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It includes third-party open-source components (for example Next.js, React,
+FastAPI, web3.py, viem, OpenZeppelin Contracts and the Chainlink CRE SDK),
+each distributed under its own license, as listed in the respective package
+metadata.

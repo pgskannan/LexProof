@@ -57,7 +57,14 @@ The current verification baseline is 206/206 backend tests and 14/14 frontend te
 
 ## Links
 
-- GitHub: [link]
-- Live demo: [link]
-- Etherscan transaction: [link]
-- Hackathon submission: [link]
+- GitHub: https://github.com/pgskannan/LexProof
+- Live demo: deployment in progress
+- Evidence registry (LexProofRegistry, Sepolia): https://sepolia.etherscan.io/address/0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191
+- Passport root registry (LexProofPassportRegistry, Sepolia): https://sepolia.etherscan.io/address/0x21Ddd03549c2d4fb75336b616f18c34D4a9BFDE6
+- Example passport-root anchor transaction: https://sepolia.etherscan.io/tx/0x1356cf613b05e5a681490f4d89e62d261618c40d657adfde616fbfcf21e32e92
+- Chainlink CRE Proof Monitor: [cre/README.md](cre/README.md) (simulation results in [cre/SIMULATION_RESULT_2026-09-28.md](cre/SIMULATION_RESULT_2026-09-28.md))
+- Hackathon: BLI Legal Tech Hackathon 2 (https://dorahacks.io/hackathon/legal-hack-2026/detail)
+
+## License
+
+Copyright 2026 Kannan Ganesan. Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE).
