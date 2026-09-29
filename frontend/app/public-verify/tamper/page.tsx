@@ -345,6 +345,26 @@ export default function TamperTestPage() {
           </>
         )}
 
+        {bundle && verdict && (
+          // Always-visible result, so the verdict flips on screen the moment a card is tampered with.
+          <div
+            data-testid="tamper-verdict-bar"
+            className={`sticky bottom-4 z-10 mx-auto flex max-w-3xl items-center justify-center gap-3 rounded-full px-6 py-3 text-white shadow-2xl ${
+              verdict === 'match' ? 'bg-green-600' : 'bg-red-600'
+            }`}
+          >
+            {verdict === 'match' ? <CheckCircle2 className="h-6 w-6" /> : <XCircle className="h-6 w-6" />}
+            <span className="text-lg font-bold">{verdict === 'match' ? 'VERIFIED' : 'ROOT MISMATCH'}</span>
+            <span className="hidden text-sm opacity-90 sm:inline">
+              {verdict === 'match'
+                ? 'matches the root anchored on Ethereum'
+                : tampered.length > 0
+                  ? `${tampered.map((k) => LABELS[k].title).join(', ')} changed`
+                  : 'does not match the anchored root'}
+            </span>
+          </div>
+        )}
+
         <LegalDisclaimer variant="verifier" className="mx-auto mt-4 max-w-3xl justify-center text-center" />
       </div>
     </div>
