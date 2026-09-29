@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { publicVerifyUrl } from './verifyLink'
+import { publicVerifyOrigin, publicVerifyUrl } from './verifyLink'
 
 describe('publicVerifyUrl', () => {
   it('encodes the existing public-verify deep link shape', () => {
@@ -12,5 +12,9 @@ describe('publicVerifyUrl', () => {
     expect(publicVerifyUrl('id with space', 'http://localhost:3000')).toBe(
       'http://localhost:3000/public-verify?evidence_id=id%20with%20space',
     )
+  })
+
+  it('falls back to the given origin when no public verify origin is configured', () => {
+    expect(publicVerifyOrigin('http://localhost:3000/')).toBe('http://localhost:3000')
   })
 })

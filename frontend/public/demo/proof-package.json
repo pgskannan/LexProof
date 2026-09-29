@@ -1,0 +1,68 @@
+{
+  "bundle_version": 1,
+  "bundle_generated_at": "2026-09-29T21:10:18.498464+00:00",
+  "hash_algorithm": "sha256",
+  "note": "Public demo copy: passport ID and SHA-256 fingerprints only. The verification snapshot (contract text, policy, analysis) is removed.",
+  "sepolia_rpc_url": "https://ethereum-sepolia-rpc.publicnode.com",
+  "registry_contract_address": "0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191",
+  "contract": {
+    "contract_id": "629f4b26-6157-446d-ac0c-03ae39590e6f",
+    "name": "CONTRACT_01_NDA_Clean_LowRisk.docx",
+    "contract_version": 1,
+    "passport_id": "1fd094f7-9775-4774-a042-9445360d7988"
+  },
+  "hashes": {
+    "document_hash": "a8205dfad53f9c8b39bf552d82ac1516f72c8ab768da83e398cca9ee9786ecaa",
+    "policy_hash": "f95e9cca3e167e2d26d0ae0d2da6df3640b0fc9907e4fd78ed6ce7bc5e4365ea",
+    "analysis_hash": "cae6fb8f5640e4cbbf82070beaf6063596706143971203e644dc8cc096c20d83",
+    "evidence_hash": "1be76f26f1ab0722b3fa8448e142e634c793e8b50463a98e5bf4530a5f432464",
+    "passport_hash": "4aaaca231c76f785d85e6b8202836688701f98180405d0f95869613431eb2b52"
+  },
+  "evidence": [
+    {
+      "evidence_id": "b37c48ed-ba07-4f28-a440-590b6f3da26e",
+      "title": "Risk Finding 1: Limitation of Liability Cap",
+      "hash": "8d6fcc6fd8fbc95d144bb41467577ea53eb0d143dd49830611bafbfce383a0c3",
+      "hash_algorithm": "sha256",
+      "anchor": {
+        "blockchain_network": "ethereum-sepolia",
+        "contract_address": "0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191",
+        "transaction_hash": "b9c78298012b18c0cf4795b00653022bd740568d06824cb0e0f89b91101596f6",
+        "block_number": 11767197,
+        "anchored_at": "2026-09-23T20:21:00+00:00",
+        "evidence_hash": "8d6fcc6fd8fbc95d144bb41467577ea53eb0d143dd49830611bafbfce383a0c3",
+        "anchored_by": null
+      }
+    },
+    {
+      "evidence_id": "c947e2ce-067e-4db7-b45f-2db4abde5a20",
+      "title": "Risk Finding 2: Governing Law - Exclusive Jurisdiction",
+      "hash": "1becc3b255df5afc07e0ab38b63271bf6b2c0102f5fd0610296d9ee7553636dc",
+      "hash_algorithm": "sha256",
+      "anchor": {
+        "blockchain_network": "ethereum-sepolia",
+        "contract_address": "0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191",
+        "transaction_hash": "0xb251c5b7ba32abd5c6c37f0a3ed6bae358e509680174ee5949c7d54db9366401",
+        "block_number": 11767214,
+        "anchored_at": "2026-09-23T20:24:24+00:00",
+        "evidence_hash": "1becc3b255df5afc07e0ab38b63271bf6b2c0102f5fd0610296d9ee7553636dc",
+        "anchored_by": null
+      }
+    },
+    {
+      "evidence_id": "e779ef0e-2f78-4e94-8ffb-c12f617ca8d8",
+      "title": "Risk and Compliance Scores",
+      "hash": "104e331e71bf66f162bc742704afe8dec1cc9f301e5bdff6c5ba5e290bef150c",
+      "hash_algorithm": "sha256",
+      "anchor": {
+        "blockchain_network": "ethereum-sepolia",
+        "contract_address": "0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191",
+        "transaction_hash": "8b4119b761526b9cf796de5c7b8ba5b8b0d49a952ea0244548c16ba0721b65fd",
+        "block_number": 11767242,
+        "anchored_at": "2026-09-23T20:30:00+00:00",
+        "evidence_hash": "104e331e71bf66f162bc742704afe8dec1cc9f301e5bdff6c5ba5e290bef150c",
+        "anchored_by": null
+      }
+    }
+  ]
+}

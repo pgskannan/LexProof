@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Code2, Copy, ExternalLink } from 'lucide-react'
 import { toast } from 'sonner'
-import { publicVerifyUrl } from '../lib/verifyLink'
+import { publicVerifyOrigin, publicVerifyUrl } from '../lib/verifyLink'
 import { defaultApiBase, embedSnippet } from '../lib/embedWidget'
 import { Button } from './ui/button'
 import { EmptyState } from './EmptyState'
@@ -18,7 +18,7 @@ export function QrVerifyBadge({ evidenceId, size = 180 }: QrVerifyBadgeProps) {
   const [origin, setOrigin] = useState('')
 
   useEffect(() => {
-    setOrigin(window.location.origin)
+    setOrigin(publicVerifyOrigin(window.location.origin))
   }, [])
 
   if (!evidenceId) {

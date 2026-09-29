@@ -9,6 +9,7 @@ describe('isPublicPath', () => {
   it('keeps existing public routes public and authenticated routes private', () => {
     expect(isPublicPath('/login')).toBe(true)
     expect(isPublicPath('/public-verify')).toBe(true)
+    expect(isPublicPath('/public-verify/tamper')).toBe(true)
     expect(isPublicPath('/dashboard/contracts/reviews')).toBe(false)
     expect(isPublicPath('/counterparty')).toBe(false)
   })

@@ -7,6 +7,7 @@ import {
   verifyOnChainIndependently,
   type ChainCheckResult,
 } from '../../lib/independentChainVerify';
+import { LegalDisclaimer } from '../../components/LegalDisclaimer';
 
 interface EvidenceVerificationResult {
   evidence_id: string;
@@ -165,6 +166,12 @@ export default function PublicVerifyPage() {
           <p className="text-lg text-gray-600 max-w-2xl mx-auto">
             Public cryptographic verification of legal evidence anchored on Ethereum Sepolia
           </p>
+          <a
+            href="/public-verify/tamper"
+            className="mt-4 inline-flex items-center gap-1 rounded-full bg-red-50 px-4 py-1.5 text-sm font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-100"
+          >
+            Try the Tamper Test: change one character and watch the proof break →
+          </a>
         </div>
 
         {/* Verification Form */}
@@ -527,6 +534,7 @@ export default function PublicVerifyPage() {
             </div>
           </div>
         )}
+        <LegalDisclaimer variant="verifier" className="mx-auto mt-10 max-w-3xl justify-center text-center" />
       </div>
     </div>
   );

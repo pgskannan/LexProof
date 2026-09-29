@@ -4,6 +4,7 @@ import { OrgProvider } from "../../components/OrgProvider"
 import { BrandingRoot } from "../../components/BrandingRoot"
 import { CommandPalette } from "../../components/CommandPalette"
 import { OnboardingTour } from "../../components/OnboardingTour"
+import { LegalDisclaimer } from "../../components/LegalDisclaimer"
 
 export default function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -26,6 +27,9 @@ export default function AuthenticatedLayout({ children }: { children: React.Reac
               the viewport and slide content under the fixed sidebar. */}
           <main className="ml-0 min-h-screen min-w-0 flex-1 bg-[var(--bg-surface-secondary)] pt-14 lg:ml-64 lg:pt-0">
             {children}
+            <footer className="mx-auto max-w-7xl px-4 pb-6 pt-2 sm:px-6 lg:px-8">
+              <LegalDisclaimer variant="app" />
+            </footer>
           </main>
           <CommandPalette />
           <OnboardingTour />

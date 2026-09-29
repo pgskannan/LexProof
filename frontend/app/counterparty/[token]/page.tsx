@@ -13,6 +13,7 @@ import {
 import { ClauseDiff } from '../../../components/ClauseDiff'
 import { Button } from '../../../components/ui/button'
 import { brandCssVars } from '../../../lib/branding'
+import { LegalDisclaimer } from '../../../components/LegalDisclaimer'
 
 type Comment = {
   comment_id?: string
@@ -329,6 +330,7 @@ export default function CounterpartyPage() {
             )}
           </div>
         )}
+        <LegalDisclaimer variant="counterparty" className="mx-auto mt-10 max-w-3xl justify-center text-center" />
       </div>
     </div>
   )
