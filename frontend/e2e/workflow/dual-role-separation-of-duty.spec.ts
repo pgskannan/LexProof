@@ -100,7 +100,7 @@ test('dual-role SoD: a user who is both contract_owner and reviewer still cannot
     })
     expect(response.status()).toBe(403)
     const body = await response.text()
-    expect(body).toContain('created_by')
+    expect(body).toContain('Separation of duties')
   })
 
   await test.step('State did not change: reload proves the persisted status is still PROPOSED, not APPROVED', async () => {

@@ -117,6 +117,9 @@ export default function ContractReviews() {
   const [error, setError] = useState('');
   const [comments, setComments] = useState<Record<string, string>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Errors from approve/reject/publish/retry are shown inside the proposal's
+  // own card, next to the button that was clicked, not at the top of the page.
+  const [actionError, setActionError] = useState<{ proposalId: string; message: string } | null>(null);
 
   useEffect(() => {
     setContractsLoading(true);
@@ -201,6 +204,7 @@ export default function ContractReviews() {
     }
     setBusyId(proposal.proposal_id);
     setError('');
+    setActionError(null);
     try {
       const request = proposalReviewRequest(proposal.proposal_id, decision, comments[proposal.proposal_id] || '');
       const response = await apiFetch(request.path, {
@@ -212,7 +216,9 @@ export default function ContractReviews() {
       toast.success(decision === 'APPROVED' ? 'Redline approved' : 'Redline rejected');
       await loadProposals(contractId);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to record review decision');
+      const message = cause instanceof Error ? cause.message : 'Unable to record review decision';
+      setActionError({ proposalId: proposal.proposal_id, message });
+      toast.error(message);
     } finally {
       setBusyId(null);
     }
@@ -225,6 +231,7 @@ export default function ContractReviews() {
     if (!confirmed) return;
     setBusyId(proposal.proposal_id);
     setError('');
+    setActionError(null);
     try {
       const request = proposalPublishRequest(proposal.proposal_id);
       const response = await apiFetch(request.path, { method: request.method });
@@ -236,7 +243,9 @@ export default function ContractReviews() {
       // That is surfaced as an informational state below, never as an error here.
       await loadProposals(contractId);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to publish proposal');
+      const message = cause instanceof Error ? cause.message : 'Unable to publish proposal';
+      setActionError({ proposalId: proposal.proposal_id, message });
+      toast.error(message);
     } finally {
       setBusyId(null);
     }
@@ -250,13 +259,16 @@ export default function ContractReviews() {
     if (!confirmed) return;
     setBusyId(proposal.proposal_id);
     setError('');
+    setActionError(null);
     try {
       const request = analyzeVersionRequest(proposal.contract_id, proposal.published_version_id);
       const response = await apiFetch(request.path, { method: request.method });
       if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail || 'Unable to retry evidence anchoring');
       await loadProposals(contractId);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to retry evidence anchoring');
+      const message = cause instanceof Error ? cause.message : 'Unable to retry evidence anchoring';
+      setActionError({ proposalId: proposal.proposal_id, message });
+      toast.error(message);
     } finally {
       setBusyId(null);
     }
@@ -478,6 +490,15 @@ export default function ContractReviews() {
                       </Button>
                     </div>
                   </div>
+                )}
+
+                {actionError?.proposalId === proposal.proposal_id && (
+                  <p
+                    role="alert"
+                    className="rounded-[var(--radius-md,0.5rem)] border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
+                  >
+                    {actionError.message}
+                  </p>
                 )}
 
                 {canShare && currentOrg?.org_id && (

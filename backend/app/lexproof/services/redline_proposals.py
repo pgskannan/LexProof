@@ -230,7 +230,11 @@ class ProposalService:
             instance = self.workflow.execute_transition(
                 instance["instance_id"], transition_id, reviewer_id, roles, comment
             )
-        except (WorkflowPermissionError, WorkflowSeparationOfDutiesError) as error:
+        except WorkflowSeparationOfDutiesError as error:
+            raise PermissionError(
+                "Separation of duties: you proposed this redline, so a different reviewer must approve or reject it."
+            ) from error
+        except WorkflowPermissionError as error:
             raise PermissionError(str(error)) from error
         except WorkflowError as error:
             raise RedlineProposalError(str(error)) from error
@@ -317,7 +321,11 @@ class ProposalService:
         instance = self._ensure_instance(proposal, proposal.get("created_by") or publisher_id, roles)
         try:
             self.workflow.assert_transition_allowed(instance["instance_id"], "publish", publisher_id, roles)
-        except (WorkflowPermissionError, WorkflowSeparationOfDutiesError) as error:
+        except WorkflowSeparationOfDutiesError as error:
+            raise PermissionError(
+                "Separation of duties: you proposed this redline, so a different person must publish it."
+            ) from error
+        except WorkflowPermissionError as error:
             raise PermissionError(str(error)) from error
         except WorkflowError as error:
             raise PublicationError(str(error)) from error

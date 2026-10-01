@@ -467,7 +467,7 @@ class DualRoleSodFixtureTests(unittest.TestCase):
 
         with self.assertRaises(PermissionError) as ctx:
             service.review(summary["proposal_id"], "APPROVED", fixture.DUAL_ROLE_SOD_ID)
-        self.assertIn("created_by", str(ctx.exception))
+        self.assertIn("Separation of duties", str(ctx.exception))
         self.assertNotIn("Role", str(ctx.exception))
 
         # Confirm, directly against the workflow engine (bypassing the
