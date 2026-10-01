@@ -267,6 +267,21 @@ def test_review_api_and_get_return_persisted_review(monkeypatch):
     assert client.post(f"/api/redline-proposals/{proposal_id}/review", json={"decision": "APPROVED"}).status_code == 409
 
 
+def test_editing_a_finalized_proposal_returns_409_not_500(monkeypatch):
+    client = make_client(monkeypatch, "owner-1")
+    created = client.post("/api/contracts/contract-1/redline-proposals", json={"source_version_id": "version-1", "finding_id": "finding-1", "proposed_text": "Revised clause"})
+    proposal_id = created.json()["proposal_id"]
+    client.app.dependency_overrides[get_current_user] = lambda: {"uid": "reviewer-1"}
+    assert client.post(f"/api/redline-proposals/{proposal_id}/review", json={"decision": "APPROVED"}).status_code == 200
+    client.app.dependency_overrides[get_current_user] = lambda: {"uid": "owner-1"}
+
+    edited = client.patch(f"/api/redline-proposals/{proposal_id}", json={"proposed_text": "Sneaky edit"})
+
+    assert edited.status_code == 409
+    assert "already been decided" in edited.json()["detail"]
+    assert client.get(f"/api/redline-proposals/{proposal_id}").json()["proposed_text"] == "Revised clause"
+
+
 def approved_service():
     seed_data()
     service = make_service()

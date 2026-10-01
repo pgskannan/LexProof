@@ -214,6 +214,15 @@ def update_redline_proposal(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except ProposalNotFoundError as error:
         raise _handle_error(error) from error
+    except FinalDecisionError as error:
+        # An approved/rejected/published proposal is immutable; editing it is a
+        # conflict with its state, not a server fault (was an unhandled 500).
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This redline has already been decided and can no longer be edited.",
+        ) from error
+    except RedlineProposalError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
 @proposal_router.get("/{proposal_id}", response_model=RedlineProposalResponse)

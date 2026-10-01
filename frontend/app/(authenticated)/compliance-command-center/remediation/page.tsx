@@ -190,6 +190,10 @@ export default function RemediationPage() {
     }
   }
 
+  // Approved, rejected or published proposals are immutable on the server;
+  // lock the editor instead of letting a save fail.
+  const isFinalized = proposal?.status === "APPROVED" || proposal?.status === "REJECTED" || proposal?.status === "PUBLISHED"
+
   async function submitReview(decision: "APPROVED" | "REJECTED") {
     if (!proposal) return
     if (decision === "REJECTED") {
@@ -305,7 +309,7 @@ export default function RemediationPage() {
                       type="button"
                       variant="outline"
                       size="sm"
-                      disabled={suggesting || !context.versionId}
+                      disabled={suggesting || !context.versionId || isFinalized}
                       onClick={() => void suggestWithAI()}
                     >
                       <Sparkles className="h-3.5 w-3.5" />
@@ -316,12 +320,19 @@ export default function RemediationPage() {
                     aria-label="Proposed text"
                     value={proposedText}
                     onChange={(event) => setProposedText(event.target.value)}
+                    readOnly={isFinalized}
                     placeholder="Enter proposed contractual language, leave blank to save a draft, or use Suggest with AI for a starting point."
                     className="min-h-48 w-full rounded border border-gray-300 p-3 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
                   />
                   {suggestionError && <p className="text-xs text-red-600 dark:text-red-400">{suggestionError}</p>}
                   {suggestionRationale && !suggestionError && <p className="text-xs text-gray-500 dark:text-gray-400">AI rationale: {suggestionRationale}</p>}
-                  <p className="text-xs text-gray-500 dark:text-gray-400">AI can draft a starting point below; nothing is proposed or approved until you review it and save.</p>
+                  {isFinalized ? (
+                    <p role="status" className="rounded bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+                      This redline has already been {proposal?.status?.toLowerCase()}, so it is locked. Decided redlines are part of the evidence trail and can't be edited.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-gray-500 dark:text-gray-400">AI can draft a starting point below; nothing is proposed or approved until you review it and save.</p>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -337,7 +348,7 @@ export default function RemediationPage() {
                     </p>
                   )}
                 </div>
-                <Button type="submit" disabled={saving || !context.versionId}>
+                <Button type="submit" disabled={saving || !context.versionId || isFinalized}>
                   {saving ? "Saving..." : "Save proposal"}
                 </Button>
               </CardContent>
