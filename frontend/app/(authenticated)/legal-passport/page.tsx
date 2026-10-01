@@ -10,6 +10,7 @@ import PassportRootAnchorPanel, {
 import { IndependentVerificationPanel } from './components/IndependentVerificationPanel'
 import { EvidencePackButton } from './components/EvidencePackButton'
 import { apiFetch } from '../../../lib/api'
+import { humanReviewStep, type RedlineProposalSummary } from '../../../lib/humanReviewStep'
 import {
   countLegalEvidenceFindings,
   filterLegalEvidenceFindings,
@@ -153,6 +154,9 @@ export default function LegalPassportPage() {
   // connected artifact at a glance, matching the Contract Lifecycle page's
   // existing "Evidence N/M anchored" metric.
   const [anchoredCount, setAnchoredCount] = useState<number | null>(null)
+  // Redline proposals for this contract: where human approve/reject
+  // decisions are recorded, so the Human Review step reflects real reviews.
+  const [redlineProposals, setRedlineProposals] = useState<RedlineProposalSummary[] | null>(null)
 
   const legalEvidence = useMemo(() => filterLegalEvidenceFindings(evidence), [evidence])
   const legalEvidenceCount = useMemo(
@@ -195,6 +199,22 @@ export default function LegalPassportPage() {
       cancelled = true
     }
   }, [legalEvidence, evidenceLoading])
+
+  const passportContractId = passport?.contract_id
+  useEffect(() => {
+    if (!passportContractId) return
+    let cancelled = false
+    setRedlineProposals(null)
+    void apiFetch(`/api/contracts/${encodeURIComponent(passportContractId)}/redline-proposals`)
+      .then(async (response) => (response.ok ? ((await response.json()) as RedlineProposalSummary[]) : []))
+      .catch(() => [] as RedlineProposalSummary[])
+      .then((items) => {
+        if (!cancelled) setRedlineProposals(Array.isArray(items) ? items : [])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [passportContractId])
 
   // Load a specific passport when the URL has contract + version; otherwise
   // show a picker so the sidebar Legal Passport link is never a dead stub.
@@ -580,7 +600,7 @@ export default function LegalPassportPage() {
     { key: 'contract', label: 'Contract', icon: FileText, done: true, detail: contract?.name || passport.contract_id },
     { key: 'analysis', label: 'AI Analysis', icon: Sparkles, done: true, detail: `Risk ${passport.risk_score} · Compliance ${passport.compliance_score}` },
     { key: 'finding', label: 'Risk Finding', icon: AlertTriangle, done: legalEvidenceCount > 0, detail: `${legalEvidenceCount} finding${legalEvidenceCount === 1 ? '' : 's'} recorded` },
-    { key: 'review', label: 'Human Review', icon: UserCheck, done: passport.audit_events.some((event) => /review|approve/i.test(event.event_type)), detail: `${passport.audit_events.length} audit event${passport.audit_events.length === 1 ? '' : 's'}` },
+    { key: 'review', label: 'Human Review', icon: UserCheck, ...humanReviewStep(redlineProposals, passport.audit_events.some((event) => /review|approve/i.test(event.event_type))) },
     { key: 'published', label: 'Published Version', icon: UploadCloud, done: passport.status === 'created' || passport.status === 'pending' || Boolean(passport.contract_version), detail: `Version ${passport.contract_version} · ${passport.status}` },
     { key: 'fingerprint', label: 'Evidence Fingerprint', icon: Fingerprint, done: Boolean(passport.metadata?.passport_hash), detail: passport.metadata?.passport_hash ? 'SHA-256 sealed' : 'Pending' },
     { key: 'anchor', label: 'Ethereum Anchor', icon: Anchor, done: (anchoredCount ?? 0) > 0, detail: anchoredCount === null ? 'Checking…' : `${anchoredCount}/${legalEvidenceCount} anchored` },

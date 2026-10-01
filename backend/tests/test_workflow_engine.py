@@ -1,5 +1,7 @@
 """Unit tests for the generic workflow engine using an in-memory Firestore fake."""
 
+import pytest
+
 from app.lexproof.services.workflow_engine import (
     WorkflowPermissionError,
     WorkflowSeparationOfDutiesError,
@@ -116,10 +118,34 @@ def test_create_definition_versions_and_start_instance_is_idempotent():
     assert again["instance_id"] == started["instance_id"]
 
 
-def test_admin_may_complete_own_submission_for_break_glass():
+def test_admin_cannot_approve_own_submission_without_break_glass_reason():
     service, instance = started_instance("owner-1")
-    updated = service.execute_transition(instance["instance_id"], "approve", "owner-1", ["admin"])
+    with pytest.raises(WorkflowSeparationOfDutiesError):
+        service.execute_transition(instance["instance_id"], "approve", "owner-1", ["admin"])
+    with pytest.raises(WorkflowSeparationOfDutiesError):
+        service.execute_transition(instance["instance_id"], "approve", "owner-1", ["admin"], break_glass_reason="  short ")
+    assert service.get_instance(instance["instance_id"])["current_state"] != "approved"
+
+
+def test_admin_break_glass_with_reason_is_allowed_and_recorded():
+    service, instance = started_instance("owner-1")
+    reason = "Reviewer unavailable; regulator deadline today"
+    updated = service.execute_transition(
+        instance["instance_id"], "approve", "owner-1", ["admin"], break_glass_reason=reason
+    )
     assert updated["current_state"] == "approved"
+    events = service.get_instance_history(instance["instance_id"])
+    assert events[-1]["break_glass"] is True
+    assert events[-1]["break_glass_reason"] == reason
+
+
+def test_break_glass_reason_is_ignored_for_non_admins():
+    service, instance = started_instance("owner-1")
+    with pytest.raises(WorkflowSeparationOfDutiesError):
+        service.execute_transition(
+            instance["instance_id"], "approve", "owner-1", ["approver"],
+            break_glass_reason="I would really like to approve this myself",
+        )
 
 
 def test_list_instances_filters_and_paginates():

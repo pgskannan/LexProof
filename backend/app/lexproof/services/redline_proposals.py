@@ -205,7 +205,14 @@ class ProposalService:
         self._require_contract_member(proposal.get("contract_id", ""), user_id)
         return self._with_review(proposal)
 
-    def review(self, proposal_id: str, decision: str, reviewer_id: str, comment: str | None = None) -> dict[str, Any]:
+    def review(
+        self,
+        proposal_id: str,
+        decision: str,
+        reviewer_id: str,
+        comment: str | None = None,
+        break_glass_reason: str | None = None,
+    ) -> dict[str, Any]:
         proposal = self.proposals.get(proposal_id)
         if not proposal:
             raise ProposalNotFoundError(f"Proposal not found: {proposal_id}")
@@ -228,7 +235,8 @@ class ProposalService:
         transition_id = "approve" if normalized_decision == "APPROVED" else "reject"
         try:
             instance = self.workflow.execute_transition(
-                instance["instance_id"], transition_id, reviewer_id, roles, comment
+                instance["instance_id"], transition_id, reviewer_id, roles, comment,
+                break_glass_reason=break_glass_reason,
             )
         except WorkflowSeparationOfDutiesError as error:
             raise PermissionError(

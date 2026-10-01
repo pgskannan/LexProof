@@ -23,6 +23,13 @@ class WorkflowError(ValueError):
     """Base error for workflow engine failures."""
 
 
+BREAK_GLASS_MIN_REASON_LENGTH = 10
+
+
+def _valid_break_glass_reason(reason: str | None) -> bool:
+    return bool(reason) and len(reason.strip()) >= BREAK_GLASS_MIN_REASON_LENGTH
+
+
 class WorkflowNotFoundError(WorkflowError):
     """Raised when a definition or instance does not exist."""
 
@@ -286,10 +293,11 @@ class WorkflowEngine:
         transition_id: str,
         actor_id: str,
         actor_roles: list[str],
+        break_glass_reason: str | None = None,
     ) -> dict[str, Any]:
         instance = self.get_instance(instance_id)
         definition = self.get_definition(instance["definition_id"])
-        return self._validate_transition(instance, definition, transition_id, actor_id, actor_roles)
+        return self._validate_transition(instance, definition, transition_id, actor_id, actor_roles, break_glass_reason)
 
     def _validate_transition(
         self,
@@ -298,6 +306,7 @@ class WorkflowEngine:
         transition_id: str,
         actor_id: str,
         actor_roles: list[str],
+        break_glass_reason: str | None = None,
     ) -> dict[str, Any]:
         transition = _transition_by_id(definition, transition_id)
         if not transition:
@@ -321,7 +330,11 @@ class WorkflowEngine:
             raise WorkflowPermissionError(
                 f"Role {', '.join(actor_roles) or 'none'} cannot perform {transition.get('action_name')}"
             )
-        if OrgRole.ADMIN.value not in actor_roles:
+        # Separation of duties applies to everyone, admins included. An admin
+        # may override it only with an explicit, written break-glass reason,
+        # which execute_transition records in the instance history.
+        admin_override = OrgRole.ADMIN.value in actor_roles and _valid_break_glass_reason(break_glass_reason)
+        if not admin_override:
             for field_ref in transition.get("requires_not_actor") or []:
                 forbidden = instance.get(field_ref)
                 if forbidden and forbidden == actor_id:
@@ -341,6 +354,7 @@ class WorkflowEngine:
         actor_id: str,
         actor_roles: list[str],
         comment: str | None = None,
+        break_glass_reason: str | None = None,
     ) -> dict[str, Any]:
         def apply(transaction: Any) -> dict[str, Any]:
             instance = self.instances.get(instance_id, transaction=transaction)
@@ -348,7 +362,13 @@ class WorkflowEngine:
                 raise WorkflowNotFoundError(f"Workflow instance not found: {instance_id}")
             instance = {"instance_id": instance_id, **instance}
             definition = self.get_definition(instance["definition_id"])
-            transition = self._validate_transition(instance, definition, transition_id, actor_id, actor_roles)
+            transition = self._validate_transition(
+                instance, definition, transition_id, actor_id, actor_roles, break_glass_reason
+            )
+            break_glass_used = any(
+                instance.get(field_ref) and instance.get(field_ref) == actor_id
+                for field_ref in transition.get("requires_not_actor") or []
+            )
             to_state = transition["to_state"]
             state = _state_by_id(definition, to_state) or {}
             now = _now()
@@ -374,6 +394,13 @@ class WorkflowEngine:
                 "comment": comment,
                 "occurred_at": now,
             }
+            if break_glass_used:
+                event["break_glass"] = True
+                event["break_glass_reason"] = (break_glass_reason or "").strip()
+                logger.warning(
+                    "break-glass override org_id=%s instance_id=%s actor=%s action=%s reason=%r",
+                    instance.get("org_id"), instance_id, actor_id, transition_id, event["break_glass_reason"],
+                )
             self.instances.set(instance_id, updates, merge=True, transaction=transaction)
             self.history(instance_id).set(event_id, event, transaction=transaction)
             logger.info(

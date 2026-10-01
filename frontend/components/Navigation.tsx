@@ -65,7 +65,7 @@ export const navigationItems = [
   { label: 'Compliance', href: '/dashboard/compliance', icon: CheckCircle2 },
   { label: 'Regulation Map', href: '/dashboard/compliance/regulations', icon: Scale },
   { label: 'Verification', href: '/dashboard/verification', icon: Eye },
-  { label: 'Reports', href: '/dashboard/reports', icon: BarChart3 },
+  { label: 'Reports', href: '/dashboard/reports', icon: BarChart3, exact: true },
   { label: 'Portfolio Trends', href: '/dashboard/reports/trends', icon: TrendingUp },
   { label: 'Board Report', href: '/dashboard/reports/board', icon: FileBarChart2 },
   // Hardening item #10: the brutally honest demo-ready vs. production-ready
@@ -104,6 +104,12 @@ const NAV_GROUPS: { title: string; hrefs: string[] }[] = [
   {
     title: 'Evidence',
     hrefs: ['/legal-passport', '/dashboard/blockchain-proof'],
+  },
+  {
+    // Board Report, Portfolio Trends and Reports existed as routes (and in
+    // Cmd+K) but were never assigned to a group, so the sidebar hid them.
+    title: 'Analytics',
+    hrefs: ['/dashboard/reports/board', '/dashboard/reports/trends', '/dashboard/reports'],
   },
   {
     // "Production Readiness" is a normal, ungated navigationItems entry (as

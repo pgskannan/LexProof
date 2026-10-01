@@ -43,6 +43,9 @@ class RedlineProposalUpdateRequest(BaseModel):
 class RedlineReviewRequest(BaseModel):
     decision: str
     comment: str | None = None
+    # Admin-only emergency override of separation of duties; recorded in the
+    # workflow history. Ignored for non-admins.
+    break_glass_reason: str | None = None
 
 
 class RedlineReviewResponse(BaseModel):
@@ -242,7 +245,10 @@ def review_redline_proposal(
     user: dict[str, Any] = Depends(get_current_user),
 ):
     try:
-        result = _service().review(proposal_id, request.decision, str(user["uid"]), request.comment)
+        result = _service().review(
+            proposal_id, request.decision, str(user["uid"]), request.comment,
+            break_glass_reason=request.break_glass_reason,
+        )
     except PermissionError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except FinalDecisionError as error:
