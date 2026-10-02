@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 from typing import Annotated, Any
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .firebase_auth import FirebaseAuthenticationError, verify_firebase_token
@@ -16,8 +18,42 @@ logger = logging.getLogger(__name__)
 _bearer = HTTPBearer(auto_error=False)
 ORG_ID_HEADER = "X-Org-Id"
 
+# Read-only accounts (e.g. the public hackathon judge login): their UIDs are
+# listed in LEXPROOF_READ_ONLY_UIDS. They can sign in and see everything their
+# org membership allows, but any request that would change data is refused.
+READ_ONLY_UIDS_ENV = "LEXPROOF_READ_ONLY_UIDS"
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# Non-GET endpoints that only read, or only touch the caller's own UI state.
+_READ_ONLY_ALLOWED_WRITES = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"/ask$",                                  # Ask Lexi (answers a question)
+        r"/translate$",                            # translate findings for display
+        r"/verify$",                               # re-run an integrity check
+        r"/verify-version-history/[^/]+$",
+        r"/portfolio-snapshots$",                  # daily trend snapshot captured on page load
+        r"/preferences/ui$",                       # the caller's own dashboard layout
+        r"/notifications/(read-all|[^/]+/read)$",  # mark the caller's notifications read
+    )
+)
+READ_ONLY_DETAIL = "This is a read-only demo account: you can explore everything, but changes are disabled."
+
+
+def read_only_uids() -> set[str]:
+    return {uid.strip() for uid in os.getenv(READ_ONLY_UIDS_ENV, "").split(",") if uid.strip()}
+
+
+def enforce_read_only(uid: str, method: str, path: str) -> None:
+    if method.upper() in _SAFE_METHODS or uid not in read_only_uids():
+        return
+    if any(pattern.search(path.rstrip("/")) for pattern in _READ_ONLY_ALLOWED_WRITES):
+        return
+    logger.info("read-only account blocked actor=%s method=%s path=%s", uid, method, path)
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=READ_ONLY_DETAIL)
+
 
 def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict[str, Any]:
     if credentials is None or credentials.scheme.lower() != "bearer":
@@ -28,6 +64,7 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc), headers={"WWW-Authenticate": "Bearer"}) from exc
     if not claims.get("uid"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Firebase token does not contain a UID", headers={"WWW-Authenticate": "Bearer"})
+    enforce_read_only(str(claims["uid"]), request.method, request.url.path)
     return claims
 
 

@@ -18,7 +18,8 @@ param(
     [string]$Region = "us-central1",
     [string]$Service = "lexproof-api",
     [string]$CorsOrigins = "https://lexproof-pied.vercel.app,http://localhost:3000",
-    [int]$MinInstances = 0
+    [int]$MinInstances = 0,
+    [string]$ReadOnlyUids = "demo-judge-1"
 )
 # "Continue", not "Stop": gcloud writes progress to stderr, which Windows PowerShell 5.1
 # would otherwise turn into a terminating error. Failures are caught via $LASTEXITCODE.
@@ -84,8 +85,11 @@ foreach ($role in $roles) {
 # Source deploys build with the Compute Engine default service account; newer projects
 # don't give it build permissions by default.
 $ProjectNumber = (& gcloud projects describe $Project --format "value(projectNumber)").Trim()
-Invoke-Gcloud projects add-iam-policy-binding $Project --member "serviceAccount:$ProjectNumber-compute@developer.gserviceaccount.com" --role roles/run.builder --condition None --quiet *> $null
-Write-Host "   granted roles/run.builder to the build service account"
+foreach ($buildRole in "roles/run.builder", "roles/cloudbuild.builds.builder") {
+    Invoke-Gcloud projects add-iam-policy-binding $Project --member "serviceAccount:$ProjectNumber-compute@developer.gserviceaccount.com" --role $buildRole --condition None --quiet *> $null
+    Write-Host "   granted $buildRole to the build service account"
+}
+Start-Sleep -Seconds 60   # new IAM grants take a minute to reach Cloud Build
 
 Write-Host "== 3/5 Secrets (values read from backend\.env, never printed)" -ForegroundColor Cyan
 $secrets = @{ "ETHEREUM_PRIVATE_KEY" = "lexproof-ethereum-private-key"; "ETHEREUM_RPC_URL" = "lexproof-ethereum-rpc-url" }
@@ -120,6 +124,7 @@ $plain = [ordered]@{
     ETHEREUM_CONTRACT_ADDRESS          = $envValues["ETHEREUM_CONTRACT_ADDRESS"]
     ETHEREUM_PASSPORT_REGISTRY_ADDRESS = $envValues["ETHEREUM_PASSPORT_REGISTRY_ADDRESS"]
     LEXPROOF_CORS_ORIGINS              = $CorsOrigins
+    LEXPROOF_READ_ONLY_UIDS            = $ReadOnlyUids
 }
 # Written to a YAML file rather than --set-env-vars: the CORS list contains commas, and
 # gcloud.cmd runs through cmd.exe, which mangles the usual "^|^" delimiter escape.

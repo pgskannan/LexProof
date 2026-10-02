@@ -52,6 +52,13 @@ When it prints "Cron scheduler started. Press Enter to skip waiting…", press *
 
 Expected (staging): `[VERIFIED]` for both evidence items, `[ROOT_VERIFIED]` for the passport, and "All 3 anchored item(s) match Sepolia". The actual run is recorded in [`SIMULATION_RESULT_2026-09-28.md`](SIMULATION_RESULT_2026-09-28.md).
 
+**Against the live public API** (Cloud Run, no local backend needed): `config.production.json` points at
+`https://lexproof-api-1095554027100.us-central1.run.app` and also monitors the CONTRACT_01 demo passport.
+
+```powershell
+cre workflow simulate lexproof-proof-monitor --target production-settings
+```
+
 **Tamper drill** (same workflow; the config claims a root with one altered hex digit):
 
 ```powershell
