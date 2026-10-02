@@ -1,0 +1,14 @@
+# Development and test dependencies. The production image (Dockerfile) installs
+# requirements.txt only.
+-r requirements.txt
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+
+# Test-only: an in-process local Ethereum test chain (PyEVM backend) used by
+# tests/lexproof/blockchain/test_passport_registry_contract.py to deploy and
+# exercise the real compiled LexProofPassportRegistry bytecode without any
+# external node. Never imported by application runtime code.
+# py-evm is pinned directly (not via the eth-tester[py-evm] extra) because the
+# extra pulls safe-pysha3, which needs a C compiler on Windows.
+eth-tester>=0.14.0b1
+py-evm>=0.12.0b2,<0.13.0b1

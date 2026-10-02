@@ -34,16 +34,34 @@ Evidence lookups on `/public-verify?evidence_id=…` need the API, so they only 
 
 ## Phase 2: backend on Cloud Run (public verify API + full app)
 
-`docs/CLOUD_RUN_BACKEND_READINESS.md` is from 2026-08-23 and out of date: the Dockerfile, Firestore
-persistence, Firebase auth and CORS settings now exist. Outline:
+One script does it: `backend/deploy/deploy-cloud-run.ps1`. Prerequisites: the gcloud CLI,
+`gcloud auth login` with an owner of the `lexproof-afc7c` project, and a filled-in `backend/.env`.
 
-1. `gcloud run deploy lexproof-api --source backend --region us-central1 --allow-unauthenticated`
-   (the API enforces its own Firebase auth; the public verify routes are public by design).
-2. Secrets go in Secret Manager, never in the repo: the Firebase service account, the blockchain
-   signer key, and the RPC URL. Give the Cloud Run service account Firestore and Vertex AI access.
-3. Set `LEXPROOF_CORS_ORIGINS=https://<project>.vercel.app`.
-4. In Vercel, set `NEXT_PUBLIC_API_URL` to the Cloud Run URL and redeploy.
-5. In Firebase Auth, add the Vercel domain under **Authorized domains**.
+```powershell
+cd C:\Projects\LexProof
+powershell -ExecutionPolicy Bypass -File backend\deploy\deploy-cloud-run.ps1
+```
+
+What it does (safe to re-run):
+1. Enables Cloud Run, Cloud Build, Artifact Registry, Secret Manager, Vertex AI, Firestore and Identity Toolkit.
+2. Creates the `lexproof-api` runtime service account with only Firestore, Vertex AI, Firebase Auth admin,
+   Storage object admin, secret accessor and log writer roles. No service-account key is used: on Cloud Run
+   the API authenticates with Application Default Credentials (detected via `K_SERVICE`).
+3. Copies `ETHEREUM_PRIVATE_KEY` and `ETHEREUM_RPC_URL` from `backend/.env` into Secret Manager
+   without printing them. Nothing secret is in the image: `.gcloudignore` excludes `.env` and the
+   service-account file from the upload, and the Dockerfile copies only `app/` and `scripts/`.
+4. Builds `backend/` with Cloud Build and deploys `lexproof-api` (1 GiB, max 1 instance so in-memory
+   state stays consistent, `--allow-unauthenticated` because the API enforces its own Firebase auth and
+   the public verify routes are public by design). CORS allows the Vercel site and localhost.
+5. Prints the URL and checks `/health`.
+
+Then:
+- Vercel → Settings → Environment Variables: `NEXT_PUBLIC_API_URL=<service URL>` → Redeploy.
+- Firebase console → Authentication → Settings → Authorized domains: add `lexproof-pied.vercel.app`.
+- Logs: `gcloud run services logs read lexproof-api --region us-central1 --limit 50`.
+- Add `--MinInstances 1` to the script to avoid cold starts during judging (small always-on cost).
+
+The image installs `requirements.txt` only; tests use `requirements-dev.txt`.
 
 ## Notes
 - Everything runs on the **Sepolia testnet**. Say so in the submission. Mainnet path: a

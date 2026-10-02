@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from .firebase_credentials import has_file_credentials
+from .firebase_credentials import has_file_credentials, running_on_cloud_run
 
 
 class LexProofSettings(BaseSettings):
@@ -86,7 +86,7 @@ class LexProofSettings(BaseSettings):
             and self.firebase_client_email
             and self.firebase_private_key.get_secret_value()
         )
-        return environment_credentials or has_file_credentials()
+        return environment_credentials or has_file_credentials() or running_on_cloud_run()
 
     def has_gcp_project(self) -> bool:
         return bool(self.project_id)

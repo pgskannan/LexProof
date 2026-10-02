@@ -1,0 +1,17 @@
+# Uploaded to Cloud Build by `gcloud run deploy --source backend`.
+# Keep secrets and local-only files out of the upload.
+.gcloudignore
+.git
+.gitignore
+.env
+.env.*
+firebase-service-account.json
+*.json.key
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+_scratch/
+node_modules/
+tests/
+retrospective.json

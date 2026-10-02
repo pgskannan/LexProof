@@ -58,8 +58,18 @@ def test_firebase_credentials_missing(monkeypatch, tmp_path):
     monkeypatch.delenv("FIREBASE_CLIENT_EMAIL", raising=False)
     monkeypatch.delenv("FIREBASE_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("FIREBASE_PROJECT_ID", raising=False)
+    monkeypatch.delenv("K_SERVICE", raising=False)
     monkeypatch.setattr(firebase_credentials, "local_service_account_path", lambda: tmp_path / "missing.json")
     assert LexProofSettings().has_firebase_credentials() is False
+
+
+def test_firebase_credentials_from_cloud_run_service_account(monkeypatch, tmp_path):
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.delenv("FIREBASE_CLIENT_EMAIL", raising=False)
+    monkeypatch.delenv("FIREBASE_PRIVATE_KEY", raising=False)
+    monkeypatch.setattr(firebase_credentials, "local_service_account_path", lambda: tmp_path / "missing.json")
+    monkeypatch.setenv("K_SERVICE", "lexproof-api")
+    assert LexProofSettings().has_firebase_credentials() is True
 
 
 def test_firebase_initialization_uses_local_file(monkeypatch, tmp_path):

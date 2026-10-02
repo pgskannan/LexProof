@@ -20,6 +20,12 @@ def configured_service_account_path() -> Path | None:
     return None
 
 
+def running_on_cloud_run() -> bool:
+    """Cloud Run sets K_SERVICE. There, Application Default Credentials come from
+    the service's own service account, so no key file or private key is needed."""
+    return bool(os.getenv("K_SERVICE", "").strip())
+
+
 def has_file_credentials() -> bool:
     """Whether a configured or local Firebase service-account file exists."""
     return configured_service_account_path() is not None or local_service_account_path().is_file()
