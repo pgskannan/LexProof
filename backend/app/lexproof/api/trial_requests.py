@@ -39,6 +39,7 @@ class TrialRequest(BaseModel):
     team_size: str | None = Field(default=None, max_length=20)
     use_case: str | None = Field(default=None, max_length=2000)
     consent: bool
+    request_type: str = Field(default="trial", max_length=10)
     website: str | None = Field(default=None, max_length=200)  # honeypot: real people leave it empty
 
     @field_validator("full_name", "company", "use_case", mode="before")
@@ -59,6 +60,13 @@ class TrialRequest(BaseModel):
     def _role(cls, value: str) -> str:
         if value not in ROLES:
             raise ValueError("Choose a role from the list")
+        return value
+
+    @field_validator("request_type")
+    @classmethod
+    def _request_type(cls, value: str) -> str:
+        if value not in {"trial", "demo"}:
+            raise ValueError("Unknown request type")
         return value
 
     @field_validator("team_size")
@@ -121,5 +129,5 @@ def create_trial_request(payload: TrialRequest, request: Request) -> dict[str, A
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     _repository().set(request_id, record)
-    logger.info("trial request stored id=%s company=%s", request_id, payload.company)
+    logger.info("%s request stored id=%s company=%s", payload.request_type, request_id, payload.company)
     return {"id": request_id, "status": "received"}

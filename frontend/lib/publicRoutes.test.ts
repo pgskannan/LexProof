@@ -17,6 +17,7 @@ describe('isPublicPath', () => {
   it('makes the marketing home page and trial request page public', () => {
     expect(isPublicPath('/')).toBe(true)
     expect(isPublicPath('/request-trial')).toBe(true)
+    expect(isPublicPath('/request-demo')).toBe(true)
     expect(isPublicPath('/dashboard')).toBe(false)
   })
 })

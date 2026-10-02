@@ -57,7 +57,7 @@ export default function HomePage() {
                   Try the live Tamper Test
                 </a>
               </div>
-              <p className="mt-4 text-sm text-slate-500 dark:text-slate-400">No account needed to verify a proof.</p>
+              <p className="mt-4 text-sm text-slate-500 dark:text-slate-400">Prefer a guided tour? <a href="/request-demo" className="font-semibold text-blue-600 hover:underline dark:text-blue-400">Book a live demo</a>. No account needed to verify a proof.</p>
             </div>
 
             {/* Example Legal Passport card */}
@@ -166,7 +166,7 @@ export default function HomePage() {
               <a href="/request-trial" className="inline-flex items-center gap-2 rounded-lg bg-blue-500 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-400">
                 Request a trial <ArrowRight className="h-4 w-4" aria-hidden />
               </a>
-              <a href="/login" className="rounded-lg border border-slate-600 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">Sign in</a>
+              <a href="/request-demo" className="rounded-lg border border-slate-600 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">Book a demo</a>
             </div>
           </div>
         </section>

@@ -10,6 +10,7 @@ export function SiteFooter() {
             <a href="/public-verify/tamper" className="text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Tamper Test</a>
             <a href="/public-verify" className="text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Verify evidence</a>
             <a href="https://github.com/pgskannan/LexProof" className="text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Source code</a>
+            <a href="/request-demo" className="text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Book a demo</a>
             <a href="/request-trial" className="text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Request a trial</a>
             <a href="/login" className="text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Sign in</a>
           </div>

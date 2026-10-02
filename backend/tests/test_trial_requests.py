@@ -41,6 +41,14 @@ def test_valid_request_is_stored(client_and_repo):
     assert doc["work_email"] == "asha.rao@example.com"
     assert doc["status"] == "new"
     assert "website" not in doc and len(doc["ip_hash"]) == 16
+    assert doc["request_type"] == "trial"
+
+
+def test_demo_request_type_is_stored(client_and_repo):
+    client, repo = client_and_repo
+    assert client.post("/api/public/trial-requests", json={**VALID, "request_type": "demo"}).status_code == 201
+    (doc,) = repo.docs.values()
+    assert doc["request_type"] == "demo"
 
 
 @pytest.mark.parametrize("field,value", [
@@ -48,6 +56,7 @@ def test_valid_request_is_stored(client_and_repo):
     ("role", "hacker"),
     ("team_size", "lots"),
     ("full_name", "A"),
+    ("request_type", "spam"),
 ])
 def test_invalid_fields_are_rejected(client_and_repo, field, value):
     client, repo = client_and_repo
