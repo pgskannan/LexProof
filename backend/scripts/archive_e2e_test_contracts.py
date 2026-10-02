@@ -1,4 +1,4 @@
-"""Move automated-test (Playwright E2E) contracts out of the "LexProof Demo"
+r"""Move automated-test (Playwright E2E) contracts out of the "LexProof Demo"
 organization into a separate "E2E Test Archive" organization, so judges and
 demo viewers only see the real demo contracts.
 
@@ -16,7 +16,8 @@ DRY RUN BY DEFAULT. Usage (from backend/):
     .\.venv\Scripts\python.exe scripts\archive_e2e_test_contracts.py --undo --confirm   # moves them back
 
 Selection: contracts in the demo org whose name starts with one of
-TEST_NAME_PREFIXES (the names the Playwright specs upload).
+TEST_NAME_PREFIXES (the names the Playwright specs upload), plus the
+one-off manual test uploads named exactly in EXTRA_TEST_NAMES.
 """
 import sys
 from datetime import datetime, timezone
@@ -35,12 +36,20 @@ DEMO_ORG_ID = "lexproof-demo"
 ARCHIVE_ORG_ID = "lexproof-e2e-archive"
 ARCHIVE_ORG_NAME = "E2E Test Archive"
 TEST_NAME_PREFIXES = ("e2e-",)
+# Manual test uploads from development. OCR_E2E_Scanned_ServiceAgreement_*.png
+# is deliberately NOT here: it is the scanned contract shown in the demo video.
+EXTRA_TEST_NAMES = {
+    "evidence_validation_test_2026_09_11.txt",
+    "evidence_validation_test2_duplicate_orgscoped_2026_09_11.txt",
+    "ocr_test_scan.png",
+    "pii_test_contract.txt",
+}
 RELATED_COLLECTIONS = ("legal_passports", "redline_proposals", "workflow_instances")
 
 
 def is_test_contract(contract: dict) -> bool:
     name = str(contract.get("name") or "").strip().lower()
-    return name.startswith(TEST_NAME_PREFIXES)
+    return name.startswith(TEST_NAME_PREFIXES) or name in EXTRA_TEST_NAMES
 
 
 def main() -> None:

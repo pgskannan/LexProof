@@ -7,6 +7,8 @@ import { auth, AUTHENTICATED, AUTH_INITIALIZING, login, logout, setAuthState, ty
 import { isPublicPath } from "../lib/publicRoutes"
 import { Skeleton } from "./ui/skeleton"
 
+const RENDER_DURING_AUTH_INIT = new Set(["/", "/login", "/request-trial"])
+
 type AuthContextValue = { user: User | null; authState: AuthState; loading: boolean; login: typeof login; logout: typeof logout }
 const AuthContext = createContext<AuthContextValue | null>(null)
 
@@ -29,6 +31,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({ user, authState, loading, login, logout }), [authState, loading, user])
 
+  // Marketing pages render straight away instead of the app-shell skeleton;
+  // they read `loading` from context if they care.
+  if ((authState === AUTH_INITIALIZING || loading) && RENDER_DURING_AUTH_INIT.has(pathname ?? "")) {
+    return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  }
   if (authState === AUTH_INITIALIZING || loading) {
     return (
       <div className="flex min-h-screen bg-gray-50">

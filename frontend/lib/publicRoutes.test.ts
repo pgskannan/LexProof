@@ -13,4 +13,10 @@ describe('isPublicPath', () => {
     expect(isPublicPath('/dashboard/contracts/reviews')).toBe(false)
     expect(isPublicPath('/counterparty')).toBe(false)
   })
+
+  it('makes the marketing home page and trial request page public', () => {
+    expect(isPublicPath('/')).toBe(true)
+    expect(isPublicPath('/request-trial')).toBe(true)
+    expect(isPublicPath('/dashboard')).toBe(false)
+  })
 })

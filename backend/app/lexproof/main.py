@@ -23,6 +23,7 @@ from .api.counterparty import internal_router as counterparty_internal_router
 from .api.portfolio import router as portfolio_router
 from .api.chat_notifications import router as chat_notifications_router
 from .api.evaluation import router as evaluation_router
+from .api.trial_requests import router as trial_requests_router
 
 
 def create_app() -> FastAPI:
@@ -128,6 +129,7 @@ def create_app() -> FastAPI:
     app.include_router(portfolio_router, prefix="/api")
     app.include_router(chat_notifications_router, prefix="/api")
     app.include_router(evaluation_router, prefix="/api")
+    app.include_router(trial_requests_router, prefix="/api")
     return app
 
 

@@ -1,4 +1,4 @@
-"""Create (or update) the read-only hackathon judge login.
+r"""Create (or update) the read-only hackathon judge login.
 
   UID    demo-judge-1
   Email  judge@lexproof.demo
