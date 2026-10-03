@@ -111,6 +111,28 @@ foreach ($envName in $secrets.Keys) {
     }
 }
 
+# Optional: SMTP password for trial/demo request emails (backend\.env SMTP_PASSWORD).
+$smtpSecret = $null
+if ($envValues["SMTP_PASSWORD"] -and $envValues["SMTP_USERNAME"]) {
+    $smtpSecret = "lexproof-smtp-password"
+    $tmp = [System.IO.Path]::GetTempFileName()
+    try {
+        [System.IO.File]::WriteAllText($tmp, $envValues["SMTP_PASSWORD"])
+        & gcloud secrets describe $smtpSecret *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Invoke-Gcloud secrets create $smtpSecret --replication-policy automatic --data-file $tmp *> $null
+            Write-Host "   created $smtpSecret"
+        } else {
+            Invoke-Gcloud secrets versions add $smtpSecret --data-file $tmp *> $null
+            Write-Host "   added a new version of $smtpSecret"
+        }
+    } finally {
+        Remove-Item $tmp -Force
+    }
+} else {
+    Write-Host "   SMTP_USERNAME/SMTP_PASSWORD not in backend\.env: trial/demo request emails stay off"
+}
+
 Write-Host "== 4/5 Build and deploy (Cloud Build, about 5-8 minutes)" -ForegroundColor Cyan
 $plain = [ordered]@{
     GOOGLE_CLOUD_PROJECT               = $Project
@@ -125,6 +147,10 @@ $plain = [ordered]@{
     ETHEREUM_PASSPORT_REGISTRY_ADDRESS = $envValues["ETHEREUM_PASSPORT_REGISTRY_ADDRESS"]
     LEXPROOF_CORS_ORIGINS              = $CorsOrigins
     LEXPROOF_READ_ONLY_UIDS            = $ReadOnlyUids
+    SMTP_USERNAME                      = $envValues["SMTP_USERNAME"]
+    SMTP_HOST                          = $envValues["SMTP_HOST"]
+    SMTP_PORT                          = $envValues["SMTP_PORT"]
+    TRIAL_NOTIFY_TO                    = $envValues["TRIAL_NOTIFY_TO"]
 }
 # Written to a YAML file rather than --set-env-vars: the CORS list contains commas, and
 # gcloud.cmd runs through cmd.exe, which mangles the usual "^|^" delimiter escape.
@@ -132,6 +158,7 @@ $envFile = Join-Path ([System.IO.Path]::GetTempPath()) "lexproof-cloud-run-env.y
 $yaml = ($plain.GetEnumerator() | Where-Object { $_.Value } | ForEach-Object { "$($_.Key): '$($_.Value -replace "'", "''")'" }) -join "`n"
 [System.IO.File]::WriteAllText($envFile, $yaml + "`n")
 $secretArg = "ETHEREUM_PRIVATE_KEY=lexproof-ethereum-private-key:latest,ETHEREUM_RPC_URL=lexproof-ethereum-rpc-url:latest"
+if ($smtpSecret) { $secretArg += ",SMTP_PASSWORD=${smtpSecret}:latest" }
 
 Invoke-Gcloud run deploy $Service `
     --source backend `

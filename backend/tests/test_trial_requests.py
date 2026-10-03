@@ -18,6 +18,8 @@ def client_and_repo(monkeypatch):
     repo = FakeRepo()
     monkeypatch.setattr(tr, "_repository", lambda: repo)
     monkeypatch.setattr(tr, "_limiter", tr._RateLimiter(3, 3600))
+    repo.notified = []
+    monkeypatch.setattr(tr, "send_request_notification", lambda record: repo.notified.append(record["id"]))
     return TestClient(create_app()), repo
 
 
@@ -42,6 +44,7 @@ def test_valid_request_is_stored(client_and_repo):
     assert doc["status"] == "new"
     assert "website" not in doc and len(doc["ip_hash"]) == 16
     assert doc["request_type"] == "trial"
+    assert repo.notified == [doc["id"]]
 
 
 def test_demo_request_type_is_stored(client_and_repo):
@@ -77,6 +80,7 @@ def test_honeypot_pretends_success_but_stores_nothing(client_and_repo):
     response = client.post("/api/public/trial-requests", json={**VALID, "website": "http://spam"})
     assert response.status_code == 201
     assert repo.docs == {}
+    assert repo.notified == []
 
 
 def test_rate_limit(client_and_repo):

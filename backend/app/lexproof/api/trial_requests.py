@@ -15,10 +15,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from ..repositories.firestore import FirestoreRepository
+from ..services.email_notify import send_request_notification
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/public", tags=["public"])
@@ -108,7 +109,7 @@ def _client_ip(request: Request) -> str:
 
 
 @router.post("/trial-requests", status_code=status.HTTP_201_CREATED)
-def create_trial_request(payload: TrialRequest, request: Request) -> dict[str, Any]:
+def create_trial_request(payload: TrialRequest, request: Request, background: BackgroundTasks) -> dict[str, Any]:
     if not payload.consent:
         raise HTTPException(status_code=422, detail="Please agree to be contacted about your trial.")
     ip_hash = hashlib.sha256(_client_ip(request).encode()).hexdigest()[:16]
@@ -129,5 +130,6 @@ def create_trial_request(payload: TrialRequest, request: Request) -> dict[str, A
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     _repository().set(request_id, record)
+    background.add_task(send_request_notification, record)
     logger.info("%s request stored id=%s company=%s", payload.request_type, request_id, payload.company)
     return {"id": request_id, "status": "received"}
