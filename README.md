@@ -4,10 +4,11 @@
 
 LexProof reviews contracts with AI, routes every proposed change through enforced human approval, and seals the result into a **Legal Passport**: a tamper-evident record whose SHA-256 fingerprint is anchored on Ethereum. Anyone can check that record in their own browser, without a login and without trusting LexProof's servers.
 
-- **Live demo:** https://lexproof-pied.vercel.app
-- **Try the Tamper Test (no login):** https://lexproof-pied.vercel.app/public-verify/tamper
+- **Live site:** https://www.lexproofsolutions.com
+- **Try the Tamper Test (no login):** https://www.lexproofsolutions.com/public-verify/tamper (verdict in under a second; each tamper flips it to ROOT MISMATCH instantly)
 - **Demo video:** see the BUIDL page (DoraHacks, BLI Legal Tech Hackathon 2)
 - **Judge login:** read-only account, credentials in the BUIDL submission text
+- **Contact:** kannan.ganesan@lexproofsolutions.com · [request a demo](https://www.lexproofsolutions.com/request-demo)
 
 > Running on the **Ethereum Sepolia testnet** for the hackathon. Production path: mainnet or a durable L2 through a gas-sponsoring relayer, so legal teams never handle crypto. LexProof provides AI-assisted analysis for information only — not legal advice.
 
@@ -35,7 +36,7 @@ Built on top of that:
 
 ## Verify it yourself (2 minutes, no account)
 
-1. Open the **[Tamper Test](https://lexproof-pied.vercel.app/public-verify/tamper)** and load the demo passport. Your browser recomputes the passport root and reads it from Sepolia: **VERIFIED**.
+1. Open the **[Tamper Test](https://www.lexproofsolutions.com/public-verify/tamper)** and load the demo passport. Your browser recomputes the passport root and reads it from Sepolia: **VERIFIED**.
 2. Change any single character in one component. The recomputed root no longer matches the chain: **TAMPERED**. Restore it and it verifies again.
 3. Check the anchor yourself on Etherscan: [transaction 0xf94c…996f](https://sepolia.etherscan.io/tx/0xf94c893a0cfdaa24a7fc1d69227efd0e58077531cd76242ef71ad60f24db996f) (block 11810118) on the [LexProofPassportRegistry](https://sepolia.etherscan.io/address/0x21Ddd03549c2d4fb75336b616f18c34D4a9BFDE6).
 
@@ -83,10 +84,10 @@ flowchart LR
 
 | Contract | Address | Purpose |
 |---|---|---|
-| LexProofPassportRegistry | [`0x21Ddd03549c2d4fb75336b616f18c34D4a9BFDE6`](https://sepolia.etherscan.io/address/0x21Ddd03549c2d4fb75336b616f18c34D4a9BFDE6) | One root per Legal Passport; write-once, never overwritten |
-| LexProofRegistry | [`0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191`](https://sepolia.etherscan.io/address/0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191) | Fingerprints of individual evidence items |
+| LexProofPassportRegistry | [`0x21Ddd03549c2d4fb75336b616f18c34D4a9BFDE6`](https://sepolia.etherscan.io/address/0x21Ddd03549c2d4fb75336b616f18c34D4a9BFDE6#code) | One root per Legal Passport; write-once, never overwritten |
+| LexProofRegistry | [`0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191`](https://sepolia.etherscan.io/address/0x2C508F1CAFa4B3dD75A33b6FAcde12742f76d191#code) | Fingerprints of individual evidence items |
 
-Sources in [`contracts/`](contracts/).
+Sources in [`contracts/`](contracts/). Both contracts are source-verified on Etherscan (Contract tab, green check); the Standard-JSON inputs used are in [`contracts/etherscan/`](contracts/etherscan/).
 
 ### Data model (Firestore)
 
@@ -125,6 +126,19 @@ npm run dev
 Tests: `pytest` in `backend/` (1,000+ tests), `npx vitest run` in `frontend/`, Playwright end-to-end specs in `frontend/e2e/`.
 
 Deployment: [docs/PUBLIC_DEMO_DEPLOYMENT.md](docs/PUBLIC_DEMO_DEPLOYMENT.md) (Vercel + one-script Cloud Run deploy).
+
+## Pricing
+
+Priced per workspace with a monthly contract allowance, because cost grows with contracts analysed, not seats. Anchoring fees are built in; customers never hold crypto.
+
+| Plan | Price | Includes |
+|---|---|---|
+| Public Verify | Free, always | Anyone can check a Legal Passport in the browser, no login |
+| Starter | $149/mo ($119/mo billed yearly) | 3 users, 30 contracts/month, L2 anchoring, public verify links |
+| Team | $499/mo ($399/mo billed yearly) | 10 users, 150 contracts/month, approval workflows, RBAC, anchor monitoring |
+| Enterprise | From $1,500/mo | Unlimited users, 1,000+ contracts/month, SSO, custom playbooks, mainnet option, SLA |
+
+14-day free trial ([request one](https://www.lexproofsolutions.com/request-trial)). Extra contracts: $2 (Starter), $1.50 (Team).
 
 ## Honest limitations
 

@@ -93,3 +93,14 @@ Claude outputs/
 backend/retrospective.json
 ocr_test_scan.png
 .vscode/
+
+# Hackathon media and working files (kept locally, not in the repo)
+ForHackathon/*.mp4
+ForHackathon/*.srt
+ForHackathon/*.pptx
+ForHackathon/~$*
+ForHackathon/Bkp/
+ForHackathon/_p*/
+ForHackathon/audio-v2/
+ForHackathon/video-v2/
+ForHackathon/ads/

@@ -1,0 +1,31 @@
+LexProof: Verifiable Legal Intelligence
+AI finds the risk. LexProof proves what happened.
+
+AI contract review is fast, but it leaves no proof. LexProof turns every review into verifiable evidence. AI flags risks and proposes redlines, people approve them, and the result is sealed into a Legal Passport whose SHA-256 fingerprint is anchored on Ethereum. Anyone can verify it in their own browser, without trusting LexProof.
+
+Try it yourself (no login):
+Live Tamper Test: https://www.lexproofsolutions.com/public-verify/tamper
+Website: https://www.lexproofsolutions.com · Contact: kannan.ganesan@lexproofsolutions.com
+Source code (Apache-2.0): https://github.com/pgskannan/LexProof
+The on-chain anchor: https://sepolia.etherscan.io/tx/0xf94c893a0cfdaa24a7fc1d69227efd0e58077531cd76242ef71ad60f24db996f
+Passport registry contract (source verified): https://sepolia.etherscan.io/address/0x21Ddd03549c2d4fb75336b616f18c34D4a9BFDE6#code
+
+Chapters
+0:00 LexProof
+0:04 Why LexProof
+0:17 Architecture
+0:43 Supplier negotiation: AI risk brief
+0:54 Findings & redlines
+1:07 Human approval
+1:16 Separation of duties: self-approval blocked
+1:26 Legal Passport
+1:38 Anchored on Ethereum
+1:47 Live Tamper Test
+2:06 Chainlink CRE Proof Monitor
+2:18 Counterparty review
+2:31 Board Report
+2:41 Try it
+
+Built with Next.js, FastAPI, Firebase, Google Gemini (Vertex AI), Solidity, ethers.js, Ethereum Sepolia and Chainlink CRE.
+Running on the Sepolia testnet. Path to mainnet: a gas-sponsoring relayer, so legal teams never handle crypto.
+Not legal advice. LexProof provides AI-assisted contract analysis for information only.
