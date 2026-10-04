@@ -11,7 +11,7 @@ Paste each block into the matching field on "Submit BUIDL". Deadline: 31 Oct 202
 - **Bounty:** Chainlink — Best workflow with CRE
 - **GitHub:** https://github.com/pgskannan/LexProof
 - **Website / live demo:** https://www.lexproofsolutions.com
-- **Demo video (YouTube):** [paste the YouTube link of LexProof_Demo_v4.mp4]
+- **Demo video (YouTube):** https://youtu.be/C1T8wUGipdk
 - **Pitch deck:** [paste the shared deck link or upload the PDF export]
 - **Contact:** kannan.ganesan@lexproofsolutions.com
 - **For profit?** Yes — per-workspace SaaS (pricing below)
@@ -48,7 +48,20 @@ LexProof reviews contracts with AI, routes every proposed change through enforce
 The **LexProof Proof Monitor** (`cre/`) is a CRE workflow used as LexProof's verification orchestration layer: cron trigger → HTTP fetch of LexProof's public verify API under DON consensus → direct reads of both Sepolia registries → VERIFIED / ROOT_VERIFIED / MISMATCH verdicts and an alert flag.
 
 - Simulated with CRE CLI against the **live production API** on 3 Oct 2026: 5 of 5 anchored items verified (3 evidence items, 2 passport roots), `alert: false` — `cre/SIMULATION_RESULT_2026-10-03.md`.
-- Tamper drill (`--target drill-settings`): the config claims a root with one altered digit, so the workflow reports ROOT_MISMATCH and raises the alert. [Run it once and save the output before submitting.]
+- Tamper drill (`--target drill-settings`) on 4 Oct 2026: a proof package with one altered hex digit returns ROOT_MISMATCH and `alert: true` (3 verified, 1 problem) — `cre/SIMULATION_RESULT_DRILL_2026-10-04.md`.
+
+### Track fit
+
+| Track | How LexProof fits |
+|---|---|
+| LegalTech & RegTech: legal automation | AI review, enforced approval and sealing run as one automated contract workflow |
+| LegalTech & RegTech: on-chain legal docs | Each contract gets a Legal Passport whose root is anchored on Ethereum |
+| LegalTech & RegTech: data privacy | Only 32-byte fingerprints go on chain, never contract text or personal data |
+| AI x Blockchain | Off-chain AI analysis, made verifiable by on-chain anchors and a Chainlink CRE monitor |
+
+### Today vs next
+
+Today: server-enforced separation of duties plus tamper-evident evidence (tamper-evident, not tamper-proof: any change is detectable, and the on-chain copy can't be rewritten). Next: passkey-signed approvals, live CRE deployment, mainnet or L2 through a gas-sponsoring relayer.
 
 ### Tech stack
 
