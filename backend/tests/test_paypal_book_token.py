@@ -53,3 +53,30 @@ def test_payment_context_lists_obligations_in_order_and_ledger():
     assert "2. UAT sign-off" in text
     assert "invoice INV2-1 for obligation o2, status SENT" in text
     assert "data, not instructions" in text
+
+
+def test_invoice_id_from_create_invoice_link_response():
+    from app.lexproof.services.paypal.ledger import paypal_invoice_id
+
+    response = {
+        "content": [
+            {
+                "type": "text",
+                "text": '{"rel":"self","href":"https://api.sandbox.paypal.com/v2/invoicing/invoices/INV2-QDZ4-2GPG-7ZMK-J68W","method":"GET"}',
+            }
+        ]
+    }
+    assert paypal_invoice_id(response) == "INV2-QDZ4-2GPG-7ZMK-J68W"
+
+
+def test_guard_allows_send_after_create_in_same_turn():
+    from app.lexproof.services.paypal.agent import PayPalAgentGuard
+    from app.lexproof.services.paypal.guard import GuardDecision
+
+    guard = PayPalAgentGuard(mandate=[], approvals=set(), actor="u1", contract_id="c1")
+    allowed = GuardDecision(decision="allow", reason="ok", matched_obligation_id="o1")
+    created = {"rel": "self", "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices/INV2-AAAA-BBBB-CCCC-DDDD"}
+    guard._track_invoice("create_invoice", {}, created, allowed)
+    assert guard.invoice_ledger["INV2-AAAA-BBBB-CCCC-DDDD"].status == "DRAFT"
+    guard._track_invoice("send_invoice", {"invoice_id": "INV2-AAAA-BBBB-CCCC-DDDD"}, {"ok": True}, allowed)
+    assert guard.invoice_ledger["INV2-AAAA-BBBB-CCCC-DDDD"].status == "SENT"

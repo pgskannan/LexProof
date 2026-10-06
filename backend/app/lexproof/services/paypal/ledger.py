@@ -8,6 +8,7 @@ payload so the evidence trail shows the denial.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
@@ -266,10 +267,23 @@ def payer_view_url(response: Any) -> str | None:
     return None
 
 
+_INVOICE_ID_RE = re.compile(r"INV2(?:-[A-Z0-9]{4}){4}")
+
+
 def paypal_invoice_id(response: Any) -> str | None:
     found = _find_string(response, {"id", "invoice_id"})
     if found and found.upper().startswith("INV"):
         return found
+    # PayPal's create-draft-invoice returns only a link
+    # ({"rel": "self", "href": ".../v2/invoicing/invoices/INV2-..."}), so look for
+    # the id anywhere in the payload before falling back to a generic id.
+    try:
+        blob = json.dumps(response, default=str)
+    except (TypeError, ValueError):
+        blob = str(response)
+    match = _INVOICE_ID_RE.search(blob)
+    if match:
+        return match.group(0)
     return found if found and "@" not in found and len(found) > 6 else None
 
 
