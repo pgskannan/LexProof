@@ -7,6 +7,7 @@ import pytest
 from app.lexproof.services.paypal.guard import (
     PAYPAL_TOOL_CLASSES,
     ApprovedObligation,
+    LedgerEntry,
     ToolClass,
     classify,
     decide,
@@ -289,14 +290,93 @@ def test_create_denies_paid_and_invoiced_obligations():
     assert draft.reason == "obligation ob-1 status is DRAFT, not APPROVED"
 
 
-def test_send_denies_non_approved_status_without_the_create_wording():
-    paid = decide("send_invoice", _billing(), [_obligation(status="PAID")], set())
-    assert paid.decision == "deny"
-    assert paid.reason == "obligation ob-1 status is PAID, not APPROVED"
-    reminder = decide("send_invoice_reminder", _billing(), [_obligation(status="INVOICED")], set())
-    assert "already" not in reminder.reason
-    assert reminder.reason == "obligation ob-1 status is INVOICED, not APPROVED"
-    assert decide("send_invoice", _billing(), [_obligation(status="approved")], set()).decision == "allow"
+def _ledger(invoice_id: str = "INV-1", **overrides) -> dict:
+    entry = {
+        "obligation_id": "ob-1",
+        "status": "DRAFT",
+        "obligation_status": "INVOICED",
+    }
+    entry.update(overrides)
+    return {invoice_id: LedgerEntry(**entry)}
+
+
+def test_send_invoice_allows_a_draft_ledger_entry_without_amount_or_email():
+    decision = decide("send_invoice", {"invoice_id": " INV-1 "}, [], set(), _ledger())
+    assert decision.decision == "allow"
+    assert decision.matched_obligation_id == "ob-1"
+    approved = decide(
+        "send_invoice",
+        {"invoice_id": "INV-1"},
+        [],
+        set(),
+        _ledger(obligation_status="APPROVED"),
+    )
+    assert approved.decision == "allow"
+
+
+def test_send_invoice_denies_unknown_outside_and_double_send():
+    unknown = decide("send_invoice", {"invoice_id": "INV-missing"}, [], set(), {})
+    assert unknown.decision == "deny"
+    assert "not created by LexProof" in unknown.reason
+    outside = decide("send_invoice", {"invoice_id": "INV-other"}, [], set(), _ledger())
+    assert "INV-other" in outside.reason
+    double = decide("send_invoice", {"invoice_id": "INV-1"}, [], set(), _ledger(status="SENT"))
+    assert double.reason == "invoice INV-1 status is SENT, not DRAFT"
+
+
+def test_send_invoice_denies_extra_args_and_bad_obligation_state():
+    extra = decide("send_invoice", {"invoice_id": "INV-1", "total": "1"}, [], set(), _ledger())
+    assert extra.reason == "unexpected argument"
+    assert decide("send_invoice", {}, [], set(), _ledger()).reason == "missing invoice_id"
+    assert decide("send_invoice", {"invoice_id": 12}, [], set(), _ledger()).reason == "missing invoice_id"
+    assert decide("send_invoice", ["INV-1"], [], set(), _ledger()).reason == "tool arguments must be an object"
+    cancelled = decide("send_invoice", {"invoice_id": "INV-1"}, [], set(), _ledger(obligation_status="CANCELLED"))
+    assert cancelled.reason == "obligation ob-1 is cancelled"
+    ledger_cancelled = decide("send_invoice", {"invoice_id": "INV-1"}, [], set(), _ledger(status="CANCELLED"))
+    assert "cancelled" in ledger_cancelled.reason
+    extracted = decide("send_invoice", {"invoice_id": "INV-1"}, [], set(), _ledger(obligation_status="EXTRACTED"))
+    assert "not APPROVED or INVOICED" in extracted.reason
+
+
+def test_reminder_allows_sent_unpaid_and_denies_paid():
+    allowed = decide(
+        "send_invoice_reminder",
+        {"invoice_id": "INV-1"},
+        [],
+        set(),
+        _ledger(status="SENT", obligation_status="SENT"),
+    )
+    assert allowed.decision == "allow"
+    assert allowed.matched_obligation_id == "ob-1"
+    paid = decide(
+        "send_invoice_reminder",
+        {"invoice_id": "INV-1"},
+        [],
+        set(),
+        _ledger(status="SENT", obligation_status="PAID"),
+    )
+    assert paid.reason == "obligation ob-1 is PAID"
+    draft = decide("send_invoice_reminder", {"invoice_id": "INV-1"}, [], set(), _ledger(status="DRAFT"))
+    assert draft.reason == "invoice INV-1 status is DRAFT, not SENT"
+    extra = decide(
+        "send_invoice_reminder",
+        {"invoice_id": "INV-1", "note": "please"},
+        [],
+        set(),
+        _ledger(status="SENT"),
+    )
+    assert extra.reason == "unexpected argument"
+
+
+def test_billing_reads_paypal_primary_recipient_billing_info():
+    args = {
+        "primary_recipients": [{"billing_info": {"email_address": "payer@example.com"}}],
+        "detail": {"currency_code": "USD"},
+        "items": [{"name": "Kickoff", "quantity": "1", "unit_amount": {"currency_code": "USD", "value": "10.00"}}],
+    }
+    assert decide("create_invoice", args, [_obligation()], set()).decision == "allow"
+    missing = {"recipient": {"billing_info": "not-an-object"}, "currency": "USD", "total": "10"}
+    assert decide("create_invoice", missing, [_obligation()], set()).reason == "missing recipient email"
 
 
 def test_money_out_needs_approval_until_the_exact_action_is_approved():

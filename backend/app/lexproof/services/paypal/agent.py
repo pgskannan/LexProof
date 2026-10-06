@@ -43,13 +43,15 @@ class PayPalAgentGuard:
     approvals: set[str]
     actor: str
     contract_id: str
+    invoice_ledger: dict[str, Any] = field(default_factory=dict)
+    result_hook: Any = None
     decisions: list[GuardDecision] = field(default_factory=list)
     calls: list[tuple[str, GuardDecision]] = field(default_factory=list)
     receipts: list[dict[str, Any]] = field(default_factory=list)
 
     async def before_tool(self, tool: Any, args: Any, tool_context: Any) -> dict[str, Any] | None:
         name = _tool_name(tool)
-        decision = decide(name, args, self.mandate, self.approvals)
+        decision = decide(name, args, self.mandate, self.approvals, self.invoice_ledger)
         self.decisions.append(decision)
         self.calls.append((name, decision))
         if decision.decision == "allow":
@@ -68,16 +70,13 @@ class PayPalAgentGuard:
         tool_context: Any,
         tool_response: dict[str, Any],
     ) -> dict[str, Any]:
-        decision = self.decisions[-1] if self.decisions else decide(_tool_name(tool), args, self.mandate, self.approvals)
-        receipt = canonical_receipt(
-            _tool_name(tool),
-            args if isinstance(args, dict) else {},
-            tool_response,
-            decision,
-            self.actor,
-            self.contract_id,
-        )
+        name = _tool_name(tool)
+        decision = self.decisions[-1] if self.decisions else decide(name, args, self.mandate, self.approvals, self.invoice_ledger)
+        payload = args if isinstance(args, dict) else {}
+        receipt = canonical_receipt(name, payload, tool_response, decision, self.actor, self.contract_id)
         self.receipts.append(receipt)
+        if self.result_hook is not None:
+            await self.result_hook(name, payload, tool_response, decision, receipt)
         return receipt
 
 
@@ -200,6 +199,128 @@ async def probe_paypal_mcp(
             errors.append(f"{transport} {candidate}: {_public_error(exc, access_token)}")
     joined = "; ".join(errors)
     raise RuntimeError(f"PayPal sandbox MCP probe failed: {joined}")
+
+
+async def call_paypal_tool(url: str, access_token: str, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Call one stored tool on the sandbox MCP server. Does not ask the model."""
+    assert_sandbox_mcp_url(url)
+    kind = transport_for_url(url)
+    if kind == "sse":
+        from mcp import ClientSession
+        from mcp.client.sse import sse_client
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        async with sse_client(url, headers=headers, timeout=30, sse_read_timeout=60) as (read, write):
+            return await _call_session(read, write, tool_name, arguments)
+    import httpx2
+    from mcp.client.streamable_http import streamable_http_client
+
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json, text/event-stream"}
+    timeout = httpx2.Timeout(30.0, read=60.0)
+    async with httpx2.AsyncClient(headers=headers, timeout=timeout) as http:
+        async with streamable_http_client(url, http_client=http) as (read, write):
+            return await _call_session(read, write, tool_name, arguments)
+
+
+async def run_paypal_turn(
+    *,
+    model: str,
+    mcp_url: str,
+    access_token: str,
+    transport: str,
+    guard: PayPalAgentGuard,
+    message: str,
+    user_id: str,
+    session_id: str | None = None,
+    timeout_seconds: float = 60,
+) -> dict[str, str]:
+    """One guarded agent turn. The MCP toolset is closed when the turn ends."""
+    from google.adk.runners import Runner
+    from google.adk.sessions import InMemorySessionService
+    from google.genai import types
+
+    toolset = build_mcp_toolset(mcp_url, access_token, transport)
+    agent = build_paypal_agent(
+        model=model,
+        mcp_url=mcp_url,
+        access_token=access_token,
+        transport=transport,
+        guard=guard,
+        toolset=toolset,
+    )
+    sessions = _session_service()
+    if not isinstance(sessions, InMemorySessionService):
+        sessions = InMemorySessionService()
+    if session_id:
+        session = await sessions.get_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
+        if session is None:
+            session = await sessions.create_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
+    else:
+        session = await sessions.create_session(app_name=APP_NAME, user_id=user_id)
+    runner = Runner(agent=agent, app_name=APP_NAME, session_service=sessions)
+
+    async def _run() -> str:
+        parts: list[str] = []
+        content = types.Content(role="user", parts=[types.Part(text=message)])
+        async for event in runner.run_async(user_id=user_id, session_id=session.id, new_message=content):
+            text = _event_text(event)
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+
+    try:
+        text = await asyncio.wait_for(_run(), timeout=timeout_seconds)
+    finally:
+        close = getattr(toolset, "close", None)
+        if close is not None:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+    return {"session_id": session.id, "text": text}
+
+
+APP_NAME = "lexproof-paypal"
+_SESSIONS: Any = None
+
+
+def _session_service() -> Any:
+    global _SESSIONS
+    if _SESSIONS is None:
+        from google.adk.sessions import InMemorySessionService
+
+        _SESSIONS = InMemorySessionService()
+    return _SESSIONS
+
+
+async def _call_session(read: Any, write: Any, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    from mcp import ClientSession
+
+    async with ClientSession(read, write) as session:
+        await session.initialize()
+        result = await session.call_tool(tool_name, arguments)
+    return _mcp_result(result)
+
+
+def _mcp_result(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        return result
+    content: list[dict[str, Any]] = []
+    for block in getattr(result, "content", ()) or []:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            content.append({"type": "text", "text": text})
+    return {"content": content, "isError": bool(getattr(result, "isError", False))}
+
+
+def _event_text(event: Any) -> str:
+    content = getattr(event, "content", None)
+    parts = getattr(content, "parts", None) or []
+    lines: list[str] = []
+    for part in parts:
+        text = getattr(part, "text", None)
+        if text:
+            lines.append(str(text))
+    return "\n".join(lines)
 
 
 def scrub_secret(text: str, secret: str) -> str:

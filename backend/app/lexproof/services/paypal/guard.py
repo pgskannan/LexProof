@@ -1,8 +1,10 @@
 """Pure PaymentGuard for PayPal MCP tools.
 
-Unknown tools are writes and are denied. Billing is allowed only when the
-arguments match one approved obligation. Money leaving the merchant requires
-an approval id bound to the exact tool name and canonical arguments.
+Unknown tools are writes and are denied. Creating an invoice or order is
+allowed only when the arguments match one approved obligation. Sending an
+invoice is allowed only when that invoice is already in the LexProof ledger.
+Money leaving the merchant requires an approval id bound to the exact tool
+name and canonical arguments.
 """
 
 from __future__ import annotations
@@ -74,10 +76,23 @@ class ApprovedObligation:
 
 
 @dataclass(frozen=True)
+class LedgerEntry:
+    """One PayPal invoice LexProof created, keyed by invoice id."""
+
+    obligation_id: str
+    status: str
+    obligation_status: str
+
+
+@dataclass(frozen=True)
 class GuardDecision:
     decision: str
     reason: str
     matched_obligation_id: str | None = None
+
+
+_LEDGER_TOOLS = frozenset({"send_invoice", "send_invoice_reminder"})
+_LEDGER_ARGUMENT = "invoice_id"
 
 
 def classify(tool_name: str) -> ToolClass:
@@ -101,8 +116,13 @@ def decide(
     args: Any,
     mandate: list[ApprovedObligation],
     approvals: set[str],
+    invoice_ledger: dict[str, LedgerEntry] | None = None,
 ) -> GuardDecision:
-    """Allow, deny, or ask for approval. This function performs no I/O."""
+    """Allow, deny, or ask for approval. This function performs no I/O.
+
+    ``invoice_ledger`` maps a PayPal invoice id to the obligation LexProof
+    created it for. Callers load it; this function does not.
+    """
     kind = classify(tool_name)
     if kind is ToolClass.READ:
         return GuardDecision("allow", "read-only tool", None)
@@ -116,7 +136,10 @@ def decide(
         if action_id in approvals:
             return GuardDecision("allow", f"approved payment action {action_id}", None)
         return GuardDecision("needs_approval", f"money-out requires approval {action_id}", None)
-    return _decide_billing(tool_name.strip().lower(), args, mandate)
+    name = tool_name.strip().lower()
+    if name in _LEDGER_TOOLS:
+        return _decide_ledger(name, args, invoice_ledger or {})
+    return _decide_billing(name, args, mandate)
 
 
 def payment_action_id(tool_name: str, args: dict[str, Any]) -> str:
@@ -145,10 +168,9 @@ def _decide_billing(tool_name: str, args: dict[str, Any], mandate: list[Approved
         return GuardDecision("deny", "negative amount", None)
 
     payer = emails[0].lower()
-    is_create = tool_name.startswith("create_")
     reasons: list[str] = []
     for obligation in mandate:
-        reason = _obligation_mismatch(obligation, payer, currency, total, is_create)
+        reason = _obligation_mismatch(obligation, payer, currency, total)
         if reason is None:
             return GuardDecision("allow", f"matches approved obligation {obligation.id}", obligation.id)
         reasons.append(reason)
@@ -157,12 +179,52 @@ def _decide_billing(tool_name: str, args: dict[str, Any], mandate: list[Approved
     return GuardDecision("deny", "; ".join(reasons), None)
 
 
+def _decide_ledger(tool_name: str, args: dict[str, Any], ledger: dict[str, LedgerEntry]) -> GuardDecision:
+    """send_invoice and send_invoice_reminder take only an invoice id."""
+    unexpected = [key for key in args if key != _LEDGER_ARGUMENT]
+    if unexpected:
+        return GuardDecision("deny", "unexpected argument", None)
+    invoice_id = args.get(_LEDGER_ARGUMENT)
+    if not isinstance(invoice_id, str) or not invoice_id.strip():
+        return GuardDecision("deny", "missing invoice_id", None)
+    invoice_id = invoice_id.strip()
+    entry = ledger.get(invoice_id)
+    if entry is None:
+        return GuardDecision("deny", f"unknown invoice_id {invoice_id} was not created by LexProof", None)
+    obligation_status = entry.obligation_status.strip().upper()
+    ledger_status = entry.status.strip().upper()
+    if obligation_status == "CANCELLED" or ledger_status == "CANCELLED":
+        return GuardDecision("deny", f"obligation {entry.obligation_id} is cancelled", entry.obligation_id)
+    if tool_name == "send_invoice":
+        if obligation_status not in {"APPROVED", "INVOICED"}:
+            return GuardDecision(
+                "deny",
+                f"obligation {entry.obligation_id} status is {obligation_status}, not APPROVED or INVOICED",
+                entry.obligation_id,
+            )
+        if ledger_status != "DRAFT":
+            return GuardDecision(
+                "deny",
+                f"invoice {invoice_id} status is {ledger_status}, not DRAFT",
+                entry.obligation_id,
+            )
+        return GuardDecision("allow", f"send matches ledger invoice {invoice_id}", entry.obligation_id)
+    if ledger_status != "SENT":
+        return GuardDecision(
+            "deny",
+            f"invoice {invoice_id} status is {ledger_status}, not SENT",
+            entry.obligation_id,
+        )
+    if obligation_status == "PAID":
+        return GuardDecision("deny", f"obligation {entry.obligation_id} is PAID", entry.obligation_id)
+    return GuardDecision("allow", f"reminder matches sent invoice {invoice_id}", entry.obligation_id)
+
+
 def _obligation_mismatch(
     obligation: ApprovedObligation,
     payer: str,
     currency: str,
     total: Decimal,
-    is_create: bool,
 ) -> str | None:
     try:
         obligation_amount = _obligation_amount(obligation.amount)
@@ -177,7 +239,7 @@ def _obligation_mismatch(
         return f"currency {currency} does not match obligation {obligation.id} currency {obligation_currency}"
     if total > obligation_amount:
         return f"total {_money(total)} exceeds obligation {obligation.id} amount {_money(obligation_amount)}"
-    if is_create and status in {"PAID", "INVOICED"}:
+    if status in {"PAID", "INVOICED"}:
         return f"obligation {obligation.id} is already {status}"
     if status != "APPROVED":
         return f"obligation {obligation.id} status is {status}, not APPROVED"
@@ -218,6 +280,9 @@ def _emails_in(value: Any) -> list[str]:
         for key in ("email", "email_address", "recipient_email"):
             if key in value:
                 return _emails_in(value[key])
+        billing = value.get("billing_info")
+        if isinstance(billing, dict):
+            return _emails_in(billing)
         return []
     if isinstance(value, (list, tuple)):
         emails: list[str] = []
