@@ -17,6 +17,7 @@ from enum import Enum
 from typing import Any
 
 # Hosted sandbox tools/list on 2026-10-05, SSE https://mcp.sandbox.paypal.com/sse.
+# generate_invoice_number returns the next number without mutating an invoice.
 # READ (list_*, get_*, show_*): get_recurring_series, list_invoices, get_invoice,
 # list_products, show_product_details, list_subscription_plans,
 # show_subscription_plan_details, show_subscription_details, get_shipment_tracking,
@@ -26,10 +27,11 @@ from typing import Any
 # delete_invoice, delete_recurring_series, pay_order, record_payment_for_invoice,
 # create_product, update_product, create_subscription, update_subscription,
 # create_shipment_tracking, update_shipment_tracking, generate_invoice_qr_code,
-# generate_invoice_number, and the other create_/update_/activate_/setup_ tools.
+# and the other create_/update_/activate_/setup_ tools.
 # cancel_* is money-out even when the specific name is not listed below.
 PAYPAL_TOOL_CLASSES: dict[str, tuple[str, ...]] = {
     "READ_PREFIXES": ("list_", "get_", "show_"),
+    "READ_TOOLS": ("generate_invoice_number",),
     "BILLING": (
         "create_invoice",
         "send_invoice",
@@ -102,6 +104,8 @@ def classify(tool_name: str) -> ToolClass:
     if name.startswith(PAYPAL_TOOL_CLASSES["MONEY_OUT_PREFIXES"]):
         return ToolClass.MONEY_OUT
     if name.startswith(PAYPAL_TOOL_CLASSES["READ_PREFIXES"]):
+        return ToolClass.READ
+    if name in PAYPAL_TOOL_CLASSES["READ_TOOLS"]:
         return ToolClass.READ
     return ToolClass.OTHER_WRITE
 
@@ -258,7 +262,16 @@ def _decide_create_invoice(args: dict[str, Any], mandate: list[ApprovedObligatio
         currency, total = _invoice_total(args)
     except ValueError as exc:
         return GuardDecision("deny", str(exc), None)
-    return _match_billing(mandate, payer, currency, total)
+    decision = _match_billing(mandate, payer, currency, total)
+    if decision.decision != "allow":
+        return decision
+    matched = next((item for item in mandate if item.id == decision.matched_obligation_id), None)
+    if matched is not None and matched.label.strip():
+        for item in args.get("items") or []:
+            item_name = item.get("name") if isinstance(item, dict) else None
+            if not isinstance(item_name, str) or not item_name.strip() or item_name.strip().casefold() != matched.label.strip().casefold():
+                return GuardDecision("deny", "line item name must be the obligation label", None)
+    return decision
 
 
 def _decide_create_order(args: dict[str, Any], mandate: list[ApprovedObligation]) -> GuardDecision:

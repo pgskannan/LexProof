@@ -89,7 +89,7 @@ def public_payment_chain(
 
 def public_receipt_canonical(item: dict[str, Any]) -> dict[str, Any]:
     """Canonical privacy-safe receipt displayed and hashed by public verification."""
-    return {
+    canonical = {
         "actor": mask_emails(item.get("actor") or ""),
         "amount": item.get("amount") or "",
         "contract_id": item.get("contract_id") or "",
@@ -102,11 +102,16 @@ def public_receipt_canonical(item: dict[str, Any]) -> dict[str, Any]:
         "time": item.get("created_at") or item.get("time") or "",
         "tool": item.get("tool") or "",
     }
+    transport = item.get("transport")
+    if isinstance(transport, str) and transport:
+        canonical["transport"] = transport
+    return canonical
 
 
 def _public_receipt(item: dict[str, Any], checkpoint: dict[str, Any] | None) -> dict[str, Any]:
     canonical = public_receipt_canonical(item)
     evidence_id = str(item.get("evidence_id") or "")
+    transport = canonical.get("transport") or ("paypal_webhook" if item.get("source") == "paypal_webhook" else "mcp")
     anchored = bool(checkpoint and checkpoint.get("transaction_hash"))
     return {
         "tool": canonical["tool"],
@@ -115,6 +120,7 @@ def _public_receipt(item: dict[str, Any], checkpoint: dict[str, Any] | None) -> 
         "receipt_hash": receipt_hash(canonical),
         "canonical": canonical_json(canonical),
         "evidence_id": evidence_id,
+        "transport": transport,
         "anchor_status": "anchored" if anchored else "pending_checkpoint",
         "checkpoint_id": (checkpoint or {}).get("id"),
         "checkpoint_count": (checkpoint or {}).get("count"),

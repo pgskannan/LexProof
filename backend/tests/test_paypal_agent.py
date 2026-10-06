@@ -223,6 +223,9 @@ def test_agent_instruction_uses_the_mcp_invoice_shape():
     assert 'quantity":"1"' in _AGENT_INSTRUCTION
     assert "use no other fields" in _AGENT_INSTRUCTION
     assert "recipient_email" in _AGENT_INSTRUCTION
+    assert "If a PayPal tool returns an error or a blocked result, stop and report it in one sentence." in _AGENT_INSTRUCTION
+    assert "Do not try other tools or workarounds." in _AGENT_INSTRUCTION
+    assert "name = the obligation label exactly" in _AGENT_INSTRUCTION
 
 
 @pytest.mark.asyncio
@@ -244,6 +247,106 @@ async def test_after_tool_returns_a_nested_paypal_error_to_the_model():
     assert result["isError"] is True
     assert result["error"] == "MISSING_RECIPIENT_EMAIL"
     assert result["outcome"] == "paypal_error"
+
+
+@pytest.mark.asyncio
+async def test_after_tool_falls_back_only_for_allowed_setup_or_transport_failures(monkeypatch):
+    monkeypatch.setenv("PAYPAL_TRANSPORT_FALLBACK", "rest")
+    monkeypatch.setenv("PAYPAL_ENV", "sandbox")
+    calls = []
+
+    async def fallback(name, args):
+        calls.append((name, args))
+        return {"content": [{"type": "text", "text": '{"items":[]}'}], "isError": False}
+
+    guard = PayPalAgentGuard(
+        mandate=[], approvals=set(), actor="actor", contract_id="c-1",
+        fallback_tool=fallback, mcp_secret="secret-token",
+    )
+    read_tool = SimpleNamespace(name="list_invoices")
+    await guard.before_tool(read_tool, {}, None)
+    setup = {"content": [{"type": "text", "text": '{"ok":false,"code":"PAYPAL_API_SETUP_ERROR","message":"Unsupported cache mode: default"}'}], "isError": True}
+    receipt = await guard.after_tool(read_tool, {}, None, setup)
+    assert calls == [("list_invoices", {})]
+    assert receipt["transport"] == "rest_fallback"
+    assert receipt["mcp_error"] == setup["content"][0]["text"]
+
+    blocked_tool = SimpleNamespace(name="create_refund")
+    blocked = await guard.before_tool(blocked_tool, {"capture_id": "CAP"}, None)
+    denied_receipt = await guard.after_tool(blocked_tool, {"capture_id": "CAP"}, None, setup)
+    assert blocked["decision"] == "needs_approval"
+    assert len(calls) == 1
+    assert denied_receipt["transport"] == "mcp"
+    assert "mcp_error" not in denied_receipt
+
+    await guard.before_tool(read_tool, {}, None)
+    timed_out = await guard.after_tool(read_tool, {}, None, {"error": "MCP tool execution failed: TimeoutError: request timed out"})
+    assert len(calls) == 2
+    assert timed_out["transport"] == "rest_fallback"
+    assert "TimeoutError" in timed_out["mcp_error"]
+
+
+@pytest.mark.asyncio
+async def test_after_tool_does_not_fallback_for_paypal_business_error_or_when_disabled(monkeypatch):
+    monkeypatch.setenv("PAYPAL_TRANSPORT_FALLBACK", "rest")
+    monkeypatch.setenv("PAYPAL_ENV", "sandbox")
+    calls = []
+
+    async def fallback(*args):
+        calls.append(args)
+        return {"content": [], "isError": False}
+
+    guard = PayPalAgentGuard(mandate=[], approvals=set(), actor="actor", contract_id="c-1", fallback_tool=fallback)
+    tool = SimpleNamespace(name="list_invoices")
+    await guard.before_tool(tool, {}, None)
+    business = {"content": [{"type": "text", "text": '{"name":"UNPROCESSABLE_ENTITY","details":[{"issue":"BUSINESS_RULE"}]}'}], "isError": True}
+    business_receipt = await guard.after_tool(tool, {}, None, business)
+    assert calls == []
+    assert business_receipt["transport"] == "mcp"
+
+    monkeypatch.setenv("PAYPAL_TRANSPORT_FALLBACK", "none")
+    await guard.before_tool(tool, {}, None)
+    setup = {"content": [{"type": "text", "text": '{"code":"PAYPAL_API_SETUP_ERROR"}'}], "isError": True}
+    disabled_receipt = await guard.after_tool(tool, {}, None, setup)
+    assert calls == []
+    assert disabled_receipt["transport"] == "mcp"
+
+
+@pytest.mark.asyncio
+async def test_fallback_uses_the_decision_bound_to_its_tool_call_id(monkeypatch):
+    monkeypatch.setenv("PAYPAL_TRANSPORT_FALLBACK", "rest")
+    monkeypatch.setenv("PAYPAL_ENV", "sandbox")
+    calls = []
+
+    async def fallback(name, args):
+        calls.append(name)
+        return {"content": [{"type": "text", "text": '{"items":[]}'}], "isError": False}
+
+    guard = PayPalAgentGuard(mandate=[], approvals=set(), actor="actor", contract_id="c-1", fallback_tool=fallback)
+    reader = SimpleNamespace(name="list_invoices")
+    writer = SimpleNamespace(name="create_refund")
+    reader_context = SimpleNamespace(function_call_id="call-read")
+    writer_context = SimpleNamespace(function_call_id="call-write")
+    assert await guard.before_tool(reader, {}, reader_context) is None
+    assert (await guard.before_tool(writer, {"capture_id": "CAP"}, writer_context))["decision"] == "needs_approval"
+    setup = {"content": [{"type": "text", "text": '{"code":"PAYPAL_API_SETUP_ERROR"}'}], "isError": True}
+    receipt = await guard.after_tool(reader, {}, reader_context, setup)
+    assert calls == ["list_invoices"]
+    assert receipt["decision"] == "allow"
+    assert receipt["transport"] == "rest_fallback"
+
+
+def test_agent_generation_temperature_is_zero():
+    guard = PayPalAgentGuard(mandate=[], approvals=set(), actor="actor", contract_id="c-1")
+    agent = build_paypal_agent(
+        model="gemini-2.0-flash-001",
+        mcp_url="https://mcp.sandbox.paypal.com/sse",
+        access_token="sandbox-token",
+        transport="sse",
+        guard=guard,
+        toolset=build_mcp_toolset("https://mcp.sandbox.paypal.com/sse", "sandbox-token", "sse"),
+    )
+    assert agent.generate_content_config.temperature == 0
 
 
 def test_agent_uses_the_configured_model_and_callbacks():

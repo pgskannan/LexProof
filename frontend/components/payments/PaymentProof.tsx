@@ -15,6 +15,7 @@ type PublicReceipt = {
   checkpoint_id?: string | null
   checkpoint_count?: number | null
   anchor_tx?: string | null
+  transport?: string | null
 }
 
 type PublicCheckpoint = PaymentChainCheckpoint & {
@@ -153,6 +154,7 @@ export function PaymentProof({ initialPassportId = '' }: { initialPassportId?: s
                 <li key={receipt.receipt_hash} className={`rounded-lg border p-3 ${blocked ? 'border-red-300 bg-red-50 text-red-800' : 'border-gray-200'}`}>
                   <p className="text-sm font-medium">{receipt.time} · {receipt.tool} · {receipt.decision}</p>
                   <p className="mt-1 font-mono text-xs">{receipt.receipt_hash.slice(0, 16)} · {receipt.anchor_status}</p>
+                  <p className="mt-1 text-xs text-gray-500">Transport: {receipt.transport || 'mcp'}</p>
                   <p className="mt-1 text-xs">
                     {receipt.checkpoint_id && checkpointNumbers.has(receipt.checkpoint_id)
                       ? `covered by checkpoint #${checkpointNumbers.get(receipt.checkpoint_id)}`

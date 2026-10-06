@@ -186,6 +186,11 @@ class PaymentActions:
         except Exception:
             self._release(action_id)
             raise
+        transport = "mcp"
+        mcp_error = None
+        if isinstance(response, dict):
+            transport = str(response.pop("_lexproof_transport", "mcp"))
+            mcp_error = response.pop("_lexproof_mcp_error", None)
         if isinstance(response, dict) and (response.get("isError") or response.get("error")):
             self._release(action_id)
             raise PaymentError(502, "PayPal rejected the stored tool call")
@@ -199,6 +204,9 @@ class PaymentActions:
                 str(claimed.get("contract_id") or ""),
             )
             receipt["source"] = "approval"
+            receipt["transport"] = transport
+            if isinstance(mcp_error, str) and mcp_error:
+                receipt["mcp_error"] = mcp_error
             record_tool_result(
                 invoices=self.invoices,
                 obligations=self.obligations,

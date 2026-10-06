@@ -11,6 +11,7 @@ Live PayPal hosts are rejected.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +19,7 @@ from urllib.parse import urlparse
 
 from .guard import ApprovedObligation, GuardDecision, decide
 from .receipts import canonical_receipt
+from .rest_fallback import fallback_enabled, is_transport_exception, setup_failure_text, supports_rest_fallback
 
 SANDBOX_MCP_HOST = "mcp.sandbox.paypal.com"
 SANDBOX_MCP_ORIGIN = "https://mcp.sandbox.paypal.com"
@@ -43,7 +45,9 @@ _AGENT_INSTRUCTION = (
     "details if needed) and call create_refund. Money-out actions pause for a human "
     "approver; report that plainly. "
     "Do not call search_invoicing. Do not invent results: when a tool returns "
-    "blocked or isError, say what failed and give the reason, including PayPal's issue text."
+    "blocked or isError, say what failed and give the reason, including PayPal's issue text. "
+    "If a PayPal tool returns an error or a blocked result, stop and report it in one sentence. "
+    "Do not try other tools or workarounds. Each line item must include name = the obligation label exactly (e.g. 'Kickoff')."
 )
 
 
@@ -58,15 +62,21 @@ class PayPalAgentGuard:
     invoice_ledger: dict[str, Any] = field(default_factory=dict)
     result_hook: Any = None
     confirm_tool: Any = None
+    fallback_tool: Any = None
+    mcp_secret: str = ""
     decisions: list[GuardDecision] = field(default_factory=list)
     calls: list[tuple[str, GuardDecision]] = field(default_factory=list)
     receipts: list[dict[str, Any]] = field(default_factory=list)
+    pending_decisions: dict[str, GuardDecision] = field(default_factory=dict)
 
     async def before_tool(self, tool: Any, args: Any, tool_context: Any) -> dict[str, Any] | None:
         name = _tool_name(tool)
         decision = decide(name, args, self.mandate, self.approvals, self.invoice_ledger)
         self.decisions.append(decision)
         self.calls.append((name, decision))
+        call_id = _tool_call_id(tool_context)
+        if call_id:
+            self.pending_decisions[call_id] = decision
         if decision.decision == "allow":
             return None
         return {
@@ -84,10 +94,42 @@ class PayPalAgentGuard:
         tool_response: dict[str, Any],
     ) -> dict[str, Any]:
         name = _tool_name(tool)
-        decision = self.decisions[-1] if self.decisions else decide(name, args, self.mandate, self.approvals, self.invoice_ledger)
+        call_id = _tool_call_id(tool_context)
+        decision = self.pending_decisions.pop(call_id, None) if call_id else None
+        if decision is None:
+            decision = self.decisions[-1] if self.decisions else decide(name, args, self.mandate, self.approvals, self.invoice_ledger)
         payload = args if isinstance(args, dict) else {}
-        response, issue = await self._paypal_issue(name, payload, tool_response, decision)
+        response = tool_response
+        transport = "mcp"
+        mcp_error = None
+        if decision.decision == "allow" and supports_rest_fallback(name) and fallback_enabled() and self.fallback_tool is not None:
+            mcp_error = setup_failure_text(tool_response)
+            if isinstance(tool_response, BaseException) and is_transport_exception(tool_response):
+                mcp_error = f"{type(tool_response).__name__}: {tool_response}"
+            if mcp_error and self.mcp_secret:
+                mcp_error = mcp_error.replace(self.mcp_secret, "[redacted]")
+            if mcp_error:
+                try:
+                    response = await self.fallback_tool(name, payload)
+                    transport = "rest_fallback"
+                except Exception as exc:
+                    response = {
+                        "content": [{
+                            "type": "text",
+                            "text": json.dumps({"name": "REST_FALLBACK_ERROR", "message": f"{type(exc).__name__}: {exc}"}),
+                        }],
+                        "isError": True,
+                    }
+                    transport = "rest_fallback"
+        response, issue = await self._paypal_issue(name, payload, response, decision)
+        response, confirmation_transport, confirmation_error = _extract_transport_metadata(response)
+        if confirmation_transport == "rest_fallback":
+            transport = confirmation_transport
+            mcp_error = mcp_error or confirmation_error
         receipt = canonical_receipt(name, payload, response, decision, self.actor, self.contract_id)
+        receipt["transport"] = transport
+        if mcp_error:
+            receipt["mcp_error"] = mcp_error
         if issue:
             receipt["outcome"] = "paypal_error"
             receipt["paypal_issue"] = issue
@@ -237,6 +279,7 @@ def build_paypal_agent(
 ) -> Any:
     """ADK agent whose tools are the PayPal MCP server, guarded before each call."""
     from google.adk.agents import Agent
+    from google.genai.types import GenerateContentConfig
 
     use_vertex_ai()
 
@@ -246,6 +289,7 @@ def build_paypal_agent(
         model=model,
         description="Sandbox PayPal assistant guarded by LexProof PaymentGuard.",
         instruction=_AGENT_INSTRUCTION,
+        generate_content_config=GenerateContentConfig(temperature=0),
         tools=[selected],
         before_tool_callback=guard.before_tool,
         after_tool_callback=guard.after_tool,
@@ -477,6 +521,33 @@ def _tool_name(tool: Any) -> str:
     if isinstance(name, str):
         return name
     return str(tool)
+
+
+def _tool_call_id(tool_context: Any) -> str:
+    call_id = getattr(tool_context, "function_call_id", None)
+    return str(call_id) if call_id else ""
+
+
+def _extract_transport_metadata(value: Any) -> tuple[Any, str | None, str | None]:
+    """Remove server-side transport markers from result bodies and return their provenance."""
+    transport: str | None = None
+    mcp_error: str | None = None
+
+    def clean(item: Any) -> Any:
+        nonlocal transport, mcp_error
+        if isinstance(item, dict):
+            marked_transport = item.pop("_lexproof_transport", None)
+            marked_error = item.pop("_lexproof_mcp_error", None)
+            if marked_transport == "rest_fallback":
+                transport = "rest_fallback"
+            if isinstance(marked_error, str) and marked_error:
+                mcp_error = mcp_error or marked_error
+            return {key: clean(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [clean(child) for child in item]
+        return item
+
+    return clean(value), transport, mcp_error
 
 
 def _public_error(exc: BaseException, secret: str) -> str:

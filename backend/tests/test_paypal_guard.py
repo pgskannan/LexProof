@@ -64,6 +64,7 @@ def test_tool_class_table_is_the_only_catalog():
     assert "create_invoice" in PAYPAL_TOOL_CLASSES["BILLING"]
     assert "create_refund" in PAYPAL_TOOL_CLASSES["MONEY_OUT"]
     assert PAYPAL_TOOL_CLASSES["READ_PREFIXES"] == ("list_", "get_", "show_")
+    assert "generate_invoice_number" in PAYPAL_TOOL_CLASSES["READ_TOOLS"]
     assert PAYPAL_TOOL_CLASSES["MONEY_OUT_PREFIXES"] == ("cancel_",)
 
 
@@ -80,6 +81,7 @@ def test_tool_class_table_is_the_only_catalog():
         ("cancel_sent_invoice", ToolClass.MONEY_OUT),
         ("list_invoices", ToolClass.READ),
         ("get_invoice", ToolClass.READ),
+        ("generate_invoice_number", ToolClass.READ),
         ("show_product_details", ToolClass.READ),
         ("List_Invoices", ToolClass.READ),
         ("pay_order", ToolClass.OTHER_WRITE),
@@ -126,6 +128,23 @@ def test_schema_shaped_invoice_matches_an_approved_obligation():
     assert decision.decision == "allow"
     assert decision.matched_obligation_id == "ob-1"
     assert "ob-1" in decision.reason
+
+
+@pytest.mark.parametrize("line_item_name", [None, "  ", "wrong label"])
+def test_create_invoice_requires_each_line_item_name_to_match_the_obligation(line_item_name):
+    item = dict(_billing()["items"][0])
+    if line_item_name is None:
+        item.pop("name")
+    else:
+        item["name"] = line_item_name
+    args = _billing(items=[item])
+    obligation = _obligation(label="Kickoff")
+    assert decide("create_invoice", args, [obligation], set()).reason == "line item name must be the obligation label"
+
+
+def test_create_invoice_matches_obligation_label_case_insensitively():
+    args = _billing(items=[{**_billing()["items"][0], "name": "kIcKoFf"}])
+    assert decide("create_invoice", args, [_obligation(label="Kickoff")], set()).decision == "allow"
 
 
 def test_email_only_at_top_level_is_denied():

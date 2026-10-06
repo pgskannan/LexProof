@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from ...config import LexProofSettings, get_settings
 from ...repositories.firestore import FirestoreRepository
@@ -13,6 +13,7 @@ from .auth import PayPalTokenProvider
 from .guard import ApprovedObligation
 from .ledger import confirm_tool_result, default_invoices, default_receipts, load_ledger, record_tool_result
 from .obligations import AGENT_ROLES, PaymentError, PaymentObligations
+from .rest_fallback import call_with_rest_fallback, execute_rest_fallback
 
 AGENT_TIMEOUT_SECONDS = 60
 
@@ -30,6 +31,7 @@ class PaymentBook:
         token_provider: PayPalTokenProvider | None = None,
         run_turn: Any = None,
         call_tool: Any = None,
+        rest_provider_factory: Callable[[], PayPalTokenProvider] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.obligations = obligations or PaymentObligations()
@@ -46,6 +48,7 @@ class PaymentBook:
         self._token_provider = token_provider
         self._run_turn = run_turn or run_paypal_turn
         self._call_tool = call_tool
+        self._rest_provider_factory = rest_provider_factory or self._new_rest_provider
 
     def view(self, contract_id: str, user: dict[str, Any]) -> dict[str, Any]:
         payload = self.obligations.payment_view(contract_id, user)
@@ -148,6 +151,7 @@ class PaymentBook:
                     "action_id": action_id,
                     "outcome": receipt.get("outcome"),
                     "paypal_issue": receipt.get("paypal_issue"),
+                    "transport": receipt.get("transport"),
                 }
             )
 
@@ -156,8 +160,7 @@ class PaymentBook:
 
         async def confirm(tool: str, args: dict[str, Any], response: Any) -> tuple[Any, str | None]:
             async def fetch(name: str, payload: dict[str, Any]) -> Any:
-                caller = self._call_tool or call_paypal_tool
-                return await caller(url, token, name, payload)
+                return await self._call_with_fallback(name, payload, url=url, access_token=token)
 
             return await confirm_tool_result(tool, args, response, fetch)
 
@@ -169,6 +172,8 @@ class PaymentBook:
             invoice_ledger=ledger,
             result_hook=hook,
             confirm_tool=confirm,
+            fallback_tool=self._rest_fallback,
+            mcp_secret=token,
         )
         turn = await self._run_turn(
             model=self.settings.gemini_model,
@@ -198,8 +203,9 @@ class PaymentBook:
             async def _call(tool: str, args: dict[str, Any]) -> dict[str, Any]:
                 if "token" not in token_holder:
                     token_holder["token"] = await self._access_token()
-                caller = self._call_tool or call_paypal_tool
-                return await caller(self.settings.paypal_mcp_url, token_holder["token"], tool, args)
+                return await self._call_with_fallback(
+                    tool, args, url=self.settings.paypal_mcp_url, access_token=token_holder["token"]
+                )
 
             self.actions.call_tool = _call
         return await self.actions.execute(
@@ -223,6 +229,44 @@ class PaymentBook:
             if self._token_provider is None:
                 await provider.aclose()
         return token
+
+    def _new_rest_provider(self) -> PayPalTokenProvider:
+        return PayPalTokenProvider(
+            self.settings.paypal_client_id,
+            self.settings.paypal_client_secret.get_secret_value(),
+        )
+
+    async def _rest_fallback(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        provider = self._rest_provider_factory()
+        try:
+            return await execute_rest_fallback(tool, args, provider)
+        finally:
+            await provider.aclose()
+
+    async def _call_with_fallback(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        *,
+        url: str,
+        access_token: str,
+    ) -> dict[str, Any]:
+        caller = self._call_tool or call_paypal_tool
+        result, transport, mcp_error = await call_with_rest_fallback(
+            tool,
+            args,
+            lambda: caller(url, access_token, tool, args),
+            self._rest_provider_factory,
+            allowed=True,
+            secret=access_token,
+        )
+        if transport == "rest_fallback":
+            return {
+                **result,
+                "_lexproof_transport": transport,
+                "_lexproof_mcp_error": mcp_error,
+            }
+        return result
 
 
 def payment_context(approved_rows: list[dict[str, Any]], ledger: dict[str, Any]) -> str:

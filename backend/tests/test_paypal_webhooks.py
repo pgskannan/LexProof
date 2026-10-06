@@ -198,6 +198,8 @@ def test_public_chain_masks_email_and_hashes_the_shown_json():
             "actor": "owner@example.com",
             "created_at": "2026-10-19T00:00:00+00:00",
             "evidence_id": "ev-1",
+            "transport": "rest_fallback",
+            "mcp_error": "Unsupported cache mode: default",
             "response": {"id": "INV2-SECRET", "links": [{"href": "https://www.sandbox.paypal.com/invoice"}]},
         },
     )
@@ -223,6 +225,25 @@ def test_public_chain_masks_email_and_hashes_the_shown_json():
     assert json.loads(shown["canonical"]) == json.loads(canonical_json(json.loads(shown["canonical"])))
     assert shown["anchor_status"] == "pending_checkpoint"
     assert shown["decision"] == "deny"
+    assert shown["transport"] == "rest_fallback"
+    assert json.loads(shown["canonical"])["transport"] == "rest_fallback"
+    assert "mcp_error" not in shown
+
+
+def test_legacy_public_receipt_keeps_original_canonical_bytes_and_infers_transport():
+    repos = _repos()
+    repos["passports"].set("pass-1", {"id": "pass-1", "passport_id": "pass-1", "contract_id": "c-1"})
+    repos["receipts"].set("rc-legacy", {
+        "id": "rc-legacy", "contract_id": "c-1", "tool": "list_invoices",
+        "decision": "allow", "actor": "owner", "created_at": "2026-10-01T00:00:00Z",
+    })
+    chain = public_payment_chain(
+        "pass-1", passports=repos["passports"], obligations=MemoryRepository(),
+        receipts=repos["receipts"], settings=MemoryRepository(), checkpoints=MemoryRepository(),
+    )
+    shown = chain["receipts"][0]
+    assert shown["transport"] == "mcp"
+    assert "transport" not in json.loads(shown["canonical"])
 
 
 def test_health_paypal_block_has_no_secrets():

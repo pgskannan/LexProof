@@ -69,6 +69,7 @@ export type PaymentCheckpoint = {
 export type ToolCallChip = {
   tool: string
   decision: string
+  transport?: 'mcp' | 'rest_fallback' | null
   reason?: string | null
   receipt_id?: string | null
   action_id?: string | null
@@ -345,6 +346,9 @@ export function PaymentsTab({
             {transcript.map((call, index) => (
               <li key={`${call.tool}-${index}`}>
                 <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${chipClass(call)}`}>{chipLabel(call)}</span>
+                {call.decision === 'allow' && call.transport === 'rest_fallback' ? (
+                  <span className="ml-1 text-xs text-gray-500">via REST fallback</span>
+                ) : null}
               </li>
             ))}
           </ul>
