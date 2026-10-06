@@ -16,6 +16,7 @@ import { lifecycleStages, proofStatusLabel, publishedProofStatus, type Lifecycle
 import { shouldAbortPreviousRequest } from '../../../../../lib/contractRequestLifecycle'
 import { executiveSummaryPath, regenerateExecutiveSummaryRequest, severityBreakdownText, type ExecutiveSummary } from '../../../../../lib/executiveSummary'
 import { useOrg } from '../../../../../components/OrgProvider'
+import { ContractPayments } from '../../../../../components/payments/ContractPayments'
 import { Skeleton } from '../../../../../components/ui/skeleton'
 import { Card, CardContent } from '../../../../../components/ui/card'
 import { Button } from '../../../../../components/ui/button'
@@ -57,7 +58,8 @@ async function fetchWithRetry(path: string, signal: AbortSignal, attempts = 2): 
 export default function ContractDetailPage() {
   const params = useParams<{ contractId: string }>()
   const contractId = decodeURIComponent(params.contractId)
-  const { currentOrg, loading: orgLoading } = useOrg()
+  const { currentOrg, roles, me, loading: orgLoading } = useOrg()
+  const [section, setSection] = useState<'lifecycle' | 'payments'>('lifecycle')
   const latestRequestIdRef = useRef(0)
   const latestRequestContextRef = useRef<string | null>(null)
   const latestSummaryRequestIdRef = useRef(0)
@@ -297,7 +299,18 @@ export default function ContractDetailPage() {
         }
       />
 
-      <div className="mt-6 space-y-6">
+      <div className="mt-6 flex gap-2">
+        <Button type="button" variant={section === 'lifecycle' ? 'default' : 'outline'} onClick={() => setSection('lifecycle')}>Lifecycle</Button>
+        <Button type="button" variant={section === 'payments' ? 'default' : 'outline'} onClick={() => setSection('payments')}>Payments</Button>
+      </div>
+
+      {section === 'payments' ? (
+        <div className="mt-6">
+          <ContractPayments contractId={contractId} roles={roles} actorId={me?.user_id} />
+        </div>
+      ) : null}
+
+      {section === 'lifecycle' ? <div className="mt-6 space-y-6">
         <Card className="overflow-hidden">
           <div className="grid divide-y divide-gray-200 dark:divide-gray-700 sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
             <Metric label="Current version" value={current?.version_number ? `V${current.version_number}` : 'Not available'} />
@@ -511,7 +524,7 @@ export default function ContractDetailPage() {
         </Card>
 
         {error && <p role="alert" className="text-sm text-red-700 dark:text-red-400">{error}</p>}
-      </div>
+      </div> : null}
     </PageContainer>
   )
 }

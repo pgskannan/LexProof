@@ -7,7 +7,7 @@ import { auth, AUTHENTICATED, AUTH_INITIALIZING, login, logout, setAuthState, ty
 import { isPublicPath } from "../lib/publicRoutes"
 import { Skeleton } from "./ui/skeleton"
 
-const RENDER_DURING_AUTH_INIT = new Set(["/", "/login", "/request-trial", "/request-demo", "/public-verify/tamper"])
+const RENDER_DURING_AUTH_INIT = new Set(["/", "/login", "/request-trial", "/request-demo", "/public-verify/tamper", "/payments-preview"])
 
 type AuthContextValue = { user: User | null; authState: AuthState; loading: boolean; login: typeof login; logout: typeof logout }
 const AuthContext = createContext<AuthContextValue | null>(null)
