@@ -160,4 +160,4 @@ class PaymentBook:
         finally:
             if self._token_provider is None:
                 await provider.aclose()
-        return token.access_token
+        return token
