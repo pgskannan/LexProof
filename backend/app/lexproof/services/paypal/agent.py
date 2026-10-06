@@ -157,6 +157,17 @@ def build_mcp_toolset(url: str, access_token: str, transport: str) -> Any:
     return McpToolset(connection_params=params)
 
 
+def use_vertex_ai() -> None:
+    """Route ADK's Gemini calls through Vertex AI with the service account (ADC).
+
+    google-genai defaults to the Gemini Developer API, which needs an API key;
+    on Cloud Run that failed with "No API key was provided". LexProof already
+    uses Vertex AI (GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION), so opt in
+    unless the environment says otherwise.
+    """
+    os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "TRUE")
+
+
 def build_paypal_agent(
     *,
     model: str,
@@ -168,6 +179,8 @@ def build_paypal_agent(
 ) -> Any:
     """ADK agent whose tools are the PayPal MCP server, guarded before each call."""
     from google.adk.agents import Agent
+
+    use_vertex_ai()
 
     selected = toolset if toolset is not None else build_mcp_toolset(mcp_url, access_token, transport)
     return Agent(

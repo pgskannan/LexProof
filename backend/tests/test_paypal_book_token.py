@@ -28,3 +28,13 @@ def test_access_token_returns_provider_string():
         token_provider=_FakeProvider(),
     )
     assert asyncio.run(book._access_token()) == "sandbox-token"
+
+
+def test_adk_uses_vertex_ai_by_default(monkeypatch):
+    from app.lexproof.services.paypal.agent import use_vertex_ai
+
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    use_vertex_ai()
+    import os
+
+    assert os.environ["GOOGLE_GENAI_USE_VERTEXAI"] == "TRUE"
