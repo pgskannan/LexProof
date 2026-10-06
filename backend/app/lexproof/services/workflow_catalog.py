@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 CONTRACT_REDLINE_APPROVAL = "contract_redline_approval"
+PAYMENT_ACTION_APPROVAL = "payment_action_approval"
 
 # SLA hours are measured from the moment an instance enters the state; an
 # instance still sitting in a state past its SLA is "overdue" and, once, is
@@ -72,6 +73,54 @@ CONTRACT_REDLINE_TRANSITIONS: list[dict[str, Any]] = [
 
 def redline_definition_id(org_id: str) -> str:
     return f"{org_id}_{CONTRACT_REDLINE_APPROVAL}"
+
+
+# Money leaving the merchant. The instance starts in review; execute is a
+# separate backend call that runs the stored PayPal tool once.
+PAYMENT_ACTION_STATES: list[dict[str, Any]] = [
+    {
+        "id": "in_review",
+        "name": "In review",
+        "is_initial": True,
+        "is_terminal": False,
+        "sla_hours": 24,
+        "escalate_to_roles": ["admin"],
+    },
+    {"id": "approved", "name": "Approved", "is_initial": False, "is_terminal": False},
+    {"id": "rejected", "name": "Rejected", "is_initial": False, "is_terminal": True},
+    {"id": "executed", "name": "Executed", "is_initial": False, "is_terminal": True},
+]
+
+PAYMENT_ACTION_TRANSITIONS: list[dict[str, Any]] = [
+    {
+        "id": "approve",
+        "from_state": "in_review",
+        "to_state": "approved",
+        "action_name": "Approve",
+        "allowed_roles": ["approver", "admin"],
+        "requires_not_actor": ["created_by"],
+    },
+    {
+        "id": "reject",
+        "from_state": "in_review",
+        "to_state": "rejected",
+        "action_name": "Reject",
+        "allowed_roles": ["approver", "admin"],
+        "requires_not_actor": ["created_by"],
+    },
+    {
+        "id": "execute",
+        "from_state": "approved",
+        "to_state": "executed",
+        "action_name": "Execute",
+        "allowed_roles": ["approver", "admin"],
+        "requires_not_actor": [],
+    },
+]
+
+
+def payment_action_definition_id(org_id: str) -> str:
+    return f"{org_id}_{PAYMENT_ACTION_APPROVAL}"
 
 
 PROPOSAL_STATUS_BY_STATE = {

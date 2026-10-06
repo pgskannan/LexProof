@@ -72,6 +72,50 @@
       ]
     },
     {
+      "collectionGroup": "payment_obligations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "contract_id", "mode": "ASCENDING" },
+        { "fieldPath": "created_at", "mode": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "payment_invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "contract_id", "mode": "ASCENDING" },
+        { "fieldPath": "status", "mode": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "payment_receipts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "contract_id", "mode": "ASCENDING" },
+        { "fieldPath": "created_at", "mode": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "payment_actions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "contract_id", "mode": "ASCENDING" },
+        { "fieldPath": "status", "mode": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "payment_settings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "contract_id", "mode": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "external_access_links",
       "queryScope": "COLLECTION",
       "fields": [
