@@ -1,5 +1,7 @@
 """FastAPI application for the LexProof foundation."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import PlainTextResponse
@@ -26,9 +28,22 @@ from .api.evaluation import router as evaluation_router
 from .api.trial_requests import router as trial_requests_router
 
 
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    """Startup checks that must not change request handling.
+
+    PayPal, when configured, has to be sandbox. The scope probe is skipped
+    under pytest so the test suite does not call PayPal.
+    """
+    from .services.paypal.startup import run_paypal_startup
+
+    await run_paypal_startup()
+    yield
+
+
 def create_app() -> FastAPI:
     """Create the LexProof API application."""
-    app = FastAPI(title="LexProof API", version="0.2.0")
+    app = FastAPI(title="LexProof API", version="0.2.0", lifespan=_app_lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=get_settings().cors_origin_list(),

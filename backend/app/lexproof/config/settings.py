@@ -6,11 +6,14 @@ credential values through health responses or frontend-facing settings.
 import os
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from .firebase_credentials import has_file_credentials, running_on_cloud_run
+
+PAYPAL_SANDBOX_MCP_HOST = "mcp.sandbox.paypal.com"
 
 
 class LexProofSettings(BaseSettings):
@@ -75,6 +78,27 @@ class LexProofSettings(BaseSettings):
             "is not on PATH. Leave unset to rely on PATH (the default on Linux/mac)."
         ),
     )
+    # PayPal agentic payments. Sandbox only. Secrets follow the same path as
+    # the other server credentials: backend/.env locally, and environment
+    # variables injected from Secret Manager on Cloud Run. paypal_client_secret
+    # is a SecretStr so it is omitted from repr and logs.
+    paypal_env: str = "sandbox"
+    paypal_client_id: str = ""
+    paypal_client_secret: SecretStr = Field(default=SecretStr(""))
+    paypal_webhook_id: str = ""
+    paypal_mcp_url: str = "https://mcp.sandbox.paypal.com/sse"
+
+    @model_validator(mode="after")
+    def _paypal_sandbox_only(self) -> "LexProofSettings":
+        if not self.has_paypal_configuration():
+            return self
+        if self.paypal_env.strip().lower() != "sandbox":
+            raise ValueError("PayPal is sandbox-only; PAYPAL_ENV must be 'sandbox'")
+        parsed = urlparse(self.paypal_mcp_url.strip())
+        host = (parsed.hostname or "").lower()
+        if parsed.username or parsed.password or parsed.scheme != "https" or host != PAYPAL_SANDBOX_MCP_HOST:
+            raise ValueError("PAYPAL_MCP_URL must be an https://mcp.sandbox.paypal.com URL with no embedded credentials")
+        return self
 
     @property
     def project_id(self) -> str:
@@ -121,6 +145,15 @@ class LexProofSettings(BaseSettings):
             and self.docusign_account_id
             and self.docusign_private_key.get_secret_value()
         )
+
+    def has_paypal_configuration(self) -> bool:
+        """True when sandbox PayPal client credentials are present.
+
+        An empty configuration leaves the integration disabled. A configured
+        integration whose paypal_env is anything other than sandbox is rejected
+        by the model validator above.
+        """
+        return bool(self.paypal_client_id and self.paypal_client_secret.get_secret_value())
 
     def has_google_translate_configuration(self) -> bool:
         """True once a real Google Cloud Translation API key is configured --
