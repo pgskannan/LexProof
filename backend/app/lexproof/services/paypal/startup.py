@@ -24,6 +24,24 @@ def _network_probe_enabled(probe: bool | None) -> bool:
     return True
 
 
+_invoicing_scope: bool | None = None
+
+
+def remember_invoicing_scope(present: bool) -> None:
+    """Remember the last startup probe. /health reads this and does not call PayPal."""
+    global _invoicing_scope
+    _invoicing_scope = present
+
+
+def paypal_health(settings: LexProofSettings) -> dict[str, object]:
+    """Sandbox env and whether the last probe saw the invoicing scope. No secrets."""
+    configured = settings.has_paypal_configuration()
+    return {
+        "env": (settings.paypal_env or "sandbox").strip().lower(),
+        "invoicing_scope": _invoicing_scope if configured else False,
+    }
+
+
 async def run_paypal_startup(
     settings: LexProofSettings | None = None,
     *,
@@ -43,6 +61,6 @@ async def run_paypal_startup(
     )
     try:
         await provider.get_access_token()
-        log_invoicing_scope(provider.scopes)
+        remember_invoicing_scope(log_invoicing_scope(provider.scopes))
     finally:
         await provider.aclose()

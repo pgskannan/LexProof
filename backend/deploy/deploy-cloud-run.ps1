@@ -19,7 +19,8 @@ param(
     [string]$Service = "lexproof-api",
     [string]$CorsOrigins = "https://lexproof-pied.vercel.app,http://localhost:3000",
     [int]$MinInstances = 0,
-    [string]$ReadOnlyUids = "demo-judge-1"
+    [string]$ReadOnlyUids = "demo-judge-1",
+    [switch]$PayPal
 )
 # "Continue", not "Stop": gcloud writes progress to stderr, which Windows PowerShell 5.1
 # would otherwise turn into a terminating error. Failures are caught via $LASTEXITCODE.
@@ -45,6 +46,9 @@ function Invoke-Gcloud {
 }
 
 if (-not (Test-Path "backend\Dockerfile")) { throw "Run this from the repo root (C:\Projects\LexProof)." }
+if ($PayPal -and $Service -eq "lexproof-api") {
+    throw "Refusing to attach PayPal to lexproof-api. Deploy with -Service lexproof-api-paypal."
+}
 # A missing executable raises CommandNotFoundException and can leave $LASTEXITCODE
 # at 0. require-command.ps1 exits 127 instead.
 & (Join-Path $PSScriptRoot "..\scripts\require-command.ps1") gcloud
@@ -155,6 +159,13 @@ $plain = [ordered]@{
     SMTP_PORT                          = $envValues["SMTP_PORT"]
     TRIAL_NOTIFY_TO                    = $envValues["TRIAL_NOTIFY_TO"]
 }
+if ($PayPal) {
+    $plain["PAYPAL_ENV"] = "sandbox"
+    $plain["PAYPAL_MCP_URL"] = $(if ($envValues["PAYPAL_MCP_URL"]) { $envValues["PAYPAL_MCP_URL"] } else { "https://mcp.sandbox.paypal.com/sse" })
+    # Vercel preview for feat/paypal-agentic-payments. The team slug is the
+    # optional extra hyphenated segment; production lexproof-api is not updated.
+    $plain["LEXPROOF_CORS_ORIGIN_REGEX"] = "https://lexproof-pied-git-feat-paypal-agentic-payments(-[a-z0-9]+)*\.vercel\.app"
+}
 # Written to a YAML file rather than --set-env-vars: the CORS list contains commas, and
 # gcloud.cmd runs through cmd.exe, which mangles the usual "^|^" delimiter escape.
 $envFile = Join-Path ([System.IO.Path]::GetTempPath()) "lexproof-cloud-run-env.yaml"
@@ -162,6 +173,23 @@ $yaml = ($plain.GetEnumerator() | Where-Object { $_.Value } | ForEach-Object { "
 [System.IO.File]::WriteAllText($envFile, $yaml + "`n")
 $secretArg = "ETHEREUM_PRIVATE_KEY=lexproof-ethereum-private-key:latest,ETHEREUM_RPC_URL=lexproof-ethereum-rpc-url:latest"
 if ($smtpSecret) { $secretArg += ",SMTP_PASSWORD=${smtpSecret}:latest" }
+if ($PayPal) {
+    foreach ($requiredSecret in @("lexproof-paypal-client-id", "lexproof-paypal-client-secret")) {
+        & gcloud secrets describe $requiredSecret *> $null
+        if ($LASTEXITCODE -ne 0) { throw "$requiredSecret is missing. Run backend\deploy\create-paypal-secrets.ps1 first." }
+        Invoke-Gcloud secrets add-iam-policy-binding $requiredSecret --member "serviceAccount:$Sa" --role "roles/secretmanager.secretAccessor" --quiet *> $null
+        Write-Host "   granted secretAccessor on $requiredSecret"
+    }
+    $secretArg += ",PAYPAL_CLIENT_ID=lexproof-paypal-client-id:latest,PAYPAL_CLIENT_SECRET=lexproof-paypal-client-secret:latest"
+    & gcloud secrets describe "lexproof-paypal-webhook-id" *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Invoke-Gcloud secrets add-iam-policy-binding "lexproof-paypal-webhook-id" --member "serviceAccount:$Sa" --role "roles/secretmanager.secretAccessor" --quiet *> $null
+        $secretArg += ",PAYPAL_WEBHOOK_ID=lexproof-paypal-webhook-id:latest"
+        Write-Host "   granted secretAccessor on lexproof-paypal-webhook-id"
+    } else {
+        Write-Host "   lexproof-paypal-webhook-id does not exist yet; this deploy skips it"
+    }
+}
 
 Invoke-Gcloud run deploy $Service `
     --source backend `

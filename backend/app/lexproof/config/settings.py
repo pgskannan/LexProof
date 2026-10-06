@@ -61,6 +61,9 @@ class LexProofSettings(BaseSettings):
         default="http://localhost:3000,http://localhost:3001,http://localhost:3002",
         validation_alias="LEXPROOF_CORS_ORIGINS",
     )
+    # Optional. The PayPal staging service sets this to the Vercel preview
+    # origin for feat/paypal-agentic-payments. Empty leaves CORS unchanged.
+    cors_origin_regex: str = Field(default="", validation_alias="LEXPROOF_CORS_ORIGIN_REGEX")
     integration_tests: bool = False
     docusign_integration_key: str = Field(default="", validation_alias="DOCUSIGN_INTEGRATION_KEY")
     docusign_user_id: str = Field(default="", validation_alias="DOCUSIGN_USER_ID")

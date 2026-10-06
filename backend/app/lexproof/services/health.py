@@ -11,8 +11,10 @@ def _status(ready: bool, service: str) -> dict[str, str]:
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "lexproof"}
+async def health() -> dict[str, object]:
+    from .paypal.startup import paypal_health
+
+    return {"status": "ok", "service": "lexproof", "paypal": paypal_health(get_settings())}
 
 
 @router.get("/health/firebase")
