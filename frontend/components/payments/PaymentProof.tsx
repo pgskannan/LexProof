@@ -33,7 +33,7 @@ type PublicChain = {
   receipts: PublicReceipt[]
 }
 
-const STEPS = ['APPROVED', 'INVOICED', 'SENT', 'PAID']
+const STEPS = ['APPROVED', 'INVOICED', 'SENT', 'PAID', 'REFUNDED']
 
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
@@ -84,6 +84,10 @@ export function PaymentProof({ initialPassportId = '' }: { initialPassportId?: s
     setChainCheck(await verifyPaymentChain(chain.contract_id, chain.receipts, chain.checkpoints))
   }
 
+  const checkpointNumbers = new Map(
+    (chain?.checkpoints || []).map((checkpoint, index) => [checkpoint.checkpoint_id, index + 1]),
+  )
+
   return (
     <section className="bg-white rounded-xl shadow-lg p-8 mb-8 border border-gray-200" data-testid="payment-proof">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -122,9 +126,9 @@ export function PaymentProof({ initialPassportId = '' }: { initialPassportId?: s
           ) : null}
           {chain.checkpoints.length ? (
             <ul className="space-y-1 text-xs text-gray-600">
-              {chain.checkpoints.map((checkpoint) => (
+              {chain.checkpoints.map((checkpoint, index) => (
                 <li key={checkpoint.checkpoint_id || checkpoint.transaction_hash}>
-                  Checkpoint #{checkpoint.count} · {checkpoint.anchored_at || 'anchored'} · <a className="text-blue-700 underline" href={checkpoint.etherscan_url} target="_blank" rel="noreferrer">Sepolia transaction</a>
+                  Checkpoint #{index + 1} · {checkpoint.count} receipts · {checkpoint.anchored_at || 'anchored'} · <a className="text-blue-700 underline" href={checkpoint.etherscan_url} target="_blank" rel="noreferrer">Sepolia transaction</a>
                 </li>
               ))}
             </ul>
@@ -149,7 +153,11 @@ export function PaymentProof({ initialPassportId = '' }: { initialPassportId?: s
                 <li key={receipt.receipt_hash} className={`rounded-lg border p-3 ${blocked ? 'border-red-300 bg-red-50 text-red-800' : 'border-gray-200'}`}>
                   <p className="text-sm font-medium">{receipt.time} · {receipt.tool} · {receipt.decision}</p>
                   <p className="mt-1 font-mono text-xs">{receipt.receipt_hash.slice(0, 16)} · {receipt.anchor_status}</p>
-                  <p className="mt-1 text-xs">{receipt.checkpoint_count ? `covered by checkpoint #${receipt.checkpoint_count}` : 'pending next checkpoint'}</p>
+                  <p className="mt-1 text-xs">
+                    {receipt.checkpoint_id && checkpointNumbers.has(receipt.checkpoint_id)
+                      ? `covered by checkpoint #${checkpointNumbers.get(receipt.checkpoint_id)}`
+                      : 'pending next checkpoint'}
+                  </p>
                   <pre className="mt-2 overflow-x-auto text-xs">{receipt.canonical}</pre>
                   <button type="button" className="mt-2 text-sm font-semibold text-blue-700 underline" onClick={() => void verify(receipt)}>Verify</button>
                   {checks[receipt.receipt_hash] ? <p className="mt-1 text-xs">{checks[receipt.receipt_hash]}</p> : null}
