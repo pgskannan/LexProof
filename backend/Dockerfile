@@ -6,8 +6,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-adk.txt ./
+# Second step is --no-deps on purpose. See the comment in requirements-adk.txt.
+RUN pip install --no-cache-dir -r requirements.txt \
+	&& pip install --no-cache-dir --no-deps -r requirements-adk.txt
 
 COPY app ./app
 COPY scripts ./scripts

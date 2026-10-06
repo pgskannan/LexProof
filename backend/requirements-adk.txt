@@ -1,0 +1,18 @@
+# google-adk 2.11.0 is the newest release on PyPI (checked 2026-10-05) and still
+# declares opentelemetry-api<=1.42.1 and opentelemetry-sdk<=1.42.1. That range
+# cannot be installed next to opentelemetry-api>=1.44.0, which google-api-core
+# 2.36 (via google-cloud-aiplatform) requires. Install this file with
+# `pip install --no-deps` AFTER requirements.txt so the resolver keeps
+# OpenTelemetry 1.44+ and does not downgrade it to satisfy ADK's cap.
+# ADK 2.11.0 imports against opentelemetry-api 1.44.
+#
+# Packages listed here are ADK runtime dependencies that a clean install of
+# requirements.txt does not already provide. jsonschema comes in with mcp.
+# opentelemetry-sdk is in requirements.txt so its own dependencies resolve.
+# authlib needs joserfc; cryptography is already installed via PyJWT[crypto].
+google-adk==2.11.0
+aiosqlite==0.22.1
+authlib==1.8.0
+joserfc==1.7.5
+graphviz==0.21
+watchdog==6.0.0

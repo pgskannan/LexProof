@@ -8,12 +8,12 @@ google-cloud-storage>=2.18.0
 google-cloud-secret-manager>=2.21.0
 google-cloud-logging>=3.11.0
 google-cloud-aiplatform>=1.71.0
-# google-adk 2.11.0 declares opentelemetry-api<=1.42.1 and opentelemetry-sdk<=1.42.1.
-# That conflicts with opentelemetry-api 1.44.0 already used here, and with
-# google-api-core>=2.36 (pulled by current google-cloud-aiplatform) which
-# requires opentelemetry-api>=1.44.0. Do not downgrade OpenTelemetry to satisfy
-# ADK's cap. ADK 2.11.0 imports against opentelemetry-api 1.44.0.
-google-adk==2.11.0
+# google-api-core>=2.36 (pulled by google-cloud-aiplatform) requires
+# opentelemetry-api>=1.44.0. Keep that floor. google-adk is NOT installed
+# from this file: 2.11.0, the newest release, still caps OpenTelemetry at
+# <=1.42.1. See requirements-adk.txt and the Dockerfile.
+opentelemetry-api>=1.44.0
+opentelemetry-sdk>=1.44.0
 mcp==2.3.0
 httpx>=0.27.0
 web3>=7.0.0
