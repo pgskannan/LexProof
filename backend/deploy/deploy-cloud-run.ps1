@@ -165,6 +165,12 @@ if ($PayPal) {
     # Vercel branch preview for feat/paypal-agentic-payments (exact host; Starlette
     # full-matches the regex). Production lexproof-api is not updated.
     $plain["LEXPROOF_CORS_ORIGIN_REGEX"] = "https://lexproof-git-feat-paypal-agentic-payments-pgskannans-projects\.vercel\.app"
+    # Dedicated demo contract. Judges may run the agent (demo-judge-1) or approve
+    # money-out (demo-judge-2) on this contract only. Everything else stays read-only.
+    $plain["LEXPROOF_JUDGE_SANDBOX_CONTRACT_ID"] = "683427ff-a5fb-4c49-a7f8-27fca89b5865"
+    if ($ReadOnlyUids -notmatch "(^|,)\s*demo-judge-2\s*(,|$)") {
+        $plain["LEXPROOF_READ_ONLY_UIDS"] = "$ReadOnlyUids,demo-judge-2"
+    }
 }
 # Written to a YAML file rather than --set-env-vars: the CORS list contains commas, and
 # gcloud.cmd runs through cmd.exe, which mangles the usual "^|^" delimiter escape.

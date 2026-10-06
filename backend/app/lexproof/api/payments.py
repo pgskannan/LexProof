@@ -8,9 +8,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ..services.auth import get_current_user
+from ..services.auth import get_current_user, judge_approver_uids, judge_sandbox_contract_id
 from ..services.paypal.book import PaymentBook
 from ..services.paypal.obligations import PaymentError
+from ..services.paypal.rate_limit import check_agent_rate
 
 router = APIRouter(tags=["payments"])
 
@@ -114,6 +115,7 @@ async def run_payment_agent(
     book: PaymentBook = Depends(get_payment_book),
 ):
     try:
+        check_agent_rate(str(user.get("uid") or ""))
         return await book.run_agent(contract_id, user, body.message, body.session_id)
     except PaymentError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -130,8 +132,17 @@ def transition_payment_action(
 ):
     def work() -> Any:
         document = book.actions._get(action_id)
+        _judge_contract(user, str(document.get("contract_id") or ""))
         roles = _roles(book, str(document.get("org_id") or ""), user)
-        return book.actions.transition(action_id, body.transition_id, str(user.get("uid") or ""), roles, body.comment)
+        return book.actions.transition(
+            action_id,
+            body.transition_id,
+            str(user.get("uid") or ""),
+            roles,
+            body.comment,
+            actor_email=str(user.get("email") or ""),
+            actor_name=str(user.get("name") or ""),
+        )
 
     return _call(work)
 
@@ -144,10 +155,26 @@ async def execute_payment_action(
 ):
     try:
         document = book.actions._get(action_id)
+        _judge_contract(user, str(document.get("contract_id") or ""))
         roles = _roles(book, str(document.get("org_id") or ""), user)
-        return await book.execute_action(action_id, str(user.get("uid") or ""), roles)
+        return await book.execute_action(
+            action_id,
+            str(user.get("uid") or ""),
+            roles,
+            actor_email=str(user.get("email") or ""),
+            actor_name=str(user.get("name") or ""),
+        )
     except PaymentError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+def _judge_contract(user: dict[str, Any], contract_id: str) -> None:
+    uid = str(user.get("uid") or "")
+    sandbox = judge_sandbox_contract_id()
+    if not sandbox or uid not in judge_approver_uids():
+        return
+    if contract_id != sandbox:
+        raise PaymentError(403, "This judge account can approve payments only on the dedicated demo contract.")
 
 
 def _roles(book: PaymentBook, org_id: str, user: dict[str, Any]) -> list[str]:
