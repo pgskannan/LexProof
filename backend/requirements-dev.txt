@@ -1,8 +1,13 @@
 # Development and test dependencies. The production image (Dockerfile) installs
-# requirements.txt only.
+# requirements.txt only. These pins match the venv the PayPal tests ran in.
+# They are omitted from constraints.txt; install this file with
+# `-c constraints.txt` so shared libraries stay on the runtime lock.
 -r requirements.txt
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+iniconfig==2.3.0
+pluggy==1.6.0
+Pygments==2.21.0
 
 # Test-only: an in-process local Ethereum test chain (PyEVM backend) used by
 # tests/lexproof/blockchain/test_passport_registry_contract.py to deploy and
@@ -10,5 +15,11 @@ pytest-asyncio>=0.23.0
 # external node. Never imported by application runtime code.
 # py-evm is pinned directly (not via the eth-tester[py-evm] extra) because the
 # extra pulls safe-pysha3, which needs a C compiler on Windows.
-eth-tester>=0.14.0b1
-py-evm>=0.12.0b2,<0.13.0b1
+eth-tester==0.14.0b1
+py-evm==0.12.1b1
+cached-property==2.0.1
+eth-bloom==4.0.0
+lru-dict==1.4.1
+semantic-version==2.10.0
+sortedcontainers==2.4.0
+trie==4.0.0

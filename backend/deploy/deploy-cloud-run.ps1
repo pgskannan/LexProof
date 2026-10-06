@@ -45,7 +45,10 @@ function Invoke-Gcloud {
 }
 
 if (-not (Test-Path "backend\Dockerfile")) { throw "Run this from the repo root (C:\Projects\LexProof)." }
-if (-not (Get-Command gcloud -ErrorAction SilentlyContinue)) { throw "gcloud CLI not found. Install it from https://cloud.google.com/sdk/docs/install and run 'gcloud auth login'." }
+# A missing executable raises CommandNotFoundException and can leave $LASTEXITCODE
+# at 0. require-command.ps1 exits 127 instead.
+& (Join-Path $PSScriptRoot "..\scripts\require-command.ps1") gcloud
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $envValues = Read-DotEnv "backend\.env"
 $Project = $envValues["GOOGLE_CLOUD_PROJECT"]

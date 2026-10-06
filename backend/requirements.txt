@@ -1,3 +1,5 @@
+# Exact versions are locked in constraints.txt. Install with
+# `pip install -r requirements.txt -c constraints.txt`.
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.5.0

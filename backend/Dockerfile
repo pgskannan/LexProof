@@ -6,10 +6,12 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt requirements-adk.txt ./
-# Second step is --no-deps on purpose. See the comment in requirements-adk.txt.
-RUN pip install --no-cache-dir -r requirements.txt \
-	&& pip install --no-cache-dir --no-deps -r requirements-adk.txt
+COPY requirements.txt requirements-adk.txt constraints.txt ./
+# constraints.txt is the set the PayPal tests ran against. The second step is
+# --no-deps on purpose. See the comments in requirements-adk.txt and constraints.txt.
+RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt \
+	&& pip install --no-cache-dir --no-deps -r requirements-adk.txt -c constraints.txt \
+	&& python -c "import google.adk, mcp, vertexai.generative_models; print('imports ok')"
 
 COPY app ./app
 COPY scripts ./scripts
