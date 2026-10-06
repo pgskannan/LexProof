@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...config import LexProofSettings, get_settings
+from ...services.auth import judge_may_run_agent, judge_sandbox_contract_id
 from .actions import PaymentActions
 from .agent import PayPalAgentGuard, call_paypal_tool, run_paypal_turn, transport_for_url
 from .auth import PayPalTokenProvider
@@ -49,14 +50,26 @@ class PaymentBook:
         payload["invoices"] = [
             item for item in self.invoices.stream() if item.get("org_id") == org_id and item.get("contract_id") == contract_id
         ]
-        payload["receipts"] = [
-            item for item in self.receipts.stream() if item.get("org_id") == org_id and item.get("contract_id") == contract_id
-        ]
+        payload["receipts"] = sorted(
+            (
+                item
+                for item in self.receipts.stream()
+                if item.get("org_id") == org_id and item.get("contract_id") == contract_id
+            ),
+            key=lambda item: str(item.get("created_at") or ""),
+            reverse=True,
+        )
         payload["actions"] = self.actions.list_for_contract(org_id, contract_id)
+        sandbox = judge_sandbox_contract_id()
+        payload["judge_sandbox"] = bool(sandbox) and contract_id == sandbox
         return payload
 
     async def run_agent(self, contract_id: str, user: dict[str, Any], message: str, session_id: str | None = None) -> dict[str, Any]:
-        contract = self.obligations._require_roles(contract_id, user, AGENT_ROLES)
+        actor_uid = str(user.get("uid") or "")
+        if judge_may_run_agent(actor_uid, f"/api/contracts/{contract_id}/payments/agent"):
+            contract = self.obligations._contract_for_member(contract_id, user)
+        else:
+            contract = self.obligations._require_roles(contract_id, user, AGENT_ROLES)
         if not self.settings.has_paypal_configuration():
             raise PaymentError(503, "PayPal is not configured")
         org_id = str(contract.get("org_id"))
@@ -111,6 +124,8 @@ class PaymentBook:
                     args=args,
                     requested_by=actor,
                     reason=decision.reason,
+                    requested_by_email=str(user.get("email") or ""),
+                    requested_by_name=str(user.get("name") or ""),
                 )
                 action_id = opened.get("id")
             recorded.append(
@@ -158,7 +173,15 @@ class PaymentBook:
         )
         return {"session_id": turn.get("session_id"), "text": turn.get("text") or "", "tool_calls": recorded}
 
-    async def execute_action(self, action_id: str, actor_id: str, roles: list[str]) -> dict[str, Any]:
+    async def execute_action(
+        self,
+        action_id: str,
+        actor_id: str,
+        roles: list[str],
+        *,
+        actor_email: str = "",
+        actor_name: str = "",
+    ) -> dict[str, Any]:
         if self.actions.call_tool is None:
             token_holder: dict[str, str] = {}
 
@@ -169,7 +192,13 @@ class PaymentBook:
                 return await caller(self.settings.paypal_mcp_url, token_holder["token"], tool, args)
 
             self.actions.call_tool = _call
-        return await self.actions.execute(action_id, actor_id, roles)
+        return await self.actions.execute(
+            action_id,
+            actor_id,
+            roles,
+            actor_email=actor_email,
+            actor_name=actor_name,
+        )
 
     async def _access_token(self) -> str:
         if not self.settings.has_paypal_configuration():

@@ -68,5 +68,13 @@ def test_unauthorized_user_returns_401():
 
 def test_repository_failure_returns_500(monkeypatch):
     client = client_for(FakeRepository(failure=RuntimeError("repository unavailable")), monkeypatch)
-    with pytest.raises(RuntimeError):
-        client.get("/api/contracts/contract-1/passport?contract_version=1", headers={"Authorization": "Bearer test"})
+    response = client.get(
+        "/api/contracts/contract-1/passport?contract_version=1",
+        headers={"Authorization": "Bearer test", "Origin": "http://localhost:3000"},
+    )
+    assert response.status_code == 500
+    body = response.json()
+    assert body["detail"] == "Internal server error"
+    assert body["request_id"]
+    assert "repository unavailable" not in response.text
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"

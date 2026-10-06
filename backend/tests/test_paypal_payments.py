@@ -460,3 +460,32 @@ async def test_confirm_send_requires_paypal_sent_status():
     assert refund_issue is None
     refund_fail, refund_fail_issue = await confirm_tool_result("create_refund", {}, _missing_recipient_payload(), fetch)
     assert refund_fail_issue == "MISSING_RECIPIENT_EMAIL"
+
+
+def test_payment_view_sorts_out_of_order_receipts_newest_first():
+    from app.lexproof.services.paypal.book import PaymentBook
+
+    repos = _repos()
+    obligations, workflow, _audits = _book(repos, _roster())
+    _seed_contract(repos)
+    rows = [
+        ("old", "2026-10-06T11:41:00+00:00"),
+        ("newest", "2026-10-06T13:32:00+00:00"),
+        ("mid", "2026-10-06T12:12:00+00:00"),
+        ("between", "2026-10-06T12:04:00+00:00"),
+    ]
+    for receipt_id, created_at in rows:
+        repos["receipts"].set(
+            receipt_id,
+            {
+                "id": receipt_id,
+                "org_id": "org-1",
+                "contract_id": "c-1",
+                "created_at": created_at,
+                "receipt_hash": receipt_id,
+            },
+        )
+    actions = PaymentActions(actions=repos["actions"], invoices=repos["invoices"], obligations=repos["obligations"], workflow=workflow)
+    book = PaymentBook(obligations=obligations, actions=actions, invoices=repos["invoices"], receipts=repos["receipts"])
+    view = book.view("c-1", {"uid": "owner"})
+    assert [item["id"] for item in view["receipts"]] == ["newest", "mid", "between", "old"]

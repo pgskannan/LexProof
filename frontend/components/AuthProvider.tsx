@@ -3,7 +3,7 @@
 import { onAuthStateChanged, User } from "firebase/auth"
 import { usePathname, useRouter } from "next/navigation"
 import { createContext, useContext, useEffect, useMemo, useState } from "react"
-import { auth, AUTHENTICATED, AUTH_INITIALIZING, login, logout, setAuthState, type AuthState, UNAUTHENTICATED } from "../lib/auth"
+import { auth, AUTHENTICATED, AUTH_INITIALIZING, getRedirectResult, login, logout, setAuthState, type AuthState, UNAUTHENTICATED } from "../lib/auth"
 import { isPublicPath } from "../lib/publicRoutes"
 import { Skeleton } from "./ui/skeleton"
 
@@ -19,6 +19,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const isPublicRoute = isPublicPath(pathname)
+
+  useEffect(() => {
+    void getRedirectResult(auth).catch(() => undefined)
+  }, [])
 
   useEffect(() => onAuthStateChanged(auth, currentUser => {
     const nextAuthState = currentUser ? AUTHENTICATED : UNAUTHENTICATED

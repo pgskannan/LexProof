@@ -1,12 +1,17 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 const signInWithEmailAndPasswordMock = vi.fn()
+const signInWithPopupMock = vi.fn()
+const signInWithRedirectMock = vi.fn()
 
 vi.mock('firebase/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('firebase/auth')>()
   return {
     ...actual,
     signInWithEmailAndPassword: (...args: unknown[]) => signInWithEmailAndPasswordMock(...args),
+    signInWithPopup: (...args: unknown[]) => signInWithPopupMock(...args),
+    signInWithRedirect: (...args: unknown[]) => signInWithRedirectMock(...args),
+    getRedirectResult: vi.fn().mockResolvedValue(null),
   }
 })
 
@@ -16,6 +21,7 @@ import {
   AUTHENTICATED,
   UNAUTHENTICATED,
   getAuthState,
+  login,
   loginWithEmailPassword,
   mapFirebaseAuthError,
   setAuthState,
@@ -108,5 +114,31 @@ describe('mapFirebaseAuthError', () => {
   it('handles non-object/non-Error inputs safely', () => {
     expect(mapFirebaseAuthError(undefined)).toBe('Unable to sign in. Please check your credentials and try again.')
     expect(mapFirebaseAuthError('plain string')).toBe('Unable to sign in. Please check your credentials and try again.')
+  })
+})
+
+describe('Google sign-in popup fallback', () => {
+  beforeEach(() => {
+    signInWithPopupMock.mockReset()
+    signInWithRedirectMock.mockReset()
+  })
+
+  it('uses the popup when the browser allows it', async () => {
+    signInWithPopupMock.mockResolvedValueOnce({})
+    await expect(login()).resolves.toBe('popup')
+    expect(signInWithRedirectMock).not.toHaveBeenCalled()
+  })
+
+  it('falls back to redirect when the popup is blocked', async () => {
+    signInWithPopupMock.mockRejectedValueOnce({ code: 'auth/popup-blocked' })
+    signInWithRedirectMock.mockResolvedValueOnce(undefined)
+    await expect(login()).resolves.toBe('redirect')
+    expect(signInWithRedirectMock).toHaveBeenCalled()
+  })
+
+  it('does not hide other popup failures', async () => {
+    signInWithPopupMock.mockRejectedValueOnce({ code: 'auth/popup-closed-by-user' })
+    await expect(login()).rejects.toEqual({ code: 'auth/popup-closed-by-user' })
+    expect(signInWithRedirectMock).not.toHaveBeenCalled()
   })
 })

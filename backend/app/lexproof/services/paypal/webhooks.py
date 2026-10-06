@@ -162,6 +162,7 @@ async def handle_paypal_webhook(
                 "receipt_hash": digest,
                 "evidence_id": evidence_id,
                 "created_at": stamp,
+                "paypal_invoice_id": invoice_id or "",
                 "canonical": canonical_json(receipt_body),
             },
             transaction=transaction,

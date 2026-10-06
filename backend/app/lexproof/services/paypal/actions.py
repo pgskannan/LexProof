@@ -63,6 +63,8 @@ class PaymentActions:
         args: dict[str, Any],
         requested_by: str,
         reason: str,
+        requested_by_email: str = "",
+        requested_by_name: str = "",
     ) -> dict[str, Any]:
         name = tool.strip().lower()
         args_hash = payment_action_id(name, args)
@@ -81,6 +83,8 @@ class PaymentActions:
             "args_hash": args_hash,
             "obligation_id": obligation_id,
             "requested_by": requested_by,
+            "requested_by_email": requested_by_email,
+            "requested_by_name": requested_by_name,
             "reason": reason,
             "status": "in_review",
             "created_at": now,
@@ -99,7 +103,17 @@ class PaymentActions:
         saved = self.actions.get(args_hash) or document
         return {"id": args_hash, **saved}
 
-    def transition(self, action_id: str, transition_id: str, actor_id: str, roles: list[str], comment: str | None = None) -> dict[str, Any]:
+    def transition(
+        self,
+        action_id: str,
+        transition_id: str,
+        actor_id: str,
+        roles: list[str],
+        comment: str | None = None,
+        *,
+        actor_email: str = "",
+        actor_name: str = "",
+    ) -> dict[str, Any]:
         if transition_id == "execute":
             raise PaymentError(400, "Use the execute endpoint to run an approved payment action")
         document = self._get(action_id)
@@ -111,10 +125,29 @@ class PaymentActions:
         except WorkflowError as exc:
             raise PaymentError(403, str(exc)) from exc
         status = str(instance.get("current_state") or document.get("status"))
-        self.actions.set(action_id, {"status": status, "updated_at": self.clock(), "updated_by": actor_id}, merge=True)
+        now = self.clock()
+        update: dict[str, Any] = {"status": status, "updated_at": now, "updated_by": actor_id}
+        if status in {"approved", "rejected"}:
+            update["resolved_by"] = actor_id
+            update["resolved_by_email"] = actor_email
+            update["resolved_by_name"] = actor_name
+            update["resolved_at"] = now
+            if status == "approved":
+                update["approved_by"] = actor_id
+                update["approved_by_email"] = actor_email
+                update["approved_by_name"] = actor_name
+        self.actions.set(action_id, update, merge=True)
         return self._get(action_id)
 
-    async def execute(self, action_id: str, actor_id: str, roles: list[str]) -> dict[str, Any]:
+    async def execute(
+        self,
+        action_id: str,
+        actor_id: str,
+        roles: list[str],
+        *,
+        actor_email: str = "",
+        actor_name: str = "",
+    ) -> dict[str, Any]:
         if self.call_tool is None:
             raise PaymentError(503, "PayPal execution is not configured")
 
@@ -157,6 +190,15 @@ class PaymentActions:
             self._release(action_id)
             raise PaymentError(502, "PayPal rejected the stored tool call")
         if self.receipts is not None and self.invoices is not None and self.obligations is not None:
+            receipt = canonical_receipt(
+                tool,
+                args,
+                response if isinstance(response, dict) else {},
+                decision,
+                actor_id,
+                str(claimed.get("contract_id") or ""),
+            )
+            receipt["source"] = "approval"
             record_tool_result(
                 invoices=self.invoices,
                 obligations=self.obligations,
@@ -170,20 +212,21 @@ class PaymentActions:
                 args=args,
                 response=response,
                 decision=GuardDecision("allow", decision.reason, decision.matched_obligation_id),
-                receipt=canonical_receipt(
-                    tool,
-                    args,
-                    response if isinstance(response, dict) else {},
-                    decision,
-                    actor_id,
-                    str(claimed.get("contract_id") or ""),
-                ),
+                receipt=receipt,
                 clock=self.clock,
             )
         now = self.clock()
         self.actions.set(
             action_id,
-            {"status": "executed", "executed_by": actor_id, "executed_at": now, "updated_at": now, "paypal_response_id": _response_id(response)},
+            {
+                "status": "executed",
+                "executed_by": actor_id,
+                "executed_by_email": actor_email,
+                "executed_by_name": actor_name,
+                "executed_at": now,
+                "updated_at": now,
+                "paypal_response_id": _response_id(response),
+            },
             merge=True,
         )
         instance_id = claimed.get("workflow_instance_id")

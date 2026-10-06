@@ -130,7 +130,11 @@ def decide(
         action_id = payment_action_id(tool_name.strip().lower(), args)
         if action_id in approvals:
             return GuardDecision("allow", f"approved payment action {action_id}", None)
-        return GuardDecision("needs_approval", f"money-out requires approval {action_id}", None)
+        return GuardDecision(
+            "needs_approval",
+            f"This payment needs a different person's approval before money leaves the merchant. Request {action_id}",
+            None,
+        )
     name = tool_name.strip().lower()
     if name in _LEDGER_TOOLS:
         return _decide_ledger(name, args, invoice_ledger or {})

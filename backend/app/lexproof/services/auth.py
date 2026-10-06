@@ -38,15 +38,60 @@ _READ_ONLY_ALLOWED_WRITES = tuple(
 )
 READ_ONLY_DETAIL = "This is a read-only demo account: you can explore everything, but changes are disabled."
 
+# Opt-in judge sandbox. Empty contract id means the extra writes stay off.
+JUDGE_SANDBOX_CONTRACT_ENV = "LEXPROOF_JUDGE_SANDBOX_CONTRACT_ID"
+JUDGE_AGENT_UIDS_ENV = "LEXPROOF_JUDGE_AGENT_UIDS"
+JUDGE_APPROVER_UIDS_ENV = "LEXPROOF_JUDGE_APPROVER_UIDS"
+
 
 def read_only_uids() -> set[str]:
     return {uid.strip() for uid in os.getenv(READ_ONLY_UIDS_ENV, "").split(",") if uid.strip()}
+
+
+def judge_sandbox_contract_id() -> str:
+    return os.getenv(JUDGE_SANDBOX_CONTRACT_ENV, "").strip()
+
+
+def _configured_uids(env_name: str, default: str) -> set[str]:
+    raw = os.getenv(env_name)
+    if raw is None:
+        raw = default
+    return {uid.strip() for uid in raw.split(",") if uid.strip()}
+
+
+def judge_agent_uids() -> set[str]:
+    return _configured_uids(JUDGE_AGENT_UIDS_ENV, "demo-judge-1")
+
+
+def judge_approver_uids() -> set[str]:
+    return _configured_uids(JUDGE_APPROVER_UIDS_ENV, "demo-judge-2")
+
+
+def judge_may_run_agent(uid: str, path: str) -> bool:
+    """The read-only judge may talk to the agent on the dedicated demo contract only."""
+    contract_id = judge_sandbox_contract_id()
+    if not contract_id or uid not in judge_agent_uids():
+        return False
+    return path.rstrip("/").endswith(f"/contracts/{contract_id}/payments/agent")
+
+
+def judge_approver_write(uid: str, path: str) -> bool:
+    """The second judge may approve or execute a payment action. The route checks the contract."""
+    if not judge_sandbox_contract_id() or uid not in judge_approver_uids():
+        return False
+    normalized = path.rstrip("/")
+    return bool(
+        re.search(r"/payment-actions/[^/]+/transition$", normalized)
+        or re.search(r"/payment-actions/[^/]+:execute$", normalized)
+    )
 
 
 def enforce_read_only(uid: str, method: str, path: str) -> None:
     if method.upper() in _SAFE_METHODS or uid not in read_only_uids():
         return
     if any(pattern.search(path.rstrip("/")) for pattern in _READ_ONLY_ALLOWED_WRITES):
+        return
+    if judge_may_run_agent(uid, path) or judge_approver_write(uid, path):
         return
     logger.info("read-only account blocked actor=%s method=%s path=%s", uid, method, path)
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=READ_ONLY_DETAIL)

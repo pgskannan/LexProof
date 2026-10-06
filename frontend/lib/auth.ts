@@ -1,8 +1,10 @@
 import {
+  getRedirectResult,
   GoogleAuthProvider,
   onAuthStateChanged,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   User,
 } from "firebase/auth"
@@ -18,8 +20,27 @@ const provider = new GoogleAuthProvider()
 
 export const auth = firebaseAuth
 
-// Existing Google sign-in. Unchanged.
-export const login = () => signInWithPopup(auth, provider)
+function authErrorCode(error: unknown): string {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : ""
+}
+
+// Popup first. Browsers that block the popup fall back to a full-page redirect.
+export async function login(): Promise<"popup" | "redirect"> {
+  try {
+    await signInWithPopup(auth, provider)
+    return "popup"
+  } catch (error) {
+    if (authErrorCode(error) === "auth/popup-blocked") {
+      await signInWithRedirect(auth, provider)
+      return "redirect"
+    }
+    throw error
+  }
+}
+
+export { getRedirectResult }
 export const logout = () => signOut(auth)
 export type CurrentUser = User
 

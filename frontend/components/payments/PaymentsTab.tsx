@@ -18,6 +18,7 @@ export type PaymentObligation = {
   status: string
   edited_by?: string | null
   needs_review_reason?: string | null
+  refunded_amount?: string | null
 }
 
 export type PaymentAction = {
@@ -25,6 +26,14 @@ export type PaymentAction = {
   tool: string
   args?: Record<string, unknown>
   requested_by?: string | null
+  requested_by_email?: string | null
+  requested_by_name?: string | null
+  approved_by_email?: string | null
+  approved_by_name?: string | null
+  executed_by_email?: string | null
+  executed_by_name?: string | null
+  executed_at?: string | null
+  resolved_at?: string | null
   reason?: string | null
   status: string
   obligation_id?: string | null
@@ -43,6 +52,8 @@ export type PaymentReceipt = {
   outcome?: string | null
   paypal_issue?: string | null
   payer_view_url?: string | null
+  source?: string | null
+  resource_id?: string | null
   response?: { id?: string; invoice_id?: string; refund_id?: string; payer_view_url?: string }
 }
 
@@ -59,9 +70,10 @@ export type ToolCallChip = {
 export type PaymentsData = {
   obligations: PaymentObligation[]
   mandate_hash: string
-  invoices: { invoice_id: string; status: string; amount?: string; obligation_id?: string; payer_view_url?: string | null }[]
+  invoices: { invoice_id: string; status: string; amount?: string; obligation_id?: string; payer_view_url?: string | null; refunded_amount?: string | null }[]
   receipts: PaymentReceipt[]
   actions: PaymentAction[]
+  judge_sandbox?: boolean
 }
 
 type Props = {
@@ -79,6 +91,7 @@ type Props = {
   onExecute?: (actionId: string) => void
   onVerify?: (evidenceId: string) => void
   readOnlyAccount?: boolean
+  judgeSandbox?: boolean
 }
 
 const SUGGESTED = ['Invoice milestone 1', 'Invoice a $50,000 bonus to the client', 'Refund milestone 1']
@@ -99,6 +112,25 @@ function chipLabel(call: ToolCallChip) {
   if (call.decision === 'allow') return `Allowed · ${call.tool}`
   if (call.decision === 'needs_approval') return `Needs approval → request ${call.action_id ? `#${call.action_id.slice(0, 8)}` : ''}`.trim()
   return `Blocked · ${call.reason || call.tool}`
+}
+
+function statusChipClass(status: string) {
+  if (status === 'PAID' || status === 'APPROVED') return 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
+  if (status === 'REFUNDED') return 'bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-200'
+  if (status === 'PARTIALLY_REFUNDED') return 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200'
+  if (status === 'REJECTED') return 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
+  return 'bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200'
+}
+
+function receiptSourceLabel(source?: string | null) {
+  if (source === 'paypal_webhook') return 'PayPal webhook'
+  if (source === 'approval') return 'Approval'
+  return 'Agent'
+}
+
+function requesterLabel(action: PaymentAction) {
+  if (action.requested_by_name && action.requested_by_email) return `${action.requested_by_name} (${action.requested_by_email})`
+  return action.requested_by_name || action.requested_by_email || 'a teammate'
 }
 
 function sandboxHref(receipt: PaymentReceipt) {
@@ -122,18 +154,25 @@ export function PaymentsTab({
   onExecute,
   onVerify,
   readOnlyAccount = false,
+  judgeSandbox = false,
 }: Props) {
   const [message, setMessage] = useState(SUGGESTED[0])
   const [copied, setCopied] = useState(false)
+  const sandbox = judgeSandbox || Boolean(data.judge_sandbox)
   const canEdit = !readOnlyAccount && hasRole(roles, 'contract_owner')
   const canApprove = !readOnlyAccount && hasRole(roles, 'approver')
-  const canAgent = !readOnlyAccount && hasRole(roles, 'contract_owner')
-  const readOnly = readOnlyAccount || (roles.length > 0 && !canEdit && !canApprove && roles.includes('auditor'))
+  const canAgent = sandbox || (!readOnlyAccount && hasRole(roles, 'contract_owner'))
+  const showAgent = sandbox || !readOnlyAccount
+  const readOnly = !sandbox && (readOnlyAccount || (roles.length > 0 && !canEdit && !canApprove && roles.includes('auditor')))
 
   async function copyHash() {
     if (!data.mandate_hash) return
-    await navigator.clipboard.writeText(data.mandate_hash)
-    setCopied(true)
+    try {
+      await navigator.clipboard.writeText(data.mandate_hash)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
   }
 
   return (
@@ -202,14 +241,19 @@ export function PaymentsTab({
                           {obligation.clause_ref || 'quote'}
                         </a>
                       </td>
-                      <td className="py-3 pr-3"><Badge variant={obligation.status === 'APPROVED' ? 'verified' : obligation.status === 'REJECTED' ? 'tampered' : 'secondary'}>{obligation.status}</Badge></td>
+                      <td className="py-3 pr-3">
+                        <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${statusChipClass(obligation.status)}`}>{obligation.status}</span>
+                        {obligation.refunded_amount ? <span className="mt-1 block text-xs text-gray-500">refunded {obligation.refunded_amount}</span> : null}
+                      </td>
                       <td className="py-3">
-                        <div className="flex gap-2">
-                          <span title={sod ? 'You edited this obligation. A different approver has to approve it.' : undefined}>
-                            <Button type="button" size="sm" disabled={!canApprove || sod || busy || !onApprove} onClick={() => onApprove?.(obligation.id)}>Approve</Button>
-                          </span>
-                          <Button type="button" size="sm" variant="outline" disabled={!canApprove || sod || busy || !onReject} onClick={() => onReject?.(obligation.id)}>Reject</Button>
-                        </div>
+                        {obligation.status === 'EXTRACTED' ? (
+                          <div className="flex gap-2">
+                            <span title={sod ? 'You edited this obligation. A different approver has to approve it.' : undefined}>
+                              <Button type="button" size="sm" disabled={!canApprove || sod || busy || !onApprove} onClick={() => onApprove?.(obligation.id)}>Approve</Button>
+                            </span>
+                            <Button type="button" size="sm" variant="outline" disabled={!canApprove || sod || busy || !onReject} onClick={() => onReject?.(obligation.id)}>Reject</Button>
+                          </div>
+                        ) : null}
                         {obligation.needs_review_reason ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{obligation.needs_review_reason}</p> : null}
                       </td>
                     </tr>
@@ -232,10 +276,16 @@ export function PaymentsTab({
         <CardContent>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Agent</h2>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400" title={readOnlyAccount ? 'read-only demo account' : undefined}>
-            {readOnlyAccount ? 'read-only demo account' : readOnly ? 'Auditors can read this trail. They cannot run the agent.' : 'The guard runs on the server before PayPal is called.'}
+            {sandbox
+              ? 'Judge sandbox: you can ask the agent to invoice or request a refund. A second judge has to approve money leaving the merchant.'
+              : readOnlyAccount
+                ? 'read-only demo account'
+                : readOnly
+                  ? 'Auditors can read this trail. They cannot run the agent.'
+                  : 'The guard runs on the server before PayPal is called.'}
           </p>
-          {readOnlyAccount ? null : (
-          <>
+          {showAgent ? (
+          <div>
           <div className="mt-3 flex flex-wrap gap-2">
             {SUGGESTED.map((prompt) => (
               <Button key={prompt} type="button" size="sm" variant="outline" onClick={() => setMessage(prompt)}>{prompt}</Button>
@@ -256,8 +306,8 @@ export function PaymentsTab({
             />
             <Button type="submit" disabled={!canAgent || busy || !onSend}>Send</Button>
           </form>
-          </>
-          )}
+          </div>
+          ) : null}
           <ul className="mt-4 space-y-2" data-testid="tool-calls">
             {transcript.map((call, index) => (
               <li key={`${call.tool}-${index}`}>
@@ -268,28 +318,44 @@ export function PaymentsTab({
         </CardContent>
       </Card>
 
-      {canApprove ? (
+      {canApprove || data.actions.length > 0 ? (
         <Card>
           <CardContent>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Approvals</h2>
+            {data.actions.length === 0 ? <p className="mt-3 text-sm text-gray-500">No payment approvals yet.</p> : null}
             <ul className="mt-3 space-y-3">
-              {data.actions.filter((action) => action.status === 'in_review' || action.status === 'approved').map((action) => (
-                <li key={action.id} className="rounded border border-gray-200 p-3 dark:border-gray-700">
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{action.tool}</p>
-                  <p className="mt-1 font-mono text-xs text-gray-500">{JSON.stringify(action.args || {})}</p>
-                  <p className="mt-1 text-xs text-gray-500">Requested by {action.requested_by || 'unknown'}</p>
-                  <div className="mt-2 flex gap-2">
-                    {action.status === 'in_review' ? (
-                      <>
-                        <Button type="button" size="sm" onClick={() => onTransition?.(action.id, 'approve')}>Approve</Button>
-                        <Button type="button" size="sm" variant="outline" onClick={() => onTransition?.(action.id, 'reject')}>Reject</Button>
-                      </>
-                    ) : (
-                      <Button type="button" size="sm" onClick={() => onExecute?.(action.id)}>Execute</Button>
-                    )}
-                  </div>
-                </li>
-              ))}
+              {data.actions.map((action) => {
+                const pending = action.status === 'in_review' || action.status === 'approved'
+                const approver = action.approved_by_name || action.approved_by_email
+                return (
+                  <li key={action.id} className="rounded border border-gray-200 p-3 dark:border-gray-700">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{action.tool}</p>
+                    <p className="mt-1 font-mono text-xs text-gray-500">{JSON.stringify(action.args || {})}</p>
+                    <p className="mt-1 text-xs text-gray-500">Requested by {requesterLabel(action)}</p>
+                    {action.reason ? <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">{action.reason}</p> : null}
+                    {pending && canApprove ? (
+                      <div className="mt-2 flex gap-2">
+                        {action.status === 'in_review' ? (
+                          <>
+                            <Button type="button" size="sm" onClick={() => onTransition?.(action.id, 'approve')}>Approve</Button>
+                            <Button type="button" size="sm" variant="outline" onClick={() => onTransition?.(action.id, 'reject')}>Reject</Button>
+                          </>
+                        ) : (
+                          <Button type="button" size="sm" onClick={() => onExecute?.(action.id)}>Execute</Button>
+                        )}
+                      </div>
+                    ) : null}
+                    {!pending ? (
+                      <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">
+                        {action.status}
+                        {approver ? ` · approved by ${approver}` : ''}
+                        {action.executed_at ? ` · executed ${action.executed_at}` : ''}
+                        {action.status === 'rejected' && action.resolved_at ? ` · rejected ${action.resolved_at}` : ''}
+                      </p>
+                    ) : null}
+                  </li>
+                )
+              })}
             </ul>
           </CardContent>
         </Card>
@@ -302,17 +368,19 @@ export function PaymentsTab({
             {data.invoices.filter((invoice) => invoice.payer_view_url).map((invoice) => (
               <li key={invoice.invoice_id}>
                 <a className="text-[var(--brand-primary,#1d4ed8)] underline" href={invoice.payer_view_url || ''}>Open in PayPal Sandbox</a>
-                <span className="ml-2 text-xs text-gray-500">{invoice.invoice_id} · {invoice.status}</span>
+                <span className={`ml-2 inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${statusChipClass(invoice.status)}`}>{invoice.status}</span>
+                <span className="ml-2 text-xs text-gray-500">{invoice.invoice_id}{invoice.amount ? ` · ${invoice.amount}` : ''}{invoice.refunded_amount ? ` · refunded ${invoice.refunded_amount}` : ''}</span>
               </li>
             ))}
           </ul>
           <ul className="mt-3 space-y-2" data-testid="receipts">
             {[...data.receipts].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).map((receipt) => {
               const href = sandboxHref(receipt)
-              const invoiceId = receipt.paypal_invoice_id || receipt.response?.invoice_id || receipt.response?.id
+              const invoiceId = receipt.paypal_invoice_id || receipt.resource_id || receipt.response?.invoice_id || receipt.response?.id
               return (
                 <li key={receipt.id} className="flex flex-wrap items-center gap-3 text-sm">
                   <span className="text-gray-500">{receipt.created_at || ''}</span>
+                  <Badge variant={receipt.source === 'paypal_webhook' ? 'pending' : 'secondary'}>{receiptSourceLabel(receipt.source)}</Badge>
                   <span>{receipt.tool}</span>
                   {invoiceId ? <span className="font-mono text-xs">{invoiceId}</span> : null}
                   {receipt.amount ? <span>{receipt.amount}</span> : null}
@@ -344,8 +412,32 @@ export const PAYPAL_DEMO_PAYMENTS: PaymentsData = {
       payer_email: 'sb-tdpzh53193435@personal.example.com',
       clause_ref: '3.1',
       clause_quote: 'Client shall pay USD 12,000 net-15 after the effective date.',
-      status: 'APPROVED',
+      status: 'PAID',
       edited_by: 'owner-1',
+    },
+    {
+      id: 'ob-golive',
+      label: 'Go-live',
+      amount: '10000.00',
+      currency: 'USD',
+      due_date: 'net-30',
+      payer_email: 'sb-tdpzh53193435@personal.example.com',
+      clause_ref: '3.3',
+      clause_quote: 'Client shall pay USD 10,000 at go-live.',
+      status: 'REFUNDED',
+      refunded_amount: '10000.00',
+    },
+    {
+      id: 'ob-uat',
+      label: 'UAT sign-off',
+      amount: '18000.00',
+      currency: 'USD',
+      due_date: 'net-15',
+      payer_email: 'sb-tdpzh53193435@personal.example.com',
+      clause_ref: '3.2',
+      clause_quote: 'Client shall pay USD 18,000 at UAT sign-off.',
+      status: 'PARTIALLY_REFUNDED',
+      refunded_amount: '1000.00',
     },
     {
       id: 'ob-bonus',
@@ -368,16 +460,49 @@ export const PAYPAL_DEMO_PAYMENTS: PaymentsData = {
   }],
   receipts: [
     {
-      id: 'rc-1',
+      id: 'rc-old',
       tool: 'create_invoice',
       decision: 'allow',
-      receipt_hash: 'deadbeef'.repeat(8),
-      created_at: '2026-10-12T12:00:00Z',
-      evidence_id: 'ev-1',
+      receipt_hash: 'aaaa1111'.repeat(8),
+      created_at: '2026-10-06T11:41:00Z',
+      evidence_id: 'ev-old',
       paypal_invoice_id: 'INV2-DEMO',
       amount: '12,000.00',
+      source: 'agent',
       payer_view_url: 'https://www.sandbox.paypal.com/invoice/p/#INV2-DEMO',
       response: { id: 'INV2-DEMO', invoice_id: 'INV2-DEMO', payer_view_url: 'https://www.sandbox.paypal.com/invoice/p/#INV2-DEMO' },
+    },
+    {
+      id: 'rc-mid',
+      tool: 'send_invoice',
+      decision: 'allow',
+      receipt_hash: 'bbbb2222'.repeat(8),
+      created_at: '2026-10-06T12:12:00Z',
+      source: 'agent',
+      paypal_invoice_id: 'INV2-DEMO',
+      amount: '12,000.00',
+    },
+    {
+      id: 'rc-paid',
+      tool: 'INVOICING.INVOICE.PAID',
+      decision: 'allow',
+      receipt_hash: 'cccc3333'.repeat(8),
+      created_at: '2026-10-06T12:04:00Z',
+      source: 'paypal_webhook',
+      resource_id: 'INV2-DEMO',
+      paypal_invoice_id: 'INV2-DEMO',
+      amount: '12000.00',
+    },
+    {
+      id: 'rc-new',
+      tool: 'INVOICING.INVOICE.REFUNDED',
+      decision: 'allow',
+      receipt_hash: 'dddd4444'.repeat(8),
+      created_at: '2026-10-06T13:32:00Z',
+      evidence_id: 'ev-1',
+      source: 'paypal_webhook',
+      paypal_invoice_id: 'INV2-DEMO',
+      amount: '12000.00',
     },
   ],
   actions: [
@@ -385,10 +510,23 @@ export const PAYPAL_DEMO_PAYMENTS: PaymentsData = {
       id: 'act-refund',
       tool: 'create_refund',
       args: { invoice_id: 'INV2-DEMO' },
-      requested_by: 'owner-1',
-      reason: 'money-out requires approval',
+      requested_by_name: 'Alex Owner',
+      requested_by_email: 'owner@lexproof.demo',
+      reason: 'This payment needs a different person\'s approval before money leaves the merchant.',
       status: 'in_review',
       obligation_id: 'ob-kickoff',
+    },
+    {
+      id: 'act-done',
+      tool: 'create_refund',
+      args: { invoice_id: 'INV2-OLDER' },
+      requested_by_name: 'Alex Owner',
+      requested_by_email: 'owner@lexproof.demo',
+      approved_by_name: 'Blair Approver',
+      approved_by_email: 'approver@lexproof.demo',
+      executed_at: '2026-10-06T13:40:00Z',
+      status: 'executed',
+      obligation_id: 'ob-golive',
     },
   ],
 }

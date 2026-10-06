@@ -89,6 +89,7 @@ def record_tool_result(
         "paypal_debug_id": debug_id,
         "evidence_id": evidence_id,
         "created_at": stamp,
+        "source": str(stored_receipt.get("source") or "agent"),
     }
     document["paypal_invoice_id"] = _receipt_invoice_id(args, response, decision)
     document["amount"] = _quoted_amount(args, invoices, document["paypal_invoice_id"])

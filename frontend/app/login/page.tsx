@@ -15,7 +15,10 @@ export default function LoginPage() {
 
   async function handleGoogleLogin() {
     setLoading(true); setError("")
-    try { await login(); router.replace("/dashboard") }
+    try {
+      const mode = await login()
+      if (mode !== "redirect") router.replace("/dashboard")
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to sign in") }
     finally { setLoading(false) }
   }

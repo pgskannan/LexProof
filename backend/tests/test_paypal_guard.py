@@ -484,6 +484,7 @@ def test_money_out_needs_approval_until_the_exact_action_is_approved():
     assert blocked.decision == "needs_approval"
     assert blocked.matched_obligation_id is None
     action_id = payment_action_id("create_refund", args)
+    assert blocked.reason.startswith("This payment needs a different person's approval")
     assert action_id in blocked.reason
 
     allowed = decide("Create_Refund", args, [], {action_id})

@@ -1,10 +1,53 @@
 """FastAPI application for the LexProof foundation."""
 
+import logging
+import re
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.responses import PlainTextResponse
+
+logger = logging.getLogger(__name__)
+
+
+def _apply_error_cors(request: Request, response: JSONResponse) -> None:
+    """Stamp CORS on a 500 that escaped CORSMiddleware.
+
+    Starlette's BaseHTTPMiddleware re-raises after the inner exception
+    handler, so the browser would otherwise see a missing
+    Access-Control-Allow-Origin and report a CORS error.
+    """
+    if "access-control-allow-origin" in response.headers:
+        return
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+    settings = get_settings()
+    allowed = origin in set(settings.cors_origin_list())
+    pattern = settings.cors_origin_regex.strip()
+    if not allowed and pattern:
+        try:
+            allowed = re.fullmatch(pattern, origin) is not None
+        except re.error:
+            allowed = False
+    if not allowed:
+        return
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers.add_vary_header("Origin")
+
+
+def _json_server_error(request: Request, request_id: str) -> JSONResponse:
+    response = JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "request_id": request_id},
+    )
+    response.headers["X-Request-Id"] = request_id
+    _apply_error_cors(request, response)
+    return response
 
 from .api import blockchain_router, public_verify_router, time_machine_router, compliance_router, remediation_router, contracts_router, evidence_anchor_router, findings_router
 from .api.search import router as search_router
@@ -60,6 +103,17 @@ def create_app() -> FastAPI:
         **cors_kwargs,
     )
 
+    @app.exception_handler(Exception)
+    async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        """JSON 500 inside the middleware stack so CORS still wraps the response.
+
+        Browsers otherwise report a CORS failure when an unhandled error
+        becomes a bare 500 outside CORSMiddleware.
+        """
+        request_id = getattr(request.state, "request_id", None) or str(uuid4())
+        logger.exception("unhandled error request_id=%s", request_id)
+        return _json_server_error(request, str(request_id))
+
     @app.middleware("http")
     async def security_headers(request, call_next):
         """Data-security hardening: standard defensive response headers on every
@@ -80,6 +134,9 @@ def create_app() -> FastAPI:
         # header, it doesn't block), and the mounted sub-app's own
         # CORSMiddleware adds the wildcard Access-Control-Allow-Origin to the
         # real response further down the stack.
+        incoming = str(request.headers.get("x-request-id") or "").strip()
+        request_id = incoming[:80] if incoming else str(uuid4())
+        request.state.request_id = request_id
         if (
             request.method == "OPTIONS"
             and request.url.path.startswith("/api/verify/")
@@ -91,12 +148,18 @@ def create_app() -> FastAPI:
             preflight.headers["Access-Control-Allow-Headers"] = request.headers.get(
                 "access-control-request-headers", "*"
             )
+            preflight.headers["X-Request-Id"] = request_id
             return preflight
 
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception("unhandled error request_id=%s", request_id)
+            response = _json_server_error(request, request_id)
         if request.url.path.startswith("/api/verify/"):
             if "Access-Control-Allow-Credentials" in response.headers:
                 del response.headers["Access-Control-Allow-Credentials"]
+        response.headers["X-Request-Id"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"

@@ -50,6 +50,26 @@ def test_normal_accounts_are_unaffected():
     enforce_read_only("demo-reviewer-1", "POST", "/api/contracts/c1/analyze")
 
 
+def test_judge_sandbox_allows_only_the_demo_agent_and_approver(monkeypatch):
+    monkeypatch.setenv("LEXPROOF_READ_ONLY_UIDS", "demo-judge-1,demo-judge-2")
+    monkeypatch.setenv("LEXPROOF_JUDGE_SANDBOX_CONTRACT_ID", "683427ff-a5fb-4c49-a7f8-27fca89b5865")
+    enforce_read_only("demo-judge-1", "POST", "/api/contracts/683427ff-a5fb-4c49-a7f8-27fca89b5865/payments/agent")
+    enforce_read_only("demo-judge-2", "POST", "/api/payment-actions/act-1/transition")
+    enforce_read_only("demo-judge-2", "POST", "/api/payment-actions/act-1:execute")
+    with pytest.raises(HTTPException):
+        enforce_read_only("demo-judge-1", "POST", "/api/contracts/other-contract/payments/agent")
+    with pytest.raises(HTTPException):
+        enforce_read_only("demo-judge-1", "POST", "/api/payment-actions/act-1:execute")
+    with pytest.raises(HTTPException):
+        enforce_read_only("demo-judge-2", "POST", "/api/contracts/683427ff-a5fb-4c49-a7f8-27fca89b5865/payments/agent")
+
+
+def test_judge_sandbox_stays_off_without_a_contract_id(monkeypatch):
+    monkeypatch.delenv("LEXPROOF_JUDGE_SANDBOX_CONTRACT_ID", raising=False)
+    with pytest.raises(HTTPException):
+        enforce_read_only("demo-judge-1", "POST", "/api/contracts/683427ff-a5fb-4c49-a7f8-27fca89b5865/payments/agent")
+
+
 def test_no_read_only_accounts_configured(monkeypatch):
     monkeypatch.delenv("LEXPROOF_READ_ONLY_UIDS", raising=False)
     enforce_read_only("demo-judge-1", "POST", "/api/contracts")

@@ -73,6 +73,7 @@ export function ContractPayments({ contractId, roles, actorId, readOnlyAccount =
         onExecute={(actionId) => void run(`/api/payment-actions/${encodeURIComponent(actionId)}:execute`, { method: 'POST' }).then(() => reload())}
         onVerify={(evidenceId) => void apiFetch(`/api/verify/${encodeURIComponent(evidenceId)}`)}
         readOnlyAccount={readOnlyAccount}
+        judgeSandbox={Boolean(data.judge_sandbox)}
       />
     </div>
   )
