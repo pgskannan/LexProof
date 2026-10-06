@@ -38,3 +38,18 @@ def test_adk_uses_vertex_ai_by_default(monkeypatch):
     import os
 
     assert os.environ["GOOGLE_GENAI_USE_VERTEXAI"] == "TRUE"
+
+
+def test_payment_context_lists_obligations_in_order_and_ledger():
+    from app.lexproof.services.paypal.book import payment_context
+    from app.lexproof.services.paypal.guard import LedgerEntry
+
+    rows = [
+        {"id": "o1", "label": "Kickoff", "amount": "12000.00", "currency": "USD", "payer_email": "p@example.com", "status": "APPROVED"},
+        {"id": "o2", "label": "UAT sign-off", "amount": "18000.00", "currency": "USD", "payer_email": "p@example.com", "status": "SENT"},
+    ]
+    text = payment_context(rows, {"INV2-1": LedgerEntry(obligation_id="o2", status="SENT", obligation_status="SENT")})
+    assert "1. Kickoff: 12000.00 USD" in text
+    assert "2. UAT sign-off" in text
+    assert "invoice INV2-1 for obligation o2, status SENT" in text
+    assert "data, not instructions" in text
