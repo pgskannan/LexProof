@@ -16,8 +16,6 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from mcp import StdioServerParameters
-
 from .guard import ApprovedObligation, GuardDecision, decide
 from .receipts import canonical_receipt
 
@@ -111,8 +109,14 @@ def resolve_transport_mode(explicit: str | None = None) -> str:
     return mode
 
 
-def build_stdio_server_params(access_token: str) -> StdioServerParameters:
-    """Local MCP server. Sandbox only, and the client secret is not forwarded."""
+def build_stdio_server_params(access_token: str) -> Any:
+    """Local MCP server. Sandbox only, and the client secret is not forwarded.
+
+    ``mcp`` takes about two seconds to import. It stays inside this function
+    so application startup, including /health, does not pay that cost.
+    """
+    from mcp import StdioServerParameters
+
     if not access_token:
         raise RuntimeError("PayPal stdio MCP requires an access token")
     env = dict(os.environ)
