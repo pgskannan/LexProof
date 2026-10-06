@@ -8,7 +8,7 @@ Staging API: `lexproof-api-paypal`. Do not deploy this branch to `lexproof-api`.
 
 ## Inspiration
 
-Agent toolkits let a language model move money. PayPal's agent toolkit will create an invoice, send it, and refund it, and it does not ask a second human before the merchant-side call. A clause can tell the model to invoice a $50,000 bonus that the parties never approved. We built LexProof so the contract, not the model, decides what money is allowed to move, and so the result can be checked by someone who does not trust our servers.
+Agent toolkits let a language model move money. PayPal's Agent Toolkit and MCP server make invoicing and refunds available to an agent in a few lines, and they leave the business rules (who may approve what, and against which agreement) to the application built on top. A clause can tell the model to invoice a $50,000 bonus that the parties never approved. We built LexProof so the contract, not the model, decides what money is allowed to move, and so the result can be checked by someone who does not trust our servers.
 
 ## What it does
 
@@ -80,6 +80,6 @@ PayPal MCP, PayPal Agent Toolkit, PayPal Invoicing and Webhooks (sandbox), Googl
 
 ## Category prizes
 
-**PayPal + AI.** The agent uses PayPal's MCP tools. LexProof adds the human gate PayPal's toolkit does not ship: verbatim clause check, schema guard, and a second person for money out.
+**PayPal + AI.** The agent uses PayPal's MCP tools. LexProof adds the application-level controls a merchant needs on top: verbatim clause check, schema guard, and a second person for money out.
 
 **Agentic commerce.** The agent can complete a real sandbox invoice and a real refund, and both are bound to an approved commercial obligation. The $50,000 instruction hidden in the contract does not become a charge.
