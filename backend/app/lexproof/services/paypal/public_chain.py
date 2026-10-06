@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .checkpoint import CHAIN_VERSION, coverage, order_receipts
 from .receipts import canonical_json, receipt_hash
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -36,6 +37,7 @@ def public_payment_chain(
     receipts: Any,
     settings: Any,
     anchors: Any | None = None,
+    checkpoints: Any | None = None,
 ) -> dict[str, Any] | None:
     """Obligations, mandate hash, and ordered receipts for one passport."""
     passport = _passport(passports, passport_id)
@@ -47,12 +49,30 @@ def public_payment_chain(
     stored = settings.get(contract_id) if settings is not None else None
     rows = [item for item in obligations.stream() if item.get("contract_id") == contract_id]
     rows.sort(key=lambda item: str(item.get("id") or ""))
-    receipt_rows = [item for item in receipts.stream() if item.get("contract_id") == contract_id]
-    receipt_rows.sort(key=lambda item: str(item.get("created_at") or ""))
+    receipt_rows = order_receipts([item for item in receipts.stream() if item.get("contract_id") == contract_id])
+    checkpoint_rows = [
+        item for item in (checkpoints.stream() if checkpoints is not None else [])
+        if item.get("contract_id") == contract_id and item.get("transaction_hash")
+    ]
+    covered_by = coverage(receipt_rows, checkpoint_rows)
+    public_checkpoints = [
+        {
+            "checkpoint_id": item.get("id") or "",
+            "count": item.get("count") or 0,
+            "chain_head": item.get("chain_head") or "",
+            "transaction_hash": item.get("transaction_hash") or "",
+            "block_number": item.get("block_number"),
+            "anchored_at": item.get("anchored_at"),
+            "etherscan_url": f"https://sepolia.etherscan.io/tx/{item['transaction_hash']}",
+        }
+        for item in sorted(checkpoint_rows, key=lambda row: int(row.get("count") or 0))
+    ]
     return {
         "passport_id": passport_id,
         "contract_id": contract_id,
         "mandate_hash": (stored or {}).get("mandate_hash") or "",
+        "chain_version": CHAIN_VERSION,
+        "checkpoints": public_checkpoints,
         "obligations": [
             {
                 "label": item.get("label") or "",
@@ -63,12 +83,13 @@ def public_payment_chain(
             }
             for item in rows
         ],
-        "receipts": [_public_receipt(item, anchors) for item in receipt_rows],
+        "receipts": [_public_receipt(item, covered_by.get(str(item.get("id") or ""))) for item in receipt_rows],
     }
 
 
-def _public_receipt(item: dict[str, Any], anchors: Any | None) -> dict[str, Any]:
-    canonical = {
+def public_receipt_canonical(item: dict[str, Any]) -> dict[str, Any]:
+    """Canonical privacy-safe receipt displayed and hashed by public verification."""
+    return {
         "actor": mask_emails(item.get("actor") or ""),
         "amount": item.get("amount") or "",
         "contract_id": item.get("contract_id") or "",
@@ -81,9 +102,12 @@ def _public_receipt(item: dict[str, Any], anchors: Any | None) -> dict[str, Any]
         "time": item.get("created_at") or item.get("time") or "",
         "tool": item.get("tool") or "",
     }
+
+
+def _public_receipt(item: dict[str, Any], checkpoint: dict[str, Any] | None) -> dict[str, Any]:
+    canonical = public_receipt_canonical(item)
     evidence_id = str(item.get("evidence_id") or "")
-    anchor = anchors.get(evidence_id) if anchors is not None and evidence_id else None
-    anchored = bool(anchor and (anchor.get("transaction_hash") or anchor.get("anchored_at")))
+    anchored = bool(checkpoint and checkpoint.get("transaction_hash"))
     return {
         "tool": canonical["tool"],
         "decision": canonical["decision"],
@@ -91,7 +115,10 @@ def _public_receipt(item: dict[str, Any], anchors: Any | None) -> dict[str, Any]
         "receipt_hash": receipt_hash(canonical),
         "canonical": canonical_json(canonical),
         "evidence_id": evidence_id,
-        "anchor_status": "anchored" if anchored else "not_anchored",
+        "anchor_status": "anchored" if anchored else "pending_checkpoint",
+        "checkpoint_id": (checkpoint or {}).get("id"),
+        "checkpoint_count": (checkpoint or {}).get("count"),
+        "anchor_tx": (checkpoint or {}).get("transaction_hash"),
     }
 
 

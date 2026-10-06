@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { apiFetch } from '../../lib/api'
+import { verifyPaymentChain, type PaymentChainCheckpoint } from '../../lib/paymentChain'
 
 type PublicReceipt = {
   tool: string
@@ -11,11 +12,23 @@ type PublicReceipt = {
   canonical: string
   evidence_id: string
   anchor_status: string
+  checkpoint_id?: string | null
+  checkpoint_count?: number | null
+  anchor_tx?: string | null
+}
+
+type PublicCheckpoint = PaymentChainCheckpoint & {
+  block_number: number | null
+  anchored_at: string | null
+  etherscan_url: string
 }
 
 type PublicChain = {
   passport_id: string
+  contract_id: string
   mandate_hash: string
+  chain_version: string
+  checkpoints: PublicCheckpoint[]
   obligations: { label: string; amount: string; currency: string; status: string; clause_ref: string }[]
   receipts: PublicReceipt[]
 }
@@ -32,6 +45,7 @@ export function PaymentProof({ initialPassportId = '' }: { initialPassportId?: s
   const [chain, setChain] = useState<PublicChain | null>(null)
   const [error, setError] = useState('')
   const [checks, setChecks] = useState<Record<string, string>>({})
+  const [chainCheck, setChainCheck] = useState<Awaited<ReturnType<typeof verifyPaymentChain>> | null>(null)
 
   useEffect(() => {
     if (initialPassportId.trim()) void load(initialPassportId)
@@ -43,6 +57,7 @@ export function PaymentProof({ initialPassportId = '' }: { initialPassportId?: s
     const requested = id.trim()
     if (!requested) return
     setError('')
+    setChainCheck(null)
     const response = await apiFetch(`/api/verify/contracts/${encodeURIComponent(requested)}/payments`)
     if (!response.ok) {
       setChain(null)
@@ -56,13 +71,25 @@ export function PaymentProof({ initialPassportId = '' }: { initialPassportId?: s
     const digest = await sha256Hex(receipt.canonical)
     setChecks((current) => ({
       ...current,
-      [receipt.receipt_hash]: digest === receipt.receipt_hash ? `Matched · ${receipt.anchor_status}` : 'Hash did not match',
+      [receipt.receipt_hash]: digest === receipt.receipt_hash
+        ? receipt.checkpoint_count
+          ? `Matched · covered by checkpoint #${receipt.checkpoint_count}`
+          : 'Matched · pending next checkpoint'
+        : 'Hash did not match',
     }))
+  }
+
+  async function verifyChain() {
+    if (!chain) return
+    setChainCheck(await verifyPaymentChain(chain.contract_id, chain.receipts, chain.checkpoints))
   }
 
   return (
     <section className="bg-white rounded-xl shadow-lg p-8 mb-8 border border-gray-200" data-testid="payment-proof">
-      <h2 className="text-2xl font-bold text-gray-900">Payments, with proof</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-2xl font-bold text-gray-900">Payments, with proof</h2>
+        {chain ? <button type="button" onClick={() => void verifyChain()} className="rounded border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-800">Verify chain</button> : null}
+      </div>
       <p className="mt-2 text-sm text-gray-600">Approved, invoiced, sent, and paid. Blocked attempts stay in the trail. Emails are masked.</p>
       <div className="mt-4 flex gap-3">
         <input
@@ -78,6 +105,30 @@ export function PaymentProof({ initialPassportId = '' }: { initialPassportId?: s
       {chain ? (
         <div className="mt-6 space-y-4">
           <p className="font-mono text-xs text-gray-600">Mandate {chain.mandate_hash || 'not hashed yet'}</p>
+          {chainCheck ? (
+            <p className="text-sm" role="status">
+              {chainCheck.status === 'matched' ? (
+                <>Matched · anchored in tx <a className="font-mono text-blue-700 underline" href={chainCheck.checkpoint.etherscan_url || `https://sepolia.etherscan.io/tx/${chainCheck.checkpoint.transaction_hash}`} target="_blank" rel="noreferrer">{`${chainCheck.checkpoint.transaction_hash.slice(0, 6)}…${chainCheck.checkpoint.transaction_hash.slice(-4)}`}</a></>
+              ) : chainCheck.status === 'receipt_mismatch' ? (
+                `Mismatch · receipt #${chainCheck.index} (${chainCheck.receipt.time} · ${chainCheck.receipt.tool})`
+              ) : chainCheck.status === 'missing_receipts' ? (
+                `Mismatch · checkpoint includes missing receipt #${chainCheck.index}`
+              ) : chainCheck.status === 'chain_mismatch' ? (
+                `Mismatch · chain head after receipt #${chainCheck.checkpoint.count}`
+              ) : (
+                'Pending · no anchored checkpoint'
+              )}
+            </p>
+          ) : null}
+          {chain.checkpoints.length ? (
+            <ul className="space-y-1 text-xs text-gray-600">
+              {chain.checkpoints.map((checkpoint) => (
+                <li key={checkpoint.checkpoint_id || checkpoint.transaction_hash}>
+                  Checkpoint #{checkpoint.count} · {checkpoint.anchored_at || 'anchored'} · <a className="text-blue-700 underline" href={checkpoint.etherscan_url} target="_blank" rel="noreferrer">Sepolia transaction</a>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           <ol className="flex flex-wrap gap-2 text-xs font-semibold">
             {STEPS.map((step) => (
               <li key={step} className="rounded-full bg-gray-100 px-3 py-1 text-gray-700">{step}</li>
@@ -98,6 +149,7 @@ export function PaymentProof({ initialPassportId = '' }: { initialPassportId?: s
                 <li key={receipt.receipt_hash} className={`rounded-lg border p-3 ${blocked ? 'border-red-300 bg-red-50 text-red-800' : 'border-gray-200'}`}>
                   <p className="text-sm font-medium">{receipt.time} · {receipt.tool} · {receipt.decision}</p>
                   <p className="mt-1 font-mono text-xs">{receipt.receipt_hash.slice(0, 16)} · {receipt.anchor_status}</p>
+                  <p className="mt-1 text-xs">{receipt.checkpoint_count ? `covered by checkpoint #${receipt.checkpoint_count}` : 'pending next checkpoint'}</p>
                   <pre className="mt-2 overflow-x-auto text-xs">{receipt.canonical}</pre>
                   <button type="button" className="mt-2 text-sm font-semibold text-blue-700 underline" onClick={() => void verify(receipt)}>Verify</button>
                   {checks[receipt.receipt_hash] ? <p className="mt-1 text-xs">{checks[receipt.receipt_hash]}</p> : null}

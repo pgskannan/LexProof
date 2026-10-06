@@ -16,7 +16,7 @@ From a signed MSA, LexProof extracts payment obligations and keeps the clause qu
 
 A merchant can then tell the agent "Invoice milestone 1". Gemini, running as an ADK agent on Vertex, proposes PayPal tool calls. A server-side guard checks each call against the exact PayPal tool schema and against the mandate. Create and send are allowed only when the amount, currency, and recipient match an approved obligation. The ledger marks the invoice sent only after PayPal confirms it. The sandbox buyer pays. A signed webhook moves the obligation to PAID. A refund comes back as "Needs approval". A second person executes it once. A second execute is refused. The $50,000 bonus, which was injected into the contract as an instruction to the agent, is blocked.
 
-Every step is a hashed receipt. The public verify page shows the chain. The browser recomputes one receipt hash itself.
+Every step is a hashed receipt. Receipts form a hash chain; checkpoints of the chain head are anchored on Ethereum Sepolia, one transaction per checkpoint. The public verify page shows the chain, and the browser recomputes the receipt hashes and the latest anchored chain head.
 
 ## How we built it
 
@@ -38,7 +38,8 @@ flowchart LR
   Guard --> Receipts["Hashed receipts"]
   Ledger --> Receipts
   Receipts --> Evidence["Evidence and Legal Passport"]
-  Evidence --> Anchor["Ethereum anchor"]
+  Receipts --> Checkpoints["Append-only payment-chain checkpoints"]
+  Checkpoints --> Anchor["Ethereum Sepolia: one transaction per checkpoint"]
 ```
 
 ## Challenges we ran into

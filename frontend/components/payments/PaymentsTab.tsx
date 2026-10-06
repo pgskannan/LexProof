@@ -57,6 +57,15 @@ export type PaymentReceipt = {
   response?: { id?: string; invoice_id?: string; refund_id?: string; payer_view_url?: string }
 }
 
+export type PaymentCheckpoint = {
+  id: string
+  count: number
+  chain_head: string
+  transaction_hash: string
+  block_number?: number | null
+  anchored_at?: string | null
+}
+
 export type ToolCallChip = {
   tool: string
   decision: string
@@ -72,6 +81,7 @@ export type PaymentsData = {
   mandate_hash: string
   invoices: { invoice_id: string; status: string; amount?: string; obligation_id?: string; payer_view_url?: string | null; refunded_amount?: string | null }[]
   receipts: PaymentReceipt[]
+  checkpoints: PaymentCheckpoint[]
   actions: PaymentAction[]
   judge_sandbox?: boolean
 }
@@ -90,6 +100,7 @@ type Props = {
   onTransition?: (actionId: string, transitionId: 'approve' | 'reject') => void
   onExecute?: (actionId: string) => void
   onVerify?: (evidenceId: string) => void
+  onAnchorCheckpoint?: () => Promise<PaymentCheckpoint | null>
   readOnlyAccount?: boolean
   judgeSandbox?: boolean
 }
@@ -153,11 +164,13 @@ export function PaymentsTab({
   onTransition,
   onExecute,
   onVerify,
+  onAnchorCheckpoint,
   readOnlyAccount = false,
   judgeSandbox = false,
 }: Props) {
   const [message, setMessage] = useState(SUGGESTED[0])
   const [copied, setCopied] = useState(false)
+  const [newCheckpoint, setNewCheckpoint] = useState<PaymentCheckpoint | null>(null)
   const sandbox = judgeSandbox || Boolean(data.judge_sandbox)
   const canEdit = !readOnlyAccount && hasRole(roles, 'contract_owner')
   const canApprove = !readOnlyAccount && hasRole(roles, 'approver')
@@ -186,8 +199,28 @@ export function PaymentsTab({
           <Button type="button" size="sm" variant="outline" onClick={() => void copyHash()} disabled={!data.mandate_hash}>
             {copied ? 'Copied' : 'Copy hash'}
           </Button>
+          {canEdit && onAnchorCheckpoint ? (
+            <Button
+              type="button"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                if (!window.confirm('This writes one Sepolia transaction.')) return
+                void onAnchorCheckpoint().then((result) => {
+                  if (result) setNewCheckpoint(result)
+                })
+              }}
+            >
+              Anchor checkpoint
+            </Button>
+          ) : null}
         </div>
       </div>
+      {newCheckpoint?.transaction_hash ? (
+        <p className="text-sm" role="status">
+          Checkpoint anchored: <a className="font-mono text-[var(--brand-primary,#1d4ed8)] underline" href={`https://sepolia.etherscan.io/tx/${newCheckpoint.transaction_hash}`} target="_blank" rel="noreferrer">{`${newCheckpoint.transaction_hash.slice(0, 8)}…${newCheckpoint.transaction_hash.slice(-6)}`}</a>
+        </p>
+      ) : null}
 
       <Card>
         <CardContent>
@@ -458,6 +491,7 @@ export const PAYPAL_DEMO_PAYMENTS: PaymentsData = {
     obligation_id: 'ob-kickoff',
     payer_view_url: 'https://www.sandbox.paypal.com/invoice/p/#INV2-DEMO',
   }],
+  checkpoints: [],
   receipts: [
     {
       id: 'rc-old',

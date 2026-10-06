@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import { apiFetch } from '../../lib/api'
-import { PaymentsTab, type PaymentsData, type ToolCallChip } from './PaymentsTab'
+import { PaymentsTab, type PaymentCheckpoint, type PaymentsData, type ToolCallChip } from './PaymentsTab'
 
-const empty: PaymentsData = { obligations: [], mandate_hash: '', invoices: [], receipts: [], actions: [] }
+const empty: PaymentsData = { obligations: [], mandate_hash: '', invoices: [], receipts: [], checkpoints: [], actions: [] }
 
 export function ContractPayments({ contractId, roles, actorId, readOnlyAccount = false }: { contractId: string; roles: string[]; actorId?: string; readOnlyAccount?: boolean }) {
   const [data, setData] = useState<PaymentsData>(empty)
@@ -72,6 +72,12 @@ export function ContractPayments({ contractId, roles, actorId, readOnlyAccount =
         onTransition={(actionId, transitionId) => void run(`/api/payment-actions/${encodeURIComponent(actionId)}/transition`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transition_id: transitionId }) }).then(() => reload())}
         onExecute={(actionId) => void run(`/api/payment-actions/${encodeURIComponent(actionId)}:execute`, { method: 'POST' }).then(() => reload())}
         onVerify={(evidenceId) => void apiFetch(`/api/verify/${encodeURIComponent(evidenceId)}`)}
+        onAnchorCheckpoint={async (): Promise<PaymentCheckpoint | null> => {
+          const result = await run(`/api/contracts/${encodeURIComponent(contractId)}/payments/checkpoints`, { method: 'POST' })
+          if (!result) return null
+          await reload()
+          return result as PaymentCheckpoint
+        }}
         readOnlyAccount={readOnlyAccount}
         judgeSandbox={Boolean(data.judge_sandbox)}
       />

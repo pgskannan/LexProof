@@ -221,7 +221,7 @@ def test_public_chain_masks_email_and_hashes_the_shown_json():
     digest = hashlib.sha256(shown["canonical"].encode("utf-8")).hexdigest()
     assert digest == shown["receipt_hash"]
     assert json.loads(shown["canonical"]) == json.loads(canonical_json(json.loads(shown["canonical"])))
-    assert shown["anchor_status"] == "not_anchored"
+    assert shown["anchor_status"] == "pending_checkpoint"
     assert shown["decision"] == "deny"
 
 

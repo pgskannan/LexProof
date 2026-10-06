@@ -8,10 +8,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ..services.auth import get_current_user, judge_approver_uids, judge_sandbox_contract_id
+from ..services.auth import get_current_user, judge_approver_uids, judge_sandbox_contract_id, read_only_uids
 from ..services.paypal.book import PaymentBook
 from ..services.paypal.obligations import PaymentError
 from ..services.paypal.rate_limit import check_agent_rate
+from ..services.paypal.checkpoint_service import create_payment_checkpoint
 
 router = APIRouter(tags=["payments"])
 
@@ -77,6 +78,31 @@ def get_payments(
     book: PaymentBook = Depends(get_payment_book),
 ):
     return _call(lambda: book.view(contract_id, user))
+
+
+@router.post("/contracts/{contract_id}/payments/checkpoints")
+async def create_contract_payment_checkpoint(
+    contract_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+    book: PaymentBook = Depends(get_payment_book),
+):
+    uid = str(user.get("uid") or "")
+    if uid in read_only_uids():
+        raise HTTPException(status_code=403, detail="This is a read-only demo account: you can explore everything, but changes are disabled.")
+    try:
+        contract = book.obligations._require_roles(contract_id, user, ("contract_owner", "admin"))
+        return await create_payment_checkpoint(
+            contract_id=contract_id,
+            org_id=str(contract.get("org_id") or ""),
+            actor_id=uid,
+            receipts=book.receipts,
+            checkpoints=book.checkpoints,
+            evidence=book.obligations.evidence,
+            passports=book.obligations.passports,
+            settings=book.settings,
+        )
+    except PaymentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.patch("/payment-obligations/{obligation_id}")

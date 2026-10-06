@@ -144,7 +144,7 @@ Priced per workspace with a monthly contract allowance, because cost grows with 
 
 Agent toolkits let an LLM call a payment API. PayPal's agent toolkit will create and send invoices, and it will refund, but it has no built-in human gate for those merchant-side actions. A sentence in the contract can tell the model to invoice an extra $50,000, and the toolkit will try.
 
-LexProof puts a contract-derived mandate in front of that toolkit. Each obligation is checked against a verbatim clause. A server-side guard then checks the **exact PayPal tool schema** before any call: unexpected fields are denied, and tax, discount, and shipping other than zero are denied. Money leaving the merchant (a refund) needs a second person's approval. The ledger records an invoice as sent only after PayPal confirms it (`get_invoice` after send). Signed webhooks move that invoice to PAID or REFUNDED. Every step is a hashed receipt in the evidence record and the Legal Passport. Anyone can recompute a receipt hash on the public verify page.
+LexProof puts a contract-derived mandate in front of that toolkit. Each obligation is checked against a verbatim clause. A server-side guard then checks the **exact PayPal tool schema** before any call: unexpected fields are denied, and tax, discount, and shipping other than zero are denied. Money leaving the merchant (a refund) needs a second person's approval. The ledger records an invoice as sent only after PayPal confirms it (`get_invoice` after send). Signed webhooks move that invoice to PAID or REFUNDED. Every step is a hashed receipt in the evidence record and the Legal Passport. Receipts form a hash chain; checkpoints of the chain head are anchored on Ethereum Sepolia, one transaction per checkpoint. Anyone can recompute a receipt hash and verify the latest anchored checkpoint on the public page.
 
 ```mermaid
 flowchart LR
@@ -156,7 +156,8 @@ flowchart LR
   Guard --> Receipts["Hashed receipts"]
   Ledger --> Receipts
   Receipts --> Evidence["Evidence and Legal Passport"]
-  Evidence --> Anchor["Ethereum anchor"]
+  Receipts --> Checkpoints["Append-only payment-chain checkpoints"]
+  Checkpoints --> Anchor["Ethereum Sepolia: one transaction per checkpoint"]
 ```
 
 ### What's new since 1 October 2026

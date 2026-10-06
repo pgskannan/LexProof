@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...config import LexProofSettings, get_settings
+from ...repositories.firestore import FirestoreRepository
 from ...services.auth import judge_may_run_agent, judge_sandbox_contract_id
 from .actions import PaymentActions
 from .agent import PayPalAgentGuard, call_paypal_tool, run_paypal_turn, transport_for_url
@@ -24,6 +25,7 @@ class PaymentBook:
         actions: PaymentActions | None = None,
         invoices: Any = None,
         receipts: Any = None,
+        checkpoints: Any = None,
         settings: LexProofSettings | None = None,
         token_provider: PayPalTokenProvider | None = None,
         run_turn: Any = None,
@@ -33,6 +35,7 @@ class PaymentBook:
         self.obligations = obligations or PaymentObligations()
         self.invoices = invoices if invoices is not None else default_invoices()
         self.receipts = receipts if receipts is not None else default_receipts()
+        self.checkpoints = checkpoints if checkpoints is not None else FirestoreRepository("payment_checkpoints")
         self.actions = actions or PaymentActions(
             invoices=self.invoices,
             obligations=self.obligations.obligations,
@@ -60,6 +63,13 @@ class PaymentBook:
             reverse=True,
         )
         payload["actions"] = self.actions.list_for_contract(org_id, contract_id)
+        payload["checkpoints"] = sorted(
+            (
+                item for item in self.checkpoints.stream()
+                if item.get("org_id") == org_id and item.get("contract_id") == contract_id
+            ),
+            key=lambda item: (int(item.get("count") or 0), str(item.get("created_at") or "")),
+        )
         sandbox = judge_sandbox_contract_id()
         payload["judge_sandbox"] = bool(sandbox) and contract_id == sandbox
         return payload
