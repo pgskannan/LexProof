@@ -306,7 +306,7 @@ export default function ContractDetailPage() {
 
       {section === 'payments' ? (
         <div className="mt-6">
-          <ContractPayments contractId={contractId} roles={roles} actorId={me?.user_id} />
+          <ContractPayments contractId={contractId} roles={roles} actorId={me?.user_id} readOnlyAccount={me?.user_id === 'demo-judge-1'} />
         </div>
       ) : null}
 

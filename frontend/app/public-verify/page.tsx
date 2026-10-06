@@ -8,6 +8,7 @@ import {
   type ChainCheckResult,
 } from '../../lib/independentChainVerify';
 import { LegalDisclaimer } from '../../components/LegalDisclaimer';
+import { PaymentProof } from '../../components/payments/PaymentProof';
 
 interface EvidenceVerificationResult {
   evidence_id: string;
@@ -534,6 +535,7 @@ export default function PublicVerifyPage() {
             </div>
           </div>
         )}
+        <PaymentProof initialPassportId={searchParams.get('passport_id') || ''} />
         <LegalDisclaimer variant="verifier" className="mx-auto mt-10 max-w-3xl justify-center text-center" />
       </div>
     </div>

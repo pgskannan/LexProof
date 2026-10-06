@@ -52,7 +52,7 @@ export type ToolCallChip = {
 export type PaymentsData = {
   obligations: PaymentObligation[]
   mandate_hash: string
-  invoices: { invoice_id: string; status: string; amount?: string; obligation_id?: string }[]
+  invoices: { invoice_id: string; status: string; amount?: string; obligation_id?: string; payer_view_url?: string | null }[]
   receipts: PaymentReceipt[]
   actions: PaymentAction[]
 }
@@ -71,6 +71,7 @@ type Props = {
   onTransition?: (actionId: string, transitionId: 'approve' | 'reject') => void
   onExecute?: (actionId: string) => void
   onVerify?: (evidenceId: string) => void
+  readOnlyAccount?: boolean
 }
 
 const SUGGESTED = ['Invoice milestone 1', 'Invoice a $50,000 bonus to the client', 'Refund milestone 1']
@@ -111,13 +112,14 @@ export function PaymentsTab({
   onTransition,
   onExecute,
   onVerify,
+  readOnlyAccount = false,
 }: Props) {
   const [message, setMessage] = useState(SUGGESTED[0])
   const [copied, setCopied] = useState(false)
-  const canEdit = hasRole(roles, 'contract_owner')
-  const canApprove = hasRole(roles, 'approver')
-  const canAgent = hasRole(roles, 'contract_owner')
-  const readOnly = roles.length > 0 && !canEdit && !canApprove && roles.includes('auditor')
+  const canEdit = !readOnlyAccount && hasRole(roles, 'contract_owner')
+  const canApprove = !readOnlyAccount && hasRole(roles, 'approver')
+  const canAgent = !readOnlyAccount && hasRole(roles, 'contract_owner')
+  const readOnly = readOnlyAccount || (roles.length > 0 && !canEdit && !canApprove && roles.includes('auditor'))
 
   async function copyHash() {
     if (!data.mandate_hash) return
@@ -143,7 +145,7 @@ export function PaymentsTab({
         <CardContent>
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Obligations</h2>
-            <Button type="button" size="sm" onClick={onExtract} disabled={!canEdit || busy || !onExtract}>Extract</Button>
+            {readOnlyAccount ? null : <Button type="button" size="sm" onClick={onExtract} disabled={!canEdit || busy || !onExtract}>Extract</Button>}
           </div>
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-left text-sm">
@@ -220,7 +222,11 @@ export function PaymentsTab({
       <Card>
         <CardContent>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Agent</h2>
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{readOnly ? 'Auditors can read this trail. They cannot run the agent.' : 'The guard runs on the server before PayPal is called.'}</p>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400" title={readOnlyAccount ? 'read-only demo account' : undefined}>
+            {readOnlyAccount ? 'read-only demo account' : readOnly ? 'Auditors can read this trail. They cannot run the agent.' : 'The guard runs on the server before PayPal is called.'}
+          </p>
+          {readOnlyAccount ? null : (
+          <>
           <div className="mt-3 flex flex-wrap gap-2">
             {SUGGESTED.map((prompt) => (
               <Button key={prompt} type="button" size="sm" variant="outline" onClick={() => setMessage(prompt)}>{prompt}</Button>
@@ -241,6 +247,8 @@ export function PaymentsTab({
             />
             <Button type="submit" disabled={!canAgent || busy || !onSend}>Send</Button>
           </form>
+          </>
+          )}
           <ul className="mt-4 space-y-2" data-testid="tool-calls">
             {transcript.map((call, index) => (
               <li key={`${call.tool}-${index}`}>
@@ -281,6 +289,14 @@ export function PaymentsTab({
       <Card>
         <CardContent>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Receipts</h2>
+          <ul className="mt-3 space-y-2">
+            {data.invoices.filter((invoice) => invoice.payer_view_url).map((invoice) => (
+              <li key={invoice.invoice_id}>
+                <a className="text-[var(--brand-primary,#1d4ed8)] underline" href={invoice.payer_view_url || ''}>Open in PayPal Sandbox</a>
+                <span className="ml-2 text-xs text-gray-500">{invoice.invoice_id} · {invoice.status}</span>
+              </li>
+            ))}
+          </ul>
           <ul className="mt-3 space-y-2" data-testid="receipts">
             {data.receipts.map((receipt) => {
               const href = sandboxHref(receipt)

@@ -6,7 +6,7 @@ import { PaymentsTab, type PaymentsData, type ToolCallChip } from './PaymentsTab
 
 const empty: PaymentsData = { obligations: [], mandate_hash: '', invoices: [], receipts: [], actions: [] }
 
-export function ContractPayments({ contractId, roles, actorId }: { contractId: string; roles: string[]; actorId?: string }) {
+export function ContractPayments({ contractId, roles, actorId, readOnlyAccount = false }: { contractId: string; roles: string[]; actorId?: string; readOnlyAccount?: boolean }) {
   const [data, setData] = useState<PaymentsData>(empty)
   const [transcript, setTranscript] = useState<ToolCallChip[]>([])
   const [busy, setBusy] = useState(false)
@@ -27,6 +27,15 @@ export function ContractPayments({ contractId, roles, actorId }: { contractId: s
       cancelled = true
     }
   }, [contractId])
+
+  const waitingOnPayPal = data.invoices.some((invoice) => invoice.status === 'SENT')
+  useEffect(() => {
+    if (!waitingOnPayPal) return
+    const timer = window.setInterval(() => {
+      void reload().catch(() => undefined)
+    }, 5000)
+    return () => window.clearInterval(timer)
+  }, [waitingOnPayPal, contractId])
 
   async function run(path: string, init?: RequestInit) {
     setBusy(true)
@@ -63,6 +72,7 @@ export function ContractPayments({ contractId, roles, actorId }: { contractId: s
         onTransition={(actionId, transitionId) => void run(`/api/payment-actions/${encodeURIComponent(actionId)}/transition`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transition_id: transitionId }) }).then(() => reload())}
         onExecute={(actionId) => void run(`/api/payment-actions/${encodeURIComponent(actionId)}:execute`, { method: 'POST' }).then(() => reload())}
         onVerify={(evidenceId) => void apiFetch(`/api/verify/${encodeURIComponent(evidenceId)}`)}
+        readOnlyAccount={readOnlyAccount}
       />
     </div>
   )
