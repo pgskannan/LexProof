@@ -162,9 +162,9 @@ $plain = [ordered]@{
 if ($PayPal) {
     $plain["PAYPAL_ENV"] = "sandbox"
     $plain["PAYPAL_MCP_URL"] = $(if ($envValues["PAYPAL_MCP_URL"]) { $envValues["PAYPAL_MCP_URL"] } else { "https://mcp.sandbox.paypal.com/sse" })
-    # Vercel preview for feat/paypal-agentic-payments. The team slug is the
-    # optional extra hyphenated segment; production lexproof-api is not updated.
-    $plain["LEXPROOF_CORS_ORIGIN_REGEX"] = "https://lexproof-pied-git-feat-paypal-agentic-payments(-[a-z0-9]+)*\.vercel\.app"
+    # Vercel branch preview for feat/paypal-agentic-payments (exact host; Starlette
+    # full-matches the regex). Production lexproof-api is not updated.
+    $plain["LEXPROOF_CORS_ORIGIN_REGEX"] = "https://lexproof-git-feat-paypal-agentic-payments-pgskannans-projects\.vercel\.app"
 }
 # Written to a YAML file rather than --set-env-vars: the CORS list contains commas, and
 # gcloud.cmd runs through cmd.exe, which mangles the usual "^|^" delimiter escape.
