@@ -36,7 +36,7 @@ def _find_contract(contracts: FirestoreRepository, org_id: str) -> dict | None:
     return matches[0] if matches else None
 
 
-async def seed(org_id: str, owner_id: str, approver_id: str) -> None:
+async def seed(org_id: str, owner_id: str, approver_id: str, *, approve: bool = True) -> None:
     if owner_id == approver_id:
         raise SystemExit("owner and approver must be different people")
     docx = write_demo_docx()
@@ -75,7 +75,17 @@ async def seed(org_id: str, owner_id: str, approver_id: str) -> None:
     contract_hash = str(version.get("content_hash") or "")
     for milestone in MILESTONES:
         if milestone["label"] in by_label:
-            print(f"obligation exists {milestone['label']}")
+            existing = by_label[milestone["label"]]
+            status = str(existing.get("status") or "")
+            if not approve and status in {"APPROVED", "REJECTED"}:
+                obligations.obligations.set(
+                    str(existing.get("id")),
+                    {"status": "EXTRACTED", "approved_by": None},
+                    merge=True,
+                )
+                print(f"returned to EXTRACTED {milestone['label']} {existing.get('id')}")
+            else:
+                print(f"obligation exists {milestone['label']} {status}")
             continue
         assessed = assess_extracted_obligation(DEMO_CONTRACT_TEXT, {**milestone, "currency": "USD", "payer_email": PAYER_EMAIL, "payer_name": "Acme Retail Inc."})
         obligation_id = str(uuid4())
@@ -97,8 +107,11 @@ async def seed(org_id: str, owner_id: str, approver_id: str) -> None:
             },
         )
         obligations.edit(obligation_id, owner, {"payer_email": PAYER_EMAIL})
-        obligations.approve(obligation_id, approver)
-        print(f"approved {milestone['label']} {obligation_id}")
+        if approve:
+            obligations.approve(obligation_id, approver)
+            print(f"approved {milestone['label']} {obligation_id}")
+        else:
+            print(f"left EXTRACTED {milestone['label']} {obligation_id}")
     if INJECTION["label"] not in by_label:
         assessed = assess_extracted_obligation(DEMO_CONTRACT_TEXT, {**INJECTION, "currency": "USD", "payer_name": "Acme Retail Inc."})
         assessed["needs_review_reason"] = INJECTION["needs_review_reason"]
@@ -129,8 +142,13 @@ def main() -> None:
     parser.add_argument("--org-id", required=True)
     parser.add_argument("--owner-id", required=True)
     parser.add_argument("--approver-id", required=True)
+    parser.add_argument(
+        "--no-approve",
+        action="store_true",
+        help="Leave milestones EXTRACTED so a recording can show review and a second-person approval.",
+    )
     args = parser.parse_args()
-    asyncio.run(seed(args.org_id, args.owner_id, args.approver_id))
+    asyncio.run(seed(args.org_id, args.owner_id, args.approver_id, approve=not args.no_approve))
 
 
 if __name__ == "__main__":

@@ -1,11 +1,15 @@
-"""Reset the PayPal sandbox demo contract.
+"""Reset the PayPal sandbox demo contract before every recording.
 
 Dry-run unless ``--confirm`` is passed. Cancels DRAFT and SENT sandbox invoices
 for the contract (a DRAFT that cannot be cancelled is deleted), marks those
-ledger rows CANCELLED, and sets the demo milestones back to APPROVED. The
-Bonus obligation stays EXTRACTED.
+ledger rows CANCELLED, clears pending payment actions, and sets the demo
+milestones back to APPROVED. The Bonus obligation stays EXTRACTED.
 
-Does not call live PayPal.
+``--extracted`` sets every obligation on the contract back to EXTRACTED so a
+recording can show review and a second-person approval without extracting
+duplicates.
+
+Does not call live PayPal unless ``--confirm`` is passed.
 """
 
 from __future__ import annotations
@@ -57,13 +61,25 @@ async def _cancel_remote(provider: PayPalTokenProvider, invoice_id: str, status:
     return cancelled.status_code
 
 
-async def reset(org_id: str, contract_id: str | None, confirm: bool) -> None:
+PENDING_ACTIONS = {"in_review", "approved", "executing"}
+
+
+def _pending_actions(actions: FirestoreRepository, contract_id: str) -> list[dict]:
+    return [
+        row
+        for row in actions.stream()
+        if row.get("contract_id") == contract_id and str(row.get("status") or "") in PENDING_ACTIONS
+    ]
+
+
+async def reset(org_id: str, contract_id: str | None, confirm: bool, *, extracted: bool = False) -> None:
     settings = get_settings()
     if not settings.has_paypal_configuration() or settings.paypal_env.strip().lower() != "sandbox":
         raise SystemExit("PayPal sandbox credentials are required")
     contracts = FirestoreRepository("contracts")
     invoices = FirestoreRepository("payment_invoices")
     obligations = FirestoreRepository("payment_obligations")
+    actions = FirestoreRepository("payment_actions")
     contract = _contract(contracts, org_id, contract_id)
     if not contract:
         print("no demo contract")
@@ -81,20 +97,30 @@ async def reset(org_id: str, contract_id: str | None, confirm: bool) -> None:
         targets.append((invoice_id, status))
     for invoice_id, status in targets:
         print(f"{'cancel' if confirm else 'would cancel'} {invoice_id} ({status})")
+    obligation_changes = 0
     for obligation in obligations.stream():
         if obligation.get("contract_id") != contract_id:
             continue
         label = str(obligation.get("label") or "")
-        next_status = "EXTRACTED" if label.strip().lower() == "bonus" else "APPROVED"
+        next_status = "EXTRACTED" if extracted or label.strip().lower() == "bonus" else "APPROVED"
         current = str(obligation.get("status") or "")
         if current == next_status:
             print(f"keep {label or obligation.get('id')} {current}")
             continue
+        obligation_changes += 1
         print(f"{'set' if confirm else 'would set'} {label or obligation.get('id')} {current} -> {next_status}")
+    pending = _pending_actions(actions, contract_id)
+    for row in pending:
+        print(f"{'clear' if confirm else 'would clear'} payment action {row.get('id')} {row.get('status')}")
     if not confirm:
-        print("dry-run; pass --confirm to apply")
+        print(
+            f"summary: invoices planned {len(targets)}, obligations to reset {obligation_changes}, "
+            f"pending actions to clear {len(pending)}"
+        )
+        print("dry-run; pass --confirm to apply. Reset before every recording.")
         return
     provider = PayPalTokenProvider(settings.paypal_client_id, settings.paypal_client_secret.get_secret_value())
+    cancelled = 0
     try:
         for invoice_id, status in targets:
             code = await _cancel_remote(provider, invoice_id, status)
@@ -102,6 +128,7 @@ async def reset(org_id: str, contract_id: str | None, confirm: bool) -> None:
                 print(f"skip {invoice_id} paypal status {code}")
                 continue
             invoices.set(invoice_id, {"status": "CANCELLED"}, merge=True)
+            cancelled += 1
             print(f"cancelled {invoice_id} paypal {code}")
     finally:
         await provider.aclose()
@@ -109,10 +136,17 @@ async def reset(org_id: str, contract_id: str | None, confirm: bool) -> None:
         if obligation.get("contract_id") != contract_id:
             continue
         label = str(obligation.get("label") or "")
-        next_status = "EXTRACTED" if label.strip().lower() == "bonus" else "APPROVED"
+        next_status = "EXTRACTED" if extracted or label.strip().lower() == "bonus" else "APPROVED"
         if str(obligation.get("status") or "") == next_status:
             continue
         obligations.set(str(obligation.get("id")), {"status": next_status, "invoice_id": None}, merge=True)
+    for row in pending:
+        actions.delete(str(row.get("id")))
+    print(
+        f"summary: invoices cancelled {cancelled}, obligations reset {obligation_changes}, "
+        f"pending actions cleared {len(pending)}"
+    )
+    print("Reset before every recording.")
 
 
 def main() -> None:
@@ -120,8 +154,13 @@ def main() -> None:
     parser.add_argument("--org-id", required=True)
     parser.add_argument("--contract-id", default=None)
     parser.add_argument("--confirm", action="store_true", help="Apply PayPal and ledger changes. Without this flag the script only prints.")
+    parser.add_argument(
+        "--extracted",
+        action="store_true",
+        help="Set every obligation back to EXTRACTED for a recording of review and approval.",
+    )
     args = parser.parse_args()
-    asyncio.run(reset(args.org_id, args.contract_id, args.confirm))
+    asyncio.run(reset(args.org_id, args.contract_id, args.confirm, extracted=args.extracted))
 
 
 if __name__ == "__main__":
