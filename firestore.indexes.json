@@ -116,6 +116,14 @@
       ]
     },
     {
+      "collectionGroup": "payment_webhook_events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "org_id", "mode": "ASCENDING" },
+        { "fieldPath": "created_at", "mode": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "external_access_links",
       "queryScope": "COLLECTION",
       "fields": [

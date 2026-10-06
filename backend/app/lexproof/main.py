@@ -27,6 +27,8 @@ from .api.chat_notifications import router as chat_notifications_router
 from .api.evaluation import router as evaluation_router
 from .api.trial_requests import router as trial_requests_router
 from .api.payments import router as payments_router
+from .api.paypal_public import router as paypal_public_router
+from .api.paypal_webhooks import router as paypal_webhook_router
 
 
 @asynccontextmanager
@@ -45,12 +47,17 @@ async def _app_lifespan(_app: FastAPI):
 def create_app() -> FastAPI:
     """Create the LexProof API application."""
     app = FastAPI(title="LexProof API", version="0.2.0", lifespan=_app_lifespan)
+    settings = get_settings()
+    cors_kwargs: dict[str, str] = {}
+    if settings.cors_origin_regex.strip():
+        cors_kwargs["allow_origin_regex"] = settings.cors_origin_regex.strip()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=get_settings().cors_origin_list(),
+        allow_origins=settings.cors_origin_list(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        **cors_kwargs,
     )
 
     @app.middleware("http")
@@ -125,7 +132,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     verify_app.include_router(public_verify_router)
+    verify_app.include_router(paypal_public_router)
     app.mount("/api/verify", verify_app)
+    # PayPal posts this with no Firebase token. It is not behind get_current_user,
+    # so read-only judge accounts are not consulted and the raw body stays intact.
+    app.include_router(paypal_webhook_router, prefix="/api")
 
     app.include_router(compliance_router, prefix="/api", dependencies=private_dependencies)
     app.include_router(remediation_router, prefix="/api", dependencies=private_dependencies)

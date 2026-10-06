@@ -11,6 +11,7 @@ import json
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from ...repositories.firestore import FirestoreRepository
@@ -139,6 +140,7 @@ def _apply_success(
                     "currency": obligation.get("currency"),
                     "amount": obligation.get("amount"),
                     "created_receipt_id": receipt_id,
+                    "payer_view_url": payer_view_url(response),
                     "created_at": stamp,
                     "updated_at": stamp,
                 },
@@ -161,7 +163,11 @@ def _apply_success(
         obligation_id = str(entry.get("obligation_id") or decision.matched_obligation_id or "")
 
         def apply_send(transaction: Any) -> None:
-            invoices.set(invoice_id, {"status": "SENT", "updated_at": stamp, "sent_receipt_id": receipt_id}, merge=True, transaction=transaction)
+            sent = {"status": "SENT", "updated_at": stamp, "sent_receipt_id": receipt_id}
+            view = payer_view_url(response)
+            if view:
+                sent["payer_view_url"] = view
+            invoices.set(invoice_id, sent, merge=True, transaction=transaction)
             if obligation_id:
                 obligations.set(obligation_id, {"status": "SENT", "updated_at": stamp}, merge=True, transaction=transaction)
 
@@ -231,6 +237,33 @@ def _apply_refund(
         )
 
     _transact(invoices, apply)
+
+
+def payer_view_url(response: Any) -> str | None:
+    """Payer link from a create/send invoice response. Sandbox hosts only."""
+    if not isinstance(response, dict):
+        return None
+    links = response.get("links")
+    candidates: list[str] = []
+    if isinstance(links, list):
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            href = link.get("href")
+            rel = str(link.get("rel") or "")
+            if isinstance(href, str) and rel in {"payer-view", "payer_view"}:
+                candidates.insert(0, href)
+            elif isinstance(href, str):
+                candidates.append(href)
+    href = response.get("href")
+    if isinstance(href, str):
+        candidates.append(href)
+    for candidate in candidates:
+        parsed = urlparse(candidate.strip())
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme == "https" and (host == "sandbox.paypal.com" or host.endswith(".sandbox.paypal.com")):
+            return candidate.strip()
+    return None
 
 
 def paypal_invoice_id(response: Any) -> str | None:

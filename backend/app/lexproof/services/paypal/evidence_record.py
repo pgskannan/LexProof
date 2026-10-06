@@ -28,13 +28,15 @@ def write_payment_evidence(
     content: dict[str, Any],
     source_id: str,
     now: Callable[[], str] | None = None,
+    transaction: Any = None,
+    passport_id: str | None = None,
 ) -> str:
     """Persist one hashed evidence item and return its id."""
     evidence_repo = evidence if evidence is not None else FirestoreRepository("evidence_records")
     passport_repo = passports if passports is not None else FirestoreRepository("legal_passports")
     stamp = now() if now else datetime.now(timezone.utc).isoformat()
     evidence_id = generate_evidence_id()
-    passport_id = _passport_id(passport_repo, contract_id)
+    passport_id = passport_id or _passport_id(passport_repo, contract_id)
     item = {
         "evidence_id": evidence_id,
         "id": evidence_id,
@@ -60,7 +62,7 @@ def write_payment_evidence(
         "hash": None,
     }
     item["hash"] = hash_evidence_item(item)
-    evidence_repo.set(evidence_id, item)
+    evidence_repo.set(evidence_id, item, transaction=transaction)
     return evidence_id
 
 
