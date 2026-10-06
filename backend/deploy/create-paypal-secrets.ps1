@@ -25,7 +25,9 @@ function Read-DotEnv([string]$path) {
 }
 
 function Write-SecretValue([string]$Name, [string]$Value) {
-    & gcloud secrets describe $Name *> $null
+    $gcloudCmd = Join-Path (Split-Path (Get-Command gcloud).Source -Parent) "gcloud.cmd"
+    if (-not (Test-Path $gcloudCmd)) { throw "gcloud.cmd was not found next to gcloud." }
+    & $gcloudCmd secrets describe $Name *> $null
     $exists = $LASTEXITCODE -eq 0
     $arguments = if ($exists) {
         "secrets versions add $Name --data-file=-"
@@ -33,16 +35,16 @@ function Write-SecretValue([string]$Name, [string]$Value) {
         "secrets create $Name --replication-policy=automatic --data-file=-"
     }
     $start = New-Object System.Diagnostics.ProcessStartInfo
-    $start.FileName = "gcloud"
+    $start.FileName = $gcloudCmd
     $start.Arguments = $arguments
     $start.RedirectStandardInput = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
-    $start.StandardInputEncoding = New-Object System.Text.UTF8Encoding $false
     $process = [System.Diagnostics.Process]::Start($start)
-    $process.StandardInput.Write($Value)
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+    $process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
     $process.StandardInput.Close()
     $null = $process.StandardOutput.ReadToEnd()
     $null = $process.StandardError.ReadToEnd()
