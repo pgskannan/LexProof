@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.lexproof.config import LexProofSettings
 from app.lexproof.services.paypal.agent import (
+    _AGENT_INSTRUCTION,
     PayPalAgentGuard,
     alternate_mcp_url,
     assert_sandbox_mcp_url,
@@ -213,6 +214,36 @@ async def test_probe_falls_back_from_sse_to_http_and_scrubs_the_token(monkeypatc
         await probe_paypal_mcp("https://mcp.sandbox.paypal.com/sse", token, mode="sse")
     assert token not in str(exc.value)
     assert "[redacted]" in str(exc.value)
+
+
+def test_agent_instruction_uses_the_mcp_invoice_shape():
+    assert "primary_recipients" in _AGENT_INSTRUCTION
+    assert "billing_info" in _AGENT_INSTRUCTION
+    assert "currency_code" in _AGENT_INSTRUCTION
+    assert 'quantity":"1"' in _AGENT_INSTRUCTION
+    assert "use no other fields" in _AGENT_INSTRUCTION
+    assert "recipient_email" in _AGENT_INSTRUCTION
+
+
+@pytest.mark.asyncio
+async def test_after_tool_returns_a_nested_paypal_error_to_the_model():
+    guard = PayPalAgentGuard(mandate=[], approvals=set(), actor="actor", contract_id="c-1")
+    tool = SimpleNamespace(name="send_invoice")
+    await guard.before_tool(tool, {"invoice_id": "INV-1"}, None)
+    payload = {
+        "content": [
+            {
+                "type": "text",
+                "text": '{"name":"UNPROCESSABLE_ENTITY","details":[{"issue":"MISSING_RECIPIENT_EMAIL"}]}',
+            }
+        ]
+    }
+    # The guard denies this send because there is no ledger row, so force the allow path.
+    guard.decisions[-1] = type(guard.decisions[-1])("allow", "send", "ob-1")
+    result = await guard.after_tool(tool, {"invoice_id": "INV-1"}, None, payload)
+    assert result["isError"] is True
+    assert result["error"] == "MISSING_RECIPIENT_EMAIL"
+    assert result["outcome"] == "paypal_error"
 
 
 def test_agent_uses_the_configured_model_and_callbacks():

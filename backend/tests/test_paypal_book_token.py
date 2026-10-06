@@ -78,5 +78,5 @@ def test_guard_allows_send_after_create_in_same_turn():
     created = {"rel": "self", "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices/INV2-AAAA-BBBB-CCCC-DDDD"}
     guard._track_invoice("create_invoice", {}, created, allowed)
     assert guard.invoice_ledger["INV2-AAAA-BBBB-CCCC-DDDD"].status == "DRAFT"
-    guard._track_invoice("send_invoice", {"invoice_id": "INV2-AAAA-BBBB-CCCC-DDDD"}, {"ok": True}, allowed)
+    guard._track_invoice("send_invoice", {"invoice_id": "INV2-AAAA-BBBB-CCCC-DDDD"}, {"status": "SENT"}, allowed)
     assert guard.invoice_ledger["INV2-AAAA-BBBB-CCCC-DDDD"].status == "SENT"

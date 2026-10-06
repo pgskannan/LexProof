@@ -6,7 +6,9 @@ Access tokens are not printed.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -67,7 +69,46 @@ def _event_summary(event: object) -> str:
     return "\n".join(lines)
 
 
+SCHEMA_TOOLS = (
+    "create_invoice",
+    "send_invoice",
+    "send_invoice_reminder",
+    "create_refund",
+    "get_invoice",
+    "create_order",
+)
+
+
+async def _print_schemas(url: str, token: str, wanted: set[str]) -> None:
+    from mcp import ClientSession
+    from mcp.client.sse import sse_client
+
+    headers = {"Authorization": f"Bearer {token}"}
+    async with sse_client(url, headers=headers, timeout=30, sse_read_timeout=60) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            listed = await session.list_tools()
+    found = {getattr(tool, "name", ""): tool for tool in getattr(listed, "tools", ())}
+    missing = sorted(wanted - set(found))
+    if missing:
+        raise SystemExit("schema not found for: " + ", ".join(missing))
+    for name in sorted(wanted):
+        tool = found[name]
+        raw = tool.model_dump() if hasattr(tool, "model_dump") else {"repr": repr(tool)}
+        schema = raw.get("inputSchema") or raw.get("input_schema")
+        print(f"SCHEMA {name}")
+        print(json.dumps(schema, indent=2, default=str))
+
+
 async def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--schema",
+        nargs="*",
+        default=None,
+        help="Print inputSchema for these tools and exit. With no names, dumps the invoice tools.",
+    )
+    args = parser.parse_args()
     settings = get_settings()
     if not settings.has_paypal_configuration():
         raise SystemExit("PayPal is not configured")
@@ -89,6 +130,10 @@ async def main() -> None:
         present = log_invoicing_scope(provider.scopes)
         print(f"invoicing_scope_present={present}")
         transport, url, names = await probe_paypal_mcp(settings.paypal_mcp_url, token)
+        if args.schema is not None:
+            wanted = set(args.schema) or set(SCHEMA_TOOLS)
+            await _print_schemas(url if transport != "stdio" else "https://mcp.sandbox.paypal.com/sse", token, wanted)
+            return
         print(f"mcp_transport={transport}")
         print(f"mcp_url={url}")
         print("tools:")

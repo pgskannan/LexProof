@@ -12,5 +12,6 @@ test('payments tab renders seeded PayPal sandbox data', async ({ page }) => {
   await expect(page.getByText(/Needs approval/)).toBeVisible()
   await expect(page.getByRole('button', { name: 'Approve' }).first()).toBeVisible()
   await expect(page.getByTestId('receipt-hash')).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Sandbox' })).toHaveAttribute('href', /sandbox\.paypal\.com/)
+  await expect(page.getByRole('link', { name: 'Open in PayPal Sandbox' }).first()).toHaveAttribute('href', /sandbox\.paypal\.com/)
+  await expect(page.getByText('PayPal error · MISSING_RECIPIENT_EMAIL')).toBeVisible()
 })

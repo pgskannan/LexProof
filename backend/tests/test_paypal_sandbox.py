@@ -41,7 +41,8 @@ async def test_create_send_then_refund_executes_once():
     try:
         token = await provider.get_access_token()
         create_args = {
-            "detail": {"currency_code": "USD", "note": "LexProof sandbox smoke"},
+            "currency_code": "USD",
+            "note": "LexProof sandbox smoke",
             "primary_recipients": [{"billing_info": {"email_address": "sb-tdpzh53193435@personal.example.com"}}],
             "items": [{"name": "Kickoff", "quantity": "1", "unit_amount": {"currency_code": "USD", "value": "1.00"}}],
         }
@@ -72,6 +73,14 @@ async def test_create_send_then_refund_executes_once():
         send_decision = decide("send_invoice", {"invoice_id": invoice_id}, [], set(), __import__("app.lexproof.services.paypal.ledger", fromlist=["load_ledger"]).load_ledger(invoices, obligations, "sandbox"))
         assert send_decision.decision == "allow"
         sent = await call_paypal_tool(settings.paypal_mcp_url, token.access_token, "send_invoice", {"invoice_id": invoice_id})
+
+        async def fetch(name: str, args: dict) -> dict:
+            return await call_paypal_tool(settings.paypal_mcp_url, token.access_token, name, args)
+
+        from app.lexproof.services.paypal.ledger import confirm_tool_result
+
+        sent, issue = await confirm_tool_result("send_invoice", {"invoice_id": invoice_id}, sent, fetch)
+        assert issue is None
         record_tool_result(
             invoices=invoices,
             obligations=obligations,

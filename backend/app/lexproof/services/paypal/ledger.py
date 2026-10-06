@@ -90,8 +90,11 @@ def record_tool_result(
         "evidence_id": evidence_id,
         "created_at": stamp,
     }
+    document["paypal_invoice_id"] = _receipt_invoice_id(args, response, decision)
+    document["amount"] = _quoted_amount(args, invoices, document["paypal_invoice_id"])
     receipts.set(receipt_id, document)
-    if decision.decision == "allow" and _succeeded(response):
+    confirmed = receipt.get("outcome") != "paypal_error"
+    if decision.decision == "allow" and confirmed and _succeeded(response):
         _apply_success(
             invoices=invoices,
             obligations=obligations,
@@ -160,6 +163,8 @@ def _apply_success(
         invoice_id = str(args.get("invoice_id") or "").strip()
         entry = invoices.get(invoice_id) if invoice_id else None
         if not entry:
+            return
+        if paypal_invoice_status(response) not in {"SENT", "UNPAID"}:
             return
         obligation_id = str(entry.get("obligation_id") or decision.matched_obligation_id or "")
 
@@ -241,7 +246,10 @@ def _apply_refund(
 
 
 def payer_view_url(response: Any) -> str | None:
-    """Payer link from a create/send invoice response. Sandbox hosts only."""
+    """Buyer link. PayPal puts it on GET invoice at detail.metadata.recipient_view_url."""
+    direct = _find_string(response, {"recipient_view_url", "payer_view_url"})
+    if direct and _sandbox_url(direct):
+        return direct
     if not isinstance(response, dict):
         return None
     links = response.get("links")
@@ -260,11 +268,15 @@ def payer_view_url(response: Any) -> str | None:
     if isinstance(href, str):
         candidates.append(href)
     for candidate in candidates:
-        parsed = urlparse(candidate.strip())
-        host = (parsed.hostname or "").lower()
-        if parsed.scheme == "https" and (host == "sandbox.paypal.com" or host.endswith(".sandbox.paypal.com")):
+        if _sandbox_url(candidate):
             return candidate.strip()
     return None
+
+
+def _sandbox_url(candidate: str) -> bool:
+    parsed = urlparse(candidate.strip())
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and (host == "sandbox.paypal.com" or host.endswith(".sandbox.paypal.com"))
 
 
 _INVOICE_ID_RE = re.compile(r"INV2(?:-[A-Z0-9]{4}){4}")
@@ -298,12 +310,218 @@ def _transact(repo: Any, callback: Callable[[Any], None]) -> None:
     callback(None)
 
 
+_PAYPAL_ERROR_NAMES = frozenset(
+    {
+        "UNPROCESSABLE_ENTITY",
+        "INVALID_REQUEST",
+        "RESOURCE_NOT_FOUND",
+        "NOT_AUTHORIZED",
+        "PERMISSION_DENIED",
+        "INTERNAL_SERVER_ERROR",
+        "VALIDATION_ERROR",
+    }
+)
+_INVOICE_STATUSES = frozenset(
+    {
+        "DRAFT",
+        "SENT",
+        "UNPAID",
+        "SCHEDULED",
+        "PAID",
+        "MARKED_AS_PAID",
+        "CANCELLED",
+        "REFUNDED",
+        "PARTIALLY_PAID",
+        "PARTIALLY_REFUNDED",
+        "PAYMENT_PENDING",
+    }
+)
+
+
+def paypal_failure(response: Any) -> str | None:
+    """PayPal issue text when a response is a failure, including MCP content JSON. None on success."""
+    return _failure(response)
+
+
+def paypal_invoice_status(response: Any) -> str | None:
+    return _invoice_status(response)
+
+
 def _succeeded(response: Any) -> bool:
-    if not isinstance(response, dict):
-        return False
-    if response.get("blocked") or response.get("isError") or response.get("error"):
-        return False
-    return True
+    return paypal_failure(response) is None and isinstance(response, dict)
+
+
+async def confirm_tool_result(
+    tool: str,
+    args: dict[str, Any],
+    response: Any,
+    fetch: Callable[[str, dict[str, Any]], Any],
+) -> tuple[Any, str | None]:
+    """Confirm a write with PayPal. The issue string is None only when PayPal's state matches the write."""
+    name = tool.strip().lower()
+    failure = paypal_failure(response)
+    if name == "create_invoice":
+        if failure:
+            return response, failure
+        if not paypal_invoice_id(response):
+            return response, "PayPal did not return an invoice id"
+        return response, None
+    if name == "send_invoice":
+        if failure:
+            return response, failure
+        invoice_id = str(args.get("invoice_id") or "").strip()
+        fetched = await fetch("get_invoice", {"invoice_id": invoice_id})
+        return _confirmed_send(response, fetched)
+    if name in {"create_refund", "record_refund_for_invoice"}:
+        if failure:
+            return response, failure
+        return response, None
+    return response, None
+
+
+def _confirmed_send(response: Any, fetched: Any) -> tuple[Any, str | None]:
+    status = paypal_invoice_status(fetched)
+    view = payer_view_url(fetched)
+    merged = dict(response) if isinstance(response, dict) else {"send_response": response}
+    merged["get_invoice"] = fetched
+    if status:
+        merged["status"] = status
+    if view:
+        merged["payer_view_url"] = view
+    if status in {"SENT", "UNPAID"}:
+        return merged, None
+    fetched_issue = paypal_failure(fetched)
+    if fetched_issue:
+        return merged, fetched_issue
+    return merged, f"PayPal invoice status is {status or 'UNKNOWN'}"
+
+
+def _failure(value: Any) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("{") or text.startswith("["):
+            try:
+                return _failure(json.loads(text))
+            except json.JSONDecodeError:
+                return None
+        return None
+    if isinstance(value, list):
+        for child in value:
+            found = _failure(child)
+            if found:
+                return found
+        return None
+    if not isinstance(value, dict):
+        return None
+    name = value.get("name")
+    if isinstance(name, str) and name in _PAYPAL_ERROR_NAMES:
+        return _issue_text(value) or name
+    details = value.get("details")
+    if isinstance(details, list):
+        for detail in details:
+            if isinstance(detail, dict) and isinstance(detail.get("issue"), str) and detail["issue"].strip():
+                return detail["issue"].strip()
+    for key in ("status_code", "statusCode", "http_status"):
+        code = _http_status(value.get(key))
+        if code is not None and code >= 400:
+            return _issue_text(value) or f"HTTP {code}"
+    status_code = _http_status(value.get("status"))
+    if status_code is not None and status_code >= 400:
+        return _issue_text(value) or f"HTTP {status_code}"
+    flagged = value.get("isError") is True or value.get("blocked") is True or bool(value.get("error"))
+    for child in value.values():
+        found = _failure(child)
+        if found:
+            return found
+    if flagged:
+        error = value.get("error")
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        return "PayPal error"
+    return None
+
+
+def _issue_text(value: dict[str, Any]) -> str | None:
+    details = value.get("details")
+    if isinstance(details, list):
+        for detail in details:
+            if isinstance(detail, dict) and isinstance(detail.get("issue"), str) and detail["issue"].strip():
+                return detail["issue"].strip()
+    return None
+
+
+def _http_status(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _invoice_status(value: Any) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("{") or text.startswith("["):
+            try:
+                return _invoice_status(json.loads(text))
+            except json.JSONDecodeError:
+                return None
+        return None
+    if isinstance(value, dict):
+        status = value.get("status")
+        if isinstance(status, str) and status.strip().upper() in _INVOICE_STATUSES:
+            return status.strip().upper()
+        for child in value.values():
+            found = _invoice_status(child)
+            if found:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = _invoice_status(child)
+            if found:
+                return found
+    return None
+
+
+def _receipt_invoice_id(args: dict[str, Any], response: Any, decision: GuardDecision) -> str | None:
+    if decision.decision != "allow":
+        return None
+    found = paypal_invoice_id(response)
+    if found:
+        return found
+    invoice_id = args.get("invoice_id") if isinstance(args, dict) else None
+    if isinstance(invoice_id, str) and invoice_id.strip():
+        return invoice_id.strip()
+    return None
+
+
+def _quoted_amount(args: dict[str, Any], invoices: Any, invoice_id: str | None) -> str | None:
+    items = args.get("items") if isinstance(args, dict) else None
+    if isinstance(items, list):
+        total = Decimal(0)
+        saw = False
+        try:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                unit = item.get("unit_amount")
+                if not isinstance(unit, dict) or unit.get("value") is None:
+                    continue
+                quantity = Decimal(str(item.get("quantity") or "1").replace(",", ""))
+                total += quantity * Decimal(str(unit.get("value")).replace(",", ""))
+                saw = True
+            if saw:
+                return f"{total.quantize(Decimal('0.01')):,.2f}"
+        except (InvalidOperation, ValueError):
+            saw = False
+    if invoice_id:
+        row = invoices.get(invoice_id) or {}
+        amount = row.get("amount")
+        if amount is not None and str(amount).strip():
+            return str(amount)
+    return None
 
 
 def _debug_id(response: Any) -> str | None:

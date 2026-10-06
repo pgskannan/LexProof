@@ -45,15 +45,6 @@ PAYPAL_TOOL_CLASSES: dict[str, tuple[str, ...]] = {
     "MONEY_OUT_PREFIXES": ("cancel_",),
 }
 
-_EXTRA_RECIPIENT_KEYS = (
-    "cc_emails",
-    "cc",
-    "bcc",
-    "additional_recipients",
-    "secondary_recipients",
-    "extra_recipients",
-)
-_RECIPIENT_KEYS = ("recipient_email", "payer_email", "email", "recipient", "primary_recipients", "recipients")
 _AMOUNT_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
 
 
@@ -73,6 +64,7 @@ class ApprovedObligation:
     amount: Decimal | str | int
     payer_email: str
     status: str
+    label: str = ""
 
 
 @dataclass(frozen=True)
@@ -93,6 +85,9 @@ class GuardDecision:
 
 _LEDGER_TOOLS = frozenset({"send_invoice", "send_invoice_reminder"})
 _LEDGER_ARGUMENT = "invoice_id"
+# inputSchema property names from docs/paypal-mcp-schemas.md (sandbox SSE, 2026-10-06).
+_SEND_INVOICE_KEYS = frozenset({"invoice_id", "note", "send_to_recipient", "additional_recipients"})
+_REMINDER_KEYS = frozenset({"invoice_id", "subject", "note", "additional_recipients"})
 
 
 def classify(tool_name: str) -> ToolClass:
@@ -150,40 +145,337 @@ def payment_action_id(tool_name: str, args: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+# None means a scalar PayPal accepts. A dict describes an object, or each element of an array.
+_CREATE_INVOICE_SCHEMA: dict[str, Any] = {
+    "currency_code": None,
+    "invoice_number": None,
+    "invoice_date": None,
+    "reference": None,
+    "note": None,
+    "invoicer_business_name": None,
+    "invoicer_given_name": None,
+    "invoicer_surname": None,
+    "invoicer_email_address": None,
+    "invoicer_tax_id": None,
+    "invoicer_address_line_1": None,
+    "invoicer_address_line_2": None,
+    "invoicer_city": None,
+    "invoicer_state": None,
+    "invoicer_postal_code": None,
+    "invoicer_country_code": None,
+    "primary_recipients": {
+        "billing_info": {
+            "business_name": None,
+            "name": {"given_name": None, "surname": None},
+            "address": {
+                "address_line_1": None,
+                "address_line_2": None,
+                "admin_area_2": None,
+                "admin_area_1": None,
+                "postal_code": None,
+                "country_code": None,
+            },
+            "email_address": None,
+            "phones": {"country_code": None, "national_number": None, "phone_type": None},
+            "additional_info": None,
+            "language": None,
+        },
+        "shipping_info": {
+            "business_name": None,
+            "name": {"given_name": None, "surname": None},
+            "address": {
+                "address_line_1": None,
+                "address_line_2": None,
+                "admin_area_2": None,
+                "admin_area_1": None,
+                "postal_code": None,
+                "country_code": None,
+            },
+        },
+    },
+    "items": {
+        "name": None,
+        "description": None,
+        "quantity": None,
+        "unit_amount": {"currency_code": None, "value": None},
+        "tax": {"name": None, "percent": None, "tax_note": None},
+        "discount": {"percent": None, "amount": {"currency_code": None, "value": None}},
+        "item_date": None,
+        "unit_of_measure": None,
+    },
+    "allow_tip": None,
+    "theme_color": None,
+    "shipping_cost": None,
+    "enable_pay_by_bank": None,
+    "pay_by_bank_exclusive_above_threshold": None,
+    "allow_partial_payment": None,
+    "minimum_partial_payment_amount": None,
+}
+_CREATE_ORDER_SCHEMA: dict[str, Any] = {
+    "currencyCode": None,
+    "items": {
+        "name": None,
+        "quantity": None,
+        "description": None,
+        "itemCost": None,
+        "taxPercent": None,
+        "itemTotal": None,
+    },
+    "discount": None,
+    "shippingCost": None,
+    "shippingAddress": {
+        "address_line_1": None,
+        "address_line_2": None,
+        "admin_area_2": None,
+        "admin_area_1": None,
+        "postal_code": None,
+        "country_code": None,
+    },
+    "notes": None,
+    "returnUrl": None,
+    "cancelUrl": None,
+}
+
+
 def _decide_billing(tool_name: str, args: dict[str, Any], mandate: list[ApprovedObligation]) -> GuardDecision:
-    extra = _extra_recipient_reason(args)
-    if extra is not None:
-        return GuardDecision("deny", extra, None)
-    emails, email_reason = _recipient_emails(args)
-    if email_reason is not None:
-        return GuardDecision("deny", email_reason, None)
-    currency, currency_reason = _currency(args)
-    if currency_reason is not None:
-        return GuardDecision("deny", currency_reason, None)
+    if tool_name == "create_invoice":
+        return _decide_create_invoice(args, mandate)
+    if tool_name == "create_order":
+        return _decide_create_order(args, mandate)
+    return GuardDecision("deny", f"tool {tool_name} is not an allowed PayPal operation", None)
+
+
+def _decide_create_invoice(args: dict[str, Any], mandate: list[ApprovedObligation]) -> GuardDecision:
+    unexpected = _unexpected_in(args, _CREATE_INVOICE_SCHEMA)
+    if unexpected:
+        return GuardDecision("deny", f"unexpected argument {unexpected}", None)
     try:
-        total = _total(args)
+        payer = _invoice_payer(args)
+        currency, total = _invoice_total(args)
     except ValueError as exc:
         return GuardDecision("deny", str(exc), None)
-    if total < 0:
-        return GuardDecision("deny", "negative amount", None)
+    return _match_billing(mandate, payer, currency, total)
 
-    payer = emails[0].lower()
-    reasons: list[str] = []
+
+def _decide_create_order(args: dict[str, Any], mandate: list[ApprovedObligation]) -> GuardDecision:
+    unexpected = _unexpected_in(args, _CREATE_ORDER_SCHEMA)
+    if unexpected:
+        return GuardDecision("deny", f"unexpected argument {unexpected}", None)
+    try:
+        currency, total = _order_total(args)
+    except ValueError as exc:
+        return GuardDecision("deny", str(exc), None)
+    return _match_billing(mandate, None, currency, total)
+
+
+def _unexpected_in(value: Any, schema: dict[str, Any]) -> str | None:
+    """First key PayPal's schema does not declare. Arrays use the same object schema for every item."""
+    if not isinstance(value, dict):
+        return None
+    extra = sorted(key for key in value if key not in schema)
+    if extra:
+        return extra[0]
+    for key, child in value.items():
+        spec = schema[key]
+        if not isinstance(spec, dict):
+            continue
+        if isinstance(child, dict):
+            found = _unexpected_in(child, spec)
+        elif isinstance(child, list):
+            found = None
+            for item in child:
+                found = _unexpected_in(item, spec)
+                if found:
+                    break
+        else:
+            found = None
+        if found:
+            return found
+    return None
+
+
+def _invoice_payer(args: dict[str, Any]) -> str:
+    recipients = args.get("primary_recipients")
+    if not isinstance(recipients, list) or not recipients:
+        raise ValueError("missing recipient email")
+    if len(recipients) != 1:
+        raise ValueError("extra recipients are not allowed")
+    recipient = recipients[0]
+    if not isinstance(recipient, dict):
+        raise ValueError("missing recipient email")
+    billing = recipient.get("billing_info")
+    if not isinstance(billing, dict):
+        raise ValueError("missing recipient email")
+    email = billing.get("email_address")
+    if not isinstance(email, str) or not email.strip():
+        raise ValueError("missing recipient email")
+    return email.strip()
+
+
+def _invoice_total(args: dict[str, Any]) -> tuple[str, Decimal]:
+    raw_currency = args.get("currency_code")
+    if not isinstance(raw_currency, str) or not raw_currency.strip():
+        raise ValueError("missing currency")
+    currency = raw_currency.strip().upper()
+    items = args.get("items")
+    if not isinstance(items, list):
+        raise ValueError("unparseable amount")
+    if not items:
+        raise ValueError("missing amount")
+    total = Decimal(0)
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("unparseable amount")
+        unit = item.get("unit_amount")
+        if not isinstance(unit, dict):
+            raise ValueError("missing amount")
+        unit_currency = unit.get("currency_code")
+        if not isinstance(unit_currency, str) or not unit_currency.strip():
+            raise ValueError("missing currency")
+        if unit_currency.strip().upper() != currency:
+            raise ValueError("mixed currencies in tool arguments")
+        if "quantity" not in item:
+            raise ValueError("missing amount")
+        quantity = _parse_amount(item.get("quantity"))
+        price = _parse_amount(unit.get("value"))
+        if quantity < 0 or price < 0:
+            raise ValueError("negative amount")
+        _reject_adjustment(item.get("tax"), "tax")
+        _reject_adjustment(item.get("discount"), "discount")
+        total += quantity * price
+    _reject_adjustment(args.get("shipping_cost"), "shipping")
+    return currency, total
+
+
+def _order_total(args: dict[str, Any]) -> tuple[str, Decimal]:
+    raw_currency = args.get("currencyCode")
+    if not isinstance(raw_currency, str) or not raw_currency.strip():
+        raise ValueError("missing currency")
+    currency = raw_currency.strip().upper()
+    items = args.get("items")
+    if not isinstance(items, list):
+        raise ValueError("unparseable amount")
+    if not items:
+        raise ValueError("missing amount")
+    _reject_adjustment(args.get("discount"), "discount")
+    _reject_adjustment(args.get("shippingCost"), "shipping")
+    total = Decimal(0)
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("unparseable amount")
+        if "itemCost" not in item or "itemTotal" not in item:
+            raise ValueError("missing amount")
+        quantity = _parse_amount(item.get("quantity", 1))
+        cost = _parse_amount(item.get("itemCost"))
+        line = _parse_amount(item.get("itemTotal"))
+        if quantity < 0 or cost < 0 or line < 0:
+            raise ValueError("negative amount")
+        if quantity * cost != line:
+            raise ValueError("total does not match line items")
+        _reject_adjustment(item.get("taxPercent"), "tax")
+        total += line
+    return currency, total
+
+
+def _reject_adjustment(value: Any, kind: str) -> None:
+    """Tax, discount, and shipping change the amount PayPal collects. Zero is fine; anything else is not."""
+    if value is None or value == "" or value == {} or value is False:
+        return
+    if isinstance(value, dict):
+        if "percent" in value:
+            _reject_adjustment(value.get("percent"), kind)
+        if "amount" in value:
+            _reject_adjustment(value.get("amount"), kind)
+        if "value" in value:
+            _reject_adjustment(value.get("value"), kind)
+        return
+    amount = _parse_amount(value)
+    if amount != 0:
+        raise ValueError(f"non-zero {kind} is not allowed")
+
+
+def _match_billing(
+    mandate: list[ApprovedObligation],
+    payer: str | None,
+    currency: str,
+    total: Decimal,
+) -> GuardDecision:
+    status_reason: str | None = None
+    invalid_reason: str | None = None
     for obligation in mandate:
-        reason = _obligation_mismatch(obligation, payer, currency, total)
+        if not _money_fits(obligation, payer, currency, total):
+            if invalid_reason is None:
+                try:
+                    _obligation_amount(obligation.amount)
+                except ValueError:
+                    invalid_reason = f"obligation {obligation.id} has an invalid amount"
+            continue
+        reason = _status_reason(obligation)
         if reason is None:
             return GuardDecision("allow", f"matches approved obligation {obligation.id}", obligation.id)
-        reasons.append(reason)
-    if not mandate:
-        return GuardDecision("deny", "no approved obligation matches the billing request", None)
-    return GuardDecision("deny", "; ".join(reasons), None)
+        if status_reason is None:
+            status_reason = reason
+    if status_reason:
+        return GuardDecision("deny", status_reason, None)
+    if invalid_reason and all(_amount_invalid(item) for item in mandate):
+        return GuardDecision("deny", invalid_reason, None)
+    return GuardDecision("deny", _closest_reason(currency, total, mandate), None)
+
+
+def _amount_invalid(obligation: ApprovedObligation) -> bool:
+    try:
+        _obligation_amount(obligation.amount)
+    except ValueError:
+        return True
+    return False
+
+
+def _money_fits(obligation: ApprovedObligation, payer: str | None, currency: str, total: Decimal) -> bool:
+    try:
+        obligation_amount = _obligation_amount(obligation.amount)
+    except ValueError:
+        return False
+    if payer is not None and payer.lower() != obligation.payer_email.strip().lower():
+        return False
+    if currency != obligation.currency.strip().upper():
+        return False
+    return total <= obligation_amount
+
+
+def _status_reason(obligation: ApprovedObligation) -> str | None:
+    status = obligation.status.strip().upper()
+    if status in {"PAID", "INVOICED"}:
+        return f"obligation {obligation.id} is already {status}"
+    if status != "APPROVED":
+        return f"obligation {obligation.id} status is {status}, not APPROVED"
+    return None
+
+
+def _closest_reason(currency: str, total: Decimal, mandate: list[ApprovedObligation]) -> str:
+    scored: list[tuple[Decimal, str, str, Decimal]] = []
+    for obligation in mandate:
+        try:
+            amount = _obligation_amount(obligation.amount)
+        except ValueError:
+            continue
+        label = obligation.label.strip() or obligation.id
+        scored.append((abs(amount - total), label, obligation.currency.strip().upper() or currency, amount))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    closest = ", ".join(f"{label} {code} {_money(amount)}" for _, label, code, amount in scored[:2])
+    text = f"No approved obligation allows {currency} {_money(total)}"
+    if closest:
+        text += f" (closest: {closest})"
+    return text
 
 
 def _decide_ledger(tool_name: str, args: dict[str, Any], ledger: dict[str, LedgerEntry]) -> GuardDecision:
-    """send_invoice and send_invoice_reminder take only an invoice id."""
-    unexpected = [key for key in args if key != _LEDGER_ARGUMENT]
+    """Send and reminder arguments must be keys PayPal's MCP schema accepts."""
+    allowed = _SEND_INVOICE_KEYS if tool_name == "send_invoice" else _REMINDER_KEYS
+    unexpected = _unexpected_in(args, {key: None for key in allowed})
     if unexpected:
-        return GuardDecision("deny", "unexpected argument", None)
+        return GuardDecision("deny", f"unexpected argument {unexpected}", None)
+    if args.get("additional_recipients"):
+        return GuardDecision("deny", "extra recipients are not allowed", None)
     invoice_id = args.get(_LEDGER_ARGUMENT)
     if not isinstance(invoice_id, str) or not invoice_id.strip():
         return GuardDecision("deny", "missing invoice_id", None)
@@ -220,145 +512,6 @@ def _decide_ledger(tool_name: str, args: dict[str, Any], ledger: dict[str, Ledge
     return GuardDecision("allow", f"reminder matches sent invoice {invoice_id}", entry.obligation_id)
 
 
-def _obligation_mismatch(
-    obligation: ApprovedObligation,
-    payer: str,
-    currency: str,
-    total: Decimal,
-) -> str | None:
-    try:
-        obligation_amount = _obligation_amount(obligation.amount)
-    except ValueError:
-        return f"obligation {obligation.id} has an invalid amount"
-    obligation_email = obligation.payer_email.strip().lower()
-    obligation_currency = obligation.currency.strip().upper()
-    status = obligation.status.strip().upper()
-    if payer != obligation_email:
-        return f"recipient {payer} does not match obligation {obligation.id} payer {obligation_email}"
-    if currency != obligation_currency:
-        return f"currency {currency} does not match obligation {obligation.id} currency {obligation_currency}"
-    if total > obligation_amount:
-        return f"total {_money(total)} exceeds obligation {obligation.id} amount {_money(obligation_amount)}"
-    if status in {"PAID", "INVOICED"}:
-        return f"obligation {obligation.id} is already {status}"
-    if status != "APPROVED":
-        return f"obligation {obligation.id} status is {status}, not APPROVED"
-    return None
-
-
-def _extra_recipient_reason(args: dict[str, Any]) -> str | None:
-    for key in _EXTRA_RECIPIENT_KEYS:
-        if key in args and args[key]:
-            return "extra recipients are not allowed"
-    return None
-
-
-def _recipient_emails(args: dict[str, Any]) -> tuple[list[str], str | None]:
-    found: list[str] = []
-    for key in _RECIPIENT_KEYS:
-        if key not in args:
-            continue
-        found.extend(_emails_in(args[key]))
-    unique: list[str] = []
-    for email in found:
-        if email.lower() not in {item.lower() for item in unique}:
-            unique.append(email)
-    if len(unique) > 1:
-        return unique, "extra recipients are not allowed"
-    if not unique:
-        return [], "missing recipient email"
-    return unique, None
-
-
-def _emails_in(value: Any) -> list[str]:
-    if isinstance(value, str):
-        text = value.strip()
-        if text:
-            return [text]
-        return []
-    if isinstance(value, dict):
-        for key in ("email", "email_address", "recipient_email"):
-            if key in value:
-                return _emails_in(value[key])
-        billing = value.get("billing_info")
-        if isinstance(billing, dict):
-            return _emails_in(billing)
-        return []
-    if isinstance(value, (list, tuple)):
-        emails: list[str] = []
-        for item in value:
-            emails.extend(_emails_in(item))
-        return emails
-    return []
-
-
-def _currency(args: dict[str, Any]) -> tuple[str | None, str | None]:
-    found: list[str] = []
-    for key in ("currency", "currency_code"):
-        if args.get(key):
-            found.append(str(args[key]).strip().upper())
-    amount = args.get("amount")
-    if isinstance(amount, dict) and amount.get("currency_code"):
-        found.append(str(amount["currency_code"]).strip().upper())
-    detail = args.get("detail")
-    if isinstance(detail, dict) and detail.get("currency_code"):
-        found.append(str(detail["currency_code"]).strip().upper())
-    items = args.get("items")
-    if isinstance(items, list):
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            for key in ("currency", "currency_code"):
-                if item.get(key):
-                    found.append(str(item[key]).strip().upper())
-            unit_amount = item.get("unit_amount")
-            if isinstance(unit_amount, dict) and unit_amount.get("currency_code"):
-                found.append(str(unit_amount["currency_code"]).strip().upper())
-    distinct = {code for code in found if code}
-    if len(distinct) > 1:
-        return None, "mixed currencies in tool arguments"
-    if not distinct:
-        return None, "missing currency"
-    return distinct.pop(), None
-
-
-def _total(args: dict[str, Any]) -> Decimal:
-    explicit: Decimal | None = None
-    for key in ("total", "amount", "invoice_total"):
-        if key in args and args[key] is not None:
-            explicit = _parse_amount(args[key])
-            break
-    item_total = _items_total(args.get("items"))
-    if explicit is not None and item_total is not None and explicit != item_total:
-        raise ValueError("total does not match line items")
-    if explicit is not None:
-        return explicit
-    if item_total is not None:
-        return item_total
-    raise ValueError("missing amount")
-
-
-def _items_total(items: Any) -> Decimal | None:
-    if items is None:
-        return None
-    if not isinstance(items, list):
-        raise ValueError("unparseable amount")
-    if not items:
-        return None
-    total = Decimal(0)
-    for item in items:
-        if not isinstance(item, dict):
-            raise ValueError("unparseable amount")
-        quantity = _parse_amount(item.get("quantity", 1))
-        price = item.get("unit_price")
-        if price is None:
-            price = item.get("unit_amount")
-        if price is None:
-            raise ValueError("missing amount")
-        total += quantity * _parse_amount(price)
-    return total
-
-
 def _parse_amount(value: Any) -> Decimal:
     if isinstance(value, bool) or value is None:
         raise ValueError("unparseable amount")
@@ -375,15 +528,6 @@ def _parse_amount(value: Any) -> Decimal:
         if _AMOUNT_RE.fullmatch(text) is None:
             raise ValueError("unparseable amount")
         amount = Decimal(text)
-    elif isinstance(value, dict):
-        inner = None
-        for key in ("value", "total", "amount"):
-            if key in value:
-                inner = value[key]
-                break
-        if inner is None:
-            raise ValueError("unparseable amount")
-        amount = _parse_amount(inner)
     else:
         raise ValueError("unparseable amount")
     if not amount.is_finite():
@@ -407,4 +551,4 @@ def _obligation_amount(value: Decimal | str | int) -> Decimal:
 
 
 def _money(amount: Decimal) -> str:
-    return format(amount, "f")
+    return f"{amount.quantize(Decimal('0.01')):,.2f}"

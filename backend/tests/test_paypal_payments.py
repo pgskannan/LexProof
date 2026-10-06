@@ -1,5 +1,6 @@
 """Obligations, mandate hash, ledger transitions, and single-use money-out."""
 
+import json
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -10,7 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from app.lexproof.services.paypal.actions import PaymentActions
 from app.lexproof.services.paypal.guard import GuardDecision
-from app.lexproof.services.paypal.ledger import record_tool_result
+from app.lexproof.services.paypal.ledger import (
+    _succeeded,
+    confirm_tool_result,
+    payer_view_url,
+    paypal_failure,
+    record_tool_result,
+)
 from app.lexproof.services.paypal.obligations import (
     PaymentError,
     PaymentObligations,
@@ -346,3 +353,110 @@ async def test_refund_is_single_use_and_updates_partial_status():
     assert len(calls) == 1
     full_amount = Decimal(repos["obligations"].get("ob-1")["amount"])
     assert full_amount == Decimal("12000")
+
+
+def _missing_recipient_payload() -> dict:
+    body = {
+        "name": "UNPROCESSABLE_ENTITY",
+        "message": "The requested action could not be performed, semantically incorrect, or failed business validation.",
+        "debug_id": "debug-1",
+        "details": [{"field": "/primary_recipients", "issue": "MISSING_RECIPIENT_EMAIL", "description": "No recipient email."}],
+    }
+    return {"content": [{"type": "text", "text": json.dumps(body)}]}
+
+
+def test_nested_paypal_422_is_not_success_and_does_not_mark_sent():
+    payload = _missing_recipient_payload()
+    assert paypal_failure(payload) == "MISSING_RECIPIENT_EMAIL"
+    assert _succeeded(payload) is False
+    assert paypal_failure({"result": {"isError": True}}) == "PayPal error"
+    assert paypal_failure({"status_code": 422}) == "HTTP 422"
+    repos = _repos()
+    repos["obligations"].set("ob-1", {"id": "ob-1", "org_id": "org-1", "contract_id": "c-1", "status": "INVOICED", "amount": "12000", "currency": "USD"})
+    repos["invoices"].set("INV2-DEMO", {"id": "INV2-DEMO", "invoice_id": "INV2-DEMO", "org_id": "org-1", "contract_id": "c-1", "obligation_id": "ob-1", "status": "DRAFT", "amount": "12000"})
+    stored = record_tool_result(
+        invoices=repos["invoices"],
+        obligations=repos["obligations"],
+        receipts=repos["receipts"],
+        evidence=repos["evidence"],
+        passports=repos["passports"],
+        org_id="org-1",
+        contract_id="c-1",
+        actor="owner",
+        tool="send_invoice",
+        args={"invoice_id": "INV2-DEMO"},
+        response=payload,
+        decision=GuardDecision("allow", "send matches ledger invoice INV2-DEMO", "ob-1"),
+        receipt={"tool": "send_invoice", "outcome": "paypal_error", "paypal_issue": "MISSING_RECIPIENT_EMAIL"},
+        clock=lambda: "2026-10-12T04:00:00+00:00",
+    )
+    assert repos["invoices"].get("INV2-DEMO")["status"] == "DRAFT"
+    assert repos["obligations"].get("ob-1")["status"] == "INVOICED"
+    assert stored["outcome"] == "paypal_error"
+    assert stored["paypal_invoice_id"] == "INV2-DEMO"
+
+
+def test_send_without_a_confirmed_status_stays_draft():
+    repos = _repos()
+    repos["obligations"].set("ob-1", {"id": "ob-1", "org_id": "org-1", "contract_id": "c-1", "status": "INVOICED", "amount": "12000"})
+    repos["invoices"].set("INV2-DEMO", {"id": "INV2-DEMO", "invoice_id": "INV2-DEMO", "contract_id": "c-1", "obligation_id": "ob-1", "status": "DRAFT", "amount": "12000.00"})
+    record_tool_result(
+        invoices=repos["invoices"],
+        obligations=repos["obligations"],
+        receipts=repos["receipts"],
+        evidence=repos["evidence"],
+        passports=repos["passports"],
+        org_id="org-1",
+        contract_id="c-1",
+        actor="owner",
+        tool="send_invoice",
+        args={"invoice_id": "INV2-DEMO"},
+        response={"status": "DRAFT"},
+        decision=GuardDecision("allow", "send", "ob-1"),
+        receipt={"tool": "send_invoice"},
+        clock=lambda: "2026-10-12T05:00:00+00:00",
+    )
+    assert repos["invoices"].get("INV2-DEMO")["status"] == "DRAFT"
+
+
+def test_payer_view_url_reads_recipient_view_url():
+    url = "https://www.sandbox.paypal.com/invoice/p/#INV2-DEMO"
+    body = {"status": "SENT", "detail": {"metadata": {"recipient_view_url": url}}}
+    wrapped = {"content": [{"type": "text", "text": json.dumps(body)}]}
+    assert payer_view_url(wrapped) == url
+    assert payer_view_url({"href": "https://www.paypal.com/invoice/p/#nope"}) is None
+
+
+@pytest.mark.asyncio
+async def test_confirm_send_requires_paypal_sent_status():
+    url = "https://www.sandbox.paypal.com/invoice/p/#INV2-DEMO"
+
+    async def fetch(name, args):
+        assert name == "get_invoice"
+        assert args == {"invoice_id": "INV2-DEMO"}
+        return {"status": "SENT", "detail": {"metadata": {"recipient_view_url": url}}}
+
+    response, issue = await confirm_tool_result("send_invoice", {"invoice_id": "INV2-DEMO"}, {"status": "SENT"}, fetch)
+    assert issue is None
+    assert response["status"] == "SENT"
+    assert response["payer_view_url"] == url
+
+    async def still_draft(name, args):
+        return {"status": "DRAFT"}
+
+    failed_send, issue = await confirm_tool_result("send_invoice", {"invoice_id": "INV2-DEMO"}, _missing_recipient_payload(), still_draft)
+    assert issue == "MISSING_RECIPIENT_EMAIL"
+    assert failed_send["status"] != "SENT" if isinstance(failed_send, dict) and "status" in failed_send else True
+
+    draft, draft_issue = await confirm_tool_result("send_invoice", {"invoice_id": "INV2-DEMO"}, {"ok": True}, still_draft)
+    assert draft_issue == "PayPal invoice status is DRAFT"
+    assert draft["status"] == "DRAFT"
+
+    created, create_issue = await confirm_tool_result("create_invoice", {}, {"href": "https://api-m.sandbox.paypal.com/v2/invoicing/invoices/INV2-AAAA-BBBB-CCCC-DDDD"}, fetch)
+    assert create_issue is None
+    missing, missing_issue = await confirm_tool_result("create_invoice", {}, {"ok": True}, fetch)
+    assert missing_issue == "PayPal did not return an invoice id"
+    refund, refund_issue = await confirm_tool_result("create_refund", {"capture_id": "CAP"}, {"id": "RF-1"}, fetch)
+    assert refund_issue is None
+    refund_fail, refund_fail_issue = await confirm_tool_result("create_refund", {}, _missing_recipient_payload(), fetch)
+    assert refund_fail_issue == "MISSING_RECIPIENT_EMAIL"

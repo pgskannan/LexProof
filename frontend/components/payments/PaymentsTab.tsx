@@ -38,7 +38,12 @@ export type PaymentReceipt = {
   created_at?: string | null
   evidence_id?: string | null
   paypal_debug_id?: string | null
-  response?: { id?: string; invoice_id?: string; refund_id?: string }
+  paypal_invoice_id?: string | null
+  amount?: string | null
+  outcome?: string | null
+  paypal_issue?: string | null
+  payer_view_url?: string | null
+  response?: { id?: string; invoice_id?: string; refund_id?: string; payer_view_url?: string }
 }
 
 export type ToolCallChip = {
@@ -47,6 +52,8 @@ export type ToolCallChip = {
   reason?: string | null
   receipt_id?: string | null
   action_id?: string | null
+  outcome?: string | null
+  paypal_issue?: string | null
 }
 
 export type PaymentsData = {
@@ -80,22 +87,24 @@ function hasRole(roles: string[], role: string) {
   return roles.includes('admin') || roles.includes(role)
 }
 
-function chipClass(decision: string) {
-  if (decision === 'allow') return 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
-  if (decision === 'needs_approval') return 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+function chipClass(call: ToolCallChip) {
+  if (call.outcome === 'paypal_error') return 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+  if (call.decision === 'allow') return 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
+  if (call.decision === 'needs_approval') return 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
   return 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
 }
 
 function chipLabel(call: ToolCallChip) {
+  if (call.outcome === 'paypal_error') return `PayPal error · ${call.paypal_issue || 'PayPal error'}`
   if (call.decision === 'allow') return `Allowed · ${call.tool}`
   if (call.decision === 'needs_approval') return `Needs approval → request ${call.action_id ? `#${call.action_id.slice(0, 8)}` : ''}`.trim()
   return `Blocked · ${call.reason || call.tool}`
 }
 
 function sandboxHref(receipt: PaymentReceipt) {
-  const id = receipt.response?.invoice_id || receipt.response?.refund_id || receipt.response?.id
-  if (!id) return null
-  return `https://www.sandbox.paypal.com/invoice/details/${encodeURIComponent(id)}`
+  const stored = receipt.payer_view_url || receipt.response?.payer_view_url
+  if (typeof stored === 'string' && stored.startsWith('https://') && stored.includes('sandbox.paypal.com')) return stored
+  return null
 }
 
 export function PaymentsTab({
@@ -252,7 +261,7 @@ export function PaymentsTab({
           <ul className="mt-4 space-y-2" data-testid="tool-calls">
             {transcript.map((call, index) => (
               <li key={`${call.tool}-${index}`}>
-                <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${chipClass(call.decision)}`}>{chipLabel(call)}</span>
+                <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${chipClass(call)}`}>{chipLabel(call)}</span>
               </li>
             ))}
           </ul>
@@ -298,15 +307,18 @@ export function PaymentsTab({
             ))}
           </ul>
           <ul className="mt-3 space-y-2" data-testid="receipts">
-            {data.receipts.map((receipt) => {
+            {[...data.receipts].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).map((receipt) => {
               const href = sandboxHref(receipt)
+              const invoiceId = receipt.paypal_invoice_id || receipt.response?.invoice_id || receipt.response?.id
               return (
                 <li key={receipt.id} className="flex flex-wrap items-center gap-3 text-sm">
                   <span className="text-gray-500">{receipt.created_at || ''}</span>
                   <span>{receipt.tool}</span>
-                  <Badge variant={receipt.decision === 'allow' ? 'verified' : receipt.decision === 'needs_approval' ? 'pending' : 'tampered'}>{receipt.decision}</Badge>
+                  {invoiceId ? <span className="font-mono text-xs">{invoiceId}</span> : null}
+                  {receipt.amount ? <span>{receipt.amount}</span> : null}
+                  <Badge variant={receipt.outcome === 'paypal_error' ? 'pending' : receipt.decision === 'allow' ? 'verified' : receipt.decision === 'needs_approval' ? 'pending' : 'tampered'}>{receipt.outcome === 'paypal_error' ? 'paypal_error' : receipt.decision}</Badge>
                   <span className="font-mono text-xs" data-testid="receipt-hash">{receipt.receipt_hash.slice(0, 12)}</span>
-                  {href ? <a className="text-[var(--brand-primary,#1d4ed8)] underline" href={href}>Sandbox</a> : null}
+                  {href ? <a className="text-[var(--brand-primary,#1d4ed8)] underline" href={href}>Open in PayPal Sandbox</a> : null}
                   {receipt.evidence_id ? (
                     <Button type="button" size="sm" variant="outline" onClick={() => onVerify?.(receipt.evidence_id || '')}>Verify</Button>
                   ) : null}
@@ -347,7 +359,13 @@ export const PAYPAL_DEMO_PAYMENTS: PaymentsData = {
       needs_review_reason: 'clause instructs an agent',
     },
   ],
-  invoices: [{ invoice_id: 'INV2-DEMO', status: 'SENT', amount: '12000.00', obligation_id: 'ob-kickoff' }],
+  invoices: [{
+    invoice_id: 'INV2-DEMO',
+    status: 'SENT',
+    amount: '12000.00',
+    obligation_id: 'ob-kickoff',
+    payer_view_url: 'https://www.sandbox.paypal.com/invoice/p/#INV2-DEMO',
+  }],
   receipts: [
     {
       id: 'rc-1',
@@ -356,7 +374,10 @@ export const PAYPAL_DEMO_PAYMENTS: PaymentsData = {
       receipt_hash: 'deadbeef'.repeat(8),
       created_at: '2026-10-12T12:00:00Z',
       evidence_id: 'ev-1',
-      response: { id: 'INV2-DEMO', invoice_id: 'INV2-DEMO' },
+      paypal_invoice_id: 'INV2-DEMO',
+      amount: '12,000.00',
+      payer_view_url: 'https://www.sandbox.paypal.com/invoice/p/#INV2-DEMO',
+      response: { id: 'INV2-DEMO', invoice_id: 'INV2-DEMO', payer_view_url: 'https://www.sandbox.paypal.com/invoice/p/#INV2-DEMO' },
     },
   ],
   actions: [
@@ -376,4 +397,5 @@ export const PAYPAL_DEMO_TRANSCRIPT: ToolCallChip[] = [
   { tool: 'create_invoice', decision: 'allow', receipt_id: 'rc-1' },
   { tool: 'create_invoice', decision: 'deny', reason: 'no approved obligation matches the billing request' },
   { tool: 'create_refund', decision: 'needs_approval', reason: 'money-out requires approval', action_id: 'act-refund' },
+  { tool: 'send_invoice', decision: 'allow', outcome: 'paypal_error', paypal_issue: 'MISSING_RECIPIENT_EMAIL' },
 ]

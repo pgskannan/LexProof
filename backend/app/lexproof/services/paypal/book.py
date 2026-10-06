@@ -9,7 +9,7 @@ from .actions import PaymentActions
 from .agent import PayPalAgentGuard, call_paypal_tool, run_paypal_turn, transport_for_url
 from .auth import PayPalTokenProvider
 from .guard import ApprovedObligation
-from .ledger import default_invoices, default_receipts, load_ledger, record_tool_result
+from .ledger import confirm_tool_result, default_invoices, default_receipts, load_ledger, record_tool_result
 from .obligations import AGENT_ROLES, PaymentError, PaymentObligations
 
 AGENT_TIMEOUT_SECONDS = 60
@@ -69,6 +69,7 @@ class PaymentBook:
                 amount=str(item.get("amount") or "0"),
                 payer_email=str(item.get("payer_email") or ""),
                 status=str(item.get("status") or ""),
+                label=str(item.get("label") or ""),
             )
             for item in approved_rows
         ]
@@ -120,8 +121,20 @@ class PaymentBook:
                     "matched_obligation_id": decision.matched_obligation_id,
                     "receipt_id": stored.get("id"),
                     "action_id": action_id,
+                    "outcome": receipt.get("outcome"),
+                    "paypal_issue": receipt.get("paypal_issue"),
                 }
             )
+
+        token = await self._access_token()
+        url = self.settings.paypal_mcp_url
+
+        async def confirm(tool: str, args: dict[str, Any], response: Any) -> tuple[Any, str | None]:
+            async def fetch(name: str, payload: dict[str, Any]) -> Any:
+                caller = self._call_tool or call_paypal_tool
+                return await caller(url, token, name, payload)
+
+            return await confirm_tool_result(tool, args, response, fetch)
 
         guard = PayPalAgentGuard(
             mandate=mandate,
@@ -130,9 +143,8 @@ class PaymentBook:
             contract_id=contract_id,
             invoice_ledger=ledger,
             result_hook=hook,
+            confirm_tool=confirm,
         )
-        token = await self._access_token()
-        url = self.settings.paypal_mcp_url
         turn = await self._run_turn(
             model=self.settings.gemini_model,
             mcp_url=url,
