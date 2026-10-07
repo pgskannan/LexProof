@@ -156,7 +156,41 @@ def setup_failure_text(result: Any) -> str | None:
         error = result.get("error")
         if isinstance(error, str) and _is_transport_message(error):
             return error
+        if result.get("isError"):
+            texts = _text_blocks(result)
+            if not any(_is_paypal_business_error(text) for text in texts):
+                # MCP-layer failure (tool wrapper error, not a PayPal API answer):
+                # safe to replay the same, already-allowed call over REST.
+                return " | ".join(texts)[:600] or "MCP tool returned isError without a PayPal error body"
     return None
+
+
+_PAYPAL_BUSINESS_NAMES = {
+    "UNPROCESSABLE_ENTITY",
+    "INVALID_REQUEST",
+    "RESOURCE_NOT_FOUND",
+    "NOT_AUTHORIZED",
+    "PERMISSION_DENIED",
+    "VALIDATION_ERROR",
+    "DUPLICATE_REQUEST_ID",
+}
+
+
+def _is_paypal_business_error(text: str) -> bool:
+    """True when the text is a real PayPal API error answer (must not be replayed)."""
+    lowered = text.lower()
+    if any(term in lowered for term in ("unprocessable_entity", "validation_error", "missing_recipient_email")):
+        return True
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("name") or "").upper() in _PAYPAL_BUSINESS_NAMES:
+        return True
+    details = payload.get("details")
+    return isinstance(details, list) and any(isinstance(item, dict) and item.get("issue") for item in details)
 
 
 def is_transport_exception(error: BaseException) -> bool:

@@ -80,3 +80,15 @@ def test_guard_allows_send_after_create_in_same_turn():
     assert guard.invoice_ledger["INV2-AAAA-BBBB-CCCC-DDDD"].status == "DRAFT"
     guard._track_invoice("send_invoice", {"invoice_id": "INV2-AAAA-BBBB-CCCC-DDDD"}, {"status": "SENT"}, allowed)
     assert guard.invoice_ledger["INV2-AAAA-BBBB-CCCC-DDDD"].status == "SENT"
+
+
+def test_mcp_wrapper_error_falls_back_but_paypal_business_error_does_not():
+    from app.lexproof.services.paypal.rest_fallback import setup_failure_text
+
+    wrapper = {"content": [{"type": "text", "text": "Error executing tool create_refund: fetch failed"}], "isError": True}
+    assert setup_failure_text(wrapper)
+    business = {
+        "content": [{"type": "text", "text": '{"name":"UNPROCESSABLE_ENTITY","details":[{"issue":"CAPTURE_FULLY_REFUNDED"}]}'}],
+        "isError": True,
+    }
+    assert setup_failure_text(business) is None

@@ -201,7 +201,11 @@ class PaymentActions:
             from .ledger import paypal_failure
 
             detail = paypal_failure(response) or ""
-            if not detail:
+            try:
+                logger.warning("payment action %s raw PayPal response: %s", action_id, json.dumps(response, default=str)[:1500])
+            except (TypeError, ValueError):
+                pass
+            if not detail or detail == "PayPal error":
                 try:
                     detail = json.dumps(response, default=str)[:600]
                 except (TypeError, ValueError):
