@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import logging
+
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
@@ -17,6 +20,8 @@ from .guard import GuardDecision, decide, payment_action_id
 from .ledger import load_ledger, record_tool_result
 from .obligations import PaymentError
 from .receipts import canonical_receipt
+
+logger = logging.getLogger(__name__)
 
 ACTIONS = "payment_actions"
 
@@ -193,7 +198,16 @@ class PaymentActions:
             mcp_error = response.pop("_lexproof_mcp_error", None)
         if isinstance(response, dict) and (response.get("isError") or response.get("error")):
             self._release(action_id)
-            raise PaymentError(502, "PayPal rejected the stored tool call")
+            from .ledger import paypal_failure
+
+            detail = paypal_failure(response) or ""
+            if not detail:
+                try:
+                    detail = json.dumps(response, default=str)[:600]
+                except (TypeError, ValueError):
+                    detail = str(response)[:600]
+            logger.warning("payment action %s: PayPal rejected %s: %s", action_id, tool, detail)
+            raise PaymentError(502, f"PayPal rejected the stored tool call: {detail}")
         if self.receipts is not None and self.invoices is not None and self.obligations is not None:
             receipt = canonical_receipt(
                 tool,
