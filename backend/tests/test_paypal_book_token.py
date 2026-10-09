@@ -100,3 +100,29 @@ def test_vertex_quota_error_is_treated_as_model_busy():
     assert _is_model_busy(RuntimeError("429 RESOURCE_EXHAUSTED. Resource has been exhausted"))
     assert _is_model_busy(type("_ResourceExhaustedError", (Exception,), {})("quota"))
     assert not _is_model_busy(ValueError("invalid invoice amount"))
+
+
+def test_draft_left_by_the_model_is_sent_through_the_guard():
+    from app.lexproof.services.paypal.agent import PayPalAgentGuard
+    from app.lexproof.services.paypal.guard import LedgerEntry
+
+    book = PaymentBook(
+        obligations=MagicMock(), actions=MagicMock(), invoices=[], receipts=[],
+        settings=SimpleNamespace(has_paypal_configuration=lambda: True), token_provider=_FakeProvider(),
+    )
+    calls = []
+
+    async def fake_call(tool, args, *, url, access_token):
+        calls.append((tool, args))
+        return {"content": [{"type": "text", "text": '{"status": "SENT"}'}]}
+
+    book._call_with_fallback = fake_call
+    ledger = {
+        "INV2-OLD0-OLD0-OLD0-OLD0": LedgerEntry(obligation_id="o0", status="DRAFT", obligation_status="INVOICED"),
+        "INV2-NEW1-NEW1-NEW1-NEW1": LedgerEntry(obligation_id="o1", status="DRAFT", obligation_status="INVOICED"),
+    }
+    guard = PayPalAgentGuard(mandate=[], approvals=set(), actor="u1", contract_id="c1", invoice_ledger=ledger)
+    sent = asyncio.run(book._send_unsent_drafts(guard, {"INV2-OLD0-OLD0-OLD0-OLD0"}, url="u", token="t"))
+    assert calls == [("send_invoice", {"invoice_id": "INV2-NEW1-NEW1-NEW1-NEW1"})]
+    assert sent == ["INV2-NEW1-NEW1-NEW1-NEW1"]
+    assert len(guard.receipts) == 1

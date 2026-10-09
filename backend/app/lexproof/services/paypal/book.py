@@ -178,6 +178,15 @@ class PaymentBook:
             fallback_tool=self._rest_fallback,
             mcp_secret=token,
         )
+        drafts_before = set(ledger)
+        result = await self._run_with_retries(url=url, token=token, guard=guard, prompt=prompt, actor=actor, session_id=session_id, recorded=recorded)
+        sent = await self._send_unsent_drafts(guard, drafts_before, url=url, token=token)
+        if sent:
+            result["text"] = (result.get("text") or "").strip() or "Invoice created and sent."
+            result["auto_sent"] = sent
+        return result
+
+    async def _run_with_retries(self, *, url: str, token: str, guard: Any, prompt: str, actor: str, session_id: str | None, recorded: list[dict[str, Any]]) -> dict[str, Any]:
         turn = None
         for attempt in range(4):
             try:
@@ -211,6 +220,31 @@ class PaymentBook:
                     raise PaymentError(503, "The AI model is busy right now (Vertex AI quota). No PayPal action was taken. Please try again in a minute.") from exc
                 await asyncio.sleep((2, 5, 10)[attempt])
         return {"session_id": turn.get("session_id"), "text": turn.get("text") or "", "tool_calls": recorded}
+
+    async def _send_unsent_drafts(self, guard: Any, drafts_before: set[str], *, url: str, token: str) -> list[str]:
+        """Finish create_invoice -> send_invoice when the model stops after the draft.
+
+        The send still goes through the guard and gets its own receipt; only
+        invoices drafted in this turn for an approved obligation are sent.
+        """
+        from types import SimpleNamespace
+
+        sent: list[str] = []
+        for invoice_id, entry in list(guard.invoice_ledger.items()):
+            if invoice_id in drafts_before or getattr(entry, "status", None) != "DRAFT":
+                continue
+            tool = SimpleNamespace(name="send_invoice")
+            args = {"invoice_id": invoice_id}
+            if await guard.before_tool(tool, args, None) is not None:
+                continue
+            try:
+                response: Any = await self._call_with_fallback("send_invoice", args, url=url, access_token=token)
+            except Exception as exc:  # recorded as a failed receipt, never raised
+                response = {"content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"[:500]}], "isError": True}
+            await guard.after_tool(tool, args, None, response)
+            if getattr(guard.invoice_ledger.get(invoice_id), "status", None) == "SENT":
+                sent.append(invoice_id)
+        return sent
 
     async def _run_turn_once(self, *, url: str, token: str, guard: Any, prompt: str, actor: str, session_id: str | None) -> dict[str, Any]:
         return await self._run_turn(
