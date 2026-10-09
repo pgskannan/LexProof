@@ -92,3 +92,11 @@ def test_mcp_wrapper_error_falls_back_but_paypal_business_error_does_not():
         "isError": True,
     }
     assert setup_failure_text(business) is None
+
+
+def test_vertex_quota_error_is_treated_as_model_busy():
+    from app.lexproof.services.paypal.book import _is_model_busy
+
+    assert _is_model_busy(RuntimeError("429 RESOURCE_EXHAUSTED. Resource has been exhausted"))
+    assert _is_model_busy(type("_ResourceExhaustedError", (Exception,), {})("quota"))
+    assert not _is_model_busy(ValueError("invalid invoice amount"))

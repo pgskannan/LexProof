@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 from typing import Any, Callable
 
@@ -177,30 +178,52 @@ class PaymentBook:
             fallback_tool=self._rest_fallback,
             mcp_secret=token,
         )
-        try:
-            turn = await self._run_turn(
-                model=self.settings.gemini_model,
-                mcp_url=url,
-                access_token=token,
-                transport=transport_for_url(url),
-                guard=guard,
-                message=prompt,
-                user_id=actor,
-                session_id=session_id,
-                timeout_seconds=AGENT_TIMEOUT_SECONDS,
-            )
-        except (TimeoutError, asyncio.TimeoutError):
-            # Tool calls that already ran are recorded (receipts, ledger); return
-            # them so the UI shows what happened instead of a bare timeout.
-            if not recorded:
-                raise
-            return {
-                "session_id": session_id,
-                "text": "The agent took too long to finish its reply. The PayPal steps below were completed and recorded.",
-                "tool_calls": recorded,
-                "timed_out": True,
-            }
+        turn = None
+        for attempt in range(4):
+            try:
+                turn = await self._run_turn_once(
+                    url=url, token=token, guard=guard, prompt=prompt, actor=actor, session_id=session_id
+                )
+                break
+            except (TimeoutError, asyncio.TimeoutError):
+                # Tool calls that already ran are recorded (receipts, ledger); return
+                # them so the UI shows what happened instead of a bare timeout.
+                if not recorded:
+                    raise
+                return {
+                    "session_id": session_id,
+                    "text": "The agent took too long to finish its reply. The PayPal steps below were completed and recorded.",
+                    "tool_calls": recorded,
+                    "timed_out": True,
+                }
+            except Exception as exc:  # Vertex quota (429 RESOURCE_EXHAUSTED) is transient
+                if not _is_model_busy(exc):
+                    raise
+                if recorded:
+                    # PayPal steps already ran in this turn; never replay them.
+                    return {
+                        "session_id": session_id,
+                        "text": "The AI model became busy before it finished replying. The PayPal steps below were completed and recorded.",
+                        "tool_calls": recorded,
+                        "model_busy": True,
+                    }
+                if attempt == 3:
+                    raise PaymentError(503, "The AI model is busy right now (Vertex AI quota). No PayPal action was taken. Please try again in a minute.") from exc
+                await asyncio.sleep((2, 5, 10)[attempt])
         return {"session_id": turn.get("session_id"), "text": turn.get("text") or "", "tool_calls": recorded}
+
+    async def _run_turn_once(self, *, url: str, token: str, guard: Any, prompt: str, actor: str, session_id: str | None) -> dict[str, Any]:
+        return await self._run_turn(
+            model=os.getenv("PAYPAL_AGENT_MODEL", "").strip() or self.settings.gemini_model,
+            mcp_url=url,
+            access_token=token,
+            transport=transport_for_url(url),
+            guard=guard,
+            message=prompt,
+            user_id=actor,
+            session_id=session_id,
+            timeout_seconds=AGENT_TIMEOUT_SECONDS,
+        )
 
     async def execute_action(
         self,
@@ -302,3 +325,8 @@ def payment_context(approved_rows: list[dict[str, Any]], ledger: dict[str, Any])
         status = getattr(entry, "status", None) or (entry.get("status") if isinstance(entry, dict) else "")
         lines.append(f"- invoice {invoice_id} for obligation {obligation_id}, status {status}")
     return "\n".join(lines)
+
+
+def _is_model_busy(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return "resource_exhausted" in text or "resourceexhausted" in text or " 429" in text
