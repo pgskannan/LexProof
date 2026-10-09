@@ -141,7 +141,11 @@ async def run_payment_agent(
     book: PaymentBook = Depends(get_payment_book),
 ):
     try:
-        check_agent_rate(str(user.get("uid") or ""))
+        uid = str(user.get("uid") or "")
+        # The hourly cap protects quotas from public judge accounts only;
+        # the org's own owners/admins are not throttled.
+        if uid in read_only_uids():
+            check_agent_rate(uid)
         return await book.run_agent(contract_id, user, body.message, body.session_id)
     except PaymentError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
