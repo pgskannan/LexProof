@@ -128,6 +128,20 @@ class PaymentActions:
         try:
             instance = self.workflow.execute_transition(instance_id, transition_id, actor_id, roles, comment)
         except WorkflowError as exc:
+            # Self-heal: the action document can lag behind its workflow instance
+            # (e.g. after a failed execute). If the workflow already reached the
+            # state this transition targets, sync the document instead of 403.
+            try:
+                current = self.workflow.get_instance(instance_id)
+            except WorkflowError:
+                current = {}
+            state = str(current.get("current_state") or "")
+            target = {"approve": "approved", "reject": "rejected"}.get(transition_id)
+            if target and state == target and document.get("status") != state:
+                logger.warning("payment action %s: synced status %s -> %s from workflow", action_id, document.get("status"), state)
+                self.actions.set(action_id, {"status": state, "updated_at": self.clock()}, merge=True)
+                return self._get(action_id)
+            logger.warning("payment action %s: transition %s refused (doc=%s, workflow=%s): %s", action_id, transition_id, document.get("status"), state, exc)
             raise PaymentError(403, str(exc)) from exc
         status = str(instance.get("current_state") or document.get("status"))
         now = self.clock()
