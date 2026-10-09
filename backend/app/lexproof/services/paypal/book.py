@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any, Callable
 
 from ...config import LexProofSettings, get_settings
@@ -15,7 +17,7 @@ from .ledger import confirm_tool_result, default_invoices, default_receipts, loa
 from .obligations import AGENT_ROLES, PaymentError, PaymentObligations
 from .rest_fallback import call_with_rest_fallback, execute_rest_fallback
 
-AGENT_TIMEOUT_SECONDS = 60
+AGENT_TIMEOUT_SECONDS = 150
 
 
 class PaymentBook:
@@ -175,17 +177,29 @@ class PaymentBook:
             fallback_tool=self._rest_fallback,
             mcp_secret=token,
         )
-        turn = await self._run_turn(
-            model=self.settings.gemini_model,
-            mcp_url=url,
-            access_token=token,
-            transport=transport_for_url(url),
-            guard=guard,
-            message=prompt,
-            user_id=actor,
-            session_id=session_id,
-            timeout_seconds=AGENT_TIMEOUT_SECONDS,
-        )
+        try:
+            turn = await self._run_turn(
+                model=self.settings.gemini_model,
+                mcp_url=url,
+                access_token=token,
+                transport=transport_for_url(url),
+                guard=guard,
+                message=prompt,
+                user_id=actor,
+                session_id=session_id,
+                timeout_seconds=AGENT_TIMEOUT_SECONDS,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            # Tool calls that already ran are recorded (receipts, ledger); return
+            # them so the UI shows what happened instead of a bare timeout.
+            if not recorded:
+                raise
+            return {
+                "session_id": session_id,
+                "text": "The agent took too long to finish its reply. The PayPal steps below were completed and recorded.",
+                "tool_calls": recorded,
+                "timed_out": True,
+            }
         return {"session_id": turn.get("session_id"), "text": turn.get("text") or "", "tool_calls": recorded}
 
     async def execute_action(
