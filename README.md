@@ -6,7 +6,7 @@ LexProof reviews contracts with AI, routes every proposed change through enforce
 
 - **Live site:** https://www.lexproofsolutions.com
 - **Try the Tamper Test (no login):** https://www.lexproofsolutions.com/public-verify/tamper (verdict in under a second; each tamper flips it to ROOT MISMATCH instantly)
-- **Demo video:** see the BUIDL page (DoraHacks, BLI Legal Tech Hackathon 2)
+- **Demo video:** see the BUIDL page (DoraHacks, BLI Legal Tech Hackathon 2) · Nebius × NVIDIA (Nemotron on Token Factory): https://youtu.be/4ztjcuZxPCA
 - **Judge login:** read-only account, credentials in the BUIDL submission text
 - **Contact:** kannan.ganesan@lexproofsolutions.com · [request a demo](https://www.lexproofsolutions.com/request-demo)
 
@@ -223,6 +223,92 @@ Provision the two judge logins with `python scripts/provision_judge_account.py`.
 - Invoices are single-currency. One recipient.
 - Non-zero tax, discount, and shipping are denied. Zero is allowed.
 - The agent cap is counted in memory on each Cloud Run instance.
+
+## NVIDIA Nemotron on Nebius Token Factory
+
+Built for the **Nebius × NVIDIA Global AI Hackathon** (track: Best Apps and Agents). Demo video: https://youtu.be/4ztjcuZxPCA
+
+Every AI call in LexProof (contract risk analysis, redline suggestions, payment-obligation extraction, executive summaries, Ask-your-contracts Q&A and findings translation) now runs on **NVIDIA Nemotron**, served by **Nebius Token Factory**. The exact open-weight model ID is written into the Legal Passport and is part of its SHA-256 analysis hash. Anyone verifying a passport can therefore see which model produced the analysis, and that claim is covered by the same on-chain anchor as the rest of the record.
+
+![Workflow](docs/images/nebius-workflow.png)
+
+![Architecture](docs/images/nebius-architecture.png)
+
+### How Nemotron is used
+
+| Tier | Model | Used for | Settings |
+|---|---|---|---|
+| analysis | `nvidia/Nemotron-3-Ultra-550b-a55b` | contract risk analysis, redline suggestions, obligation extraction, executive summary | reasoning off, strict `json_schema`, `max_tokens` 16384 |
+| fast | `nvidia/nemotron-3-super-120b-a12b` | Ask-your-contracts Q&A, findings translation | reasoning off, strict `json_schema`, `max_tokens` 8192 |
+
+- **Structured output.** The analysis must match a strict schema of 8 top-level fields and 15 required fields per finding. We send it as `response_format: {type: "json_schema", strict: true}` and validate the reply with `jsonschema`. If validation fails, the provider retries once with the validator's error, and only after that falls back to `json_object` mode.
+- **Reasoning off.** We send `chat_template_kwargs: {"enable_thinking": false}` and `/no_think`. With reasoning on and an 8k token budget, hidden reasoning used up the budget and cut the JSON off. With it off, Ultra returned valid output on every run, with 2–7× fewer output tokens.
+- **Truncation handling.** `finish_reason == "length"` triggers one retry with double the budget. `reasoning_content` is never parsed as the answer.
+- **Provenance.** `LLMResponse.model` (the model that actually answered) goes into `hash_ai_analysis()`. The analysis, the passport and the public verifier all show it. Older Gemini-era passports keep `model=""`, so their anchored hashes still verify.
+
+Code: [`services/nebius_provider.py`](backend/app/lexproof/services/nebius_provider.py), [`services/llm_factory.py`](backend/app/lexproof/services/llm_factory.py), [`services/llm_base.py`](backend/app/lexproof/services/llm_base.py), and the spike script [`ForNebius/nebius_spike.py`](ForNebius/nebius_spike.py).
+
+### Where Token Factory helped
+
+- **An OpenAI-compatible endpoint made it a provider swap, not a rewrite.** One new provider class (plain `httpx`, no new SDK) sits behind the existing interface, and all six call sites moved to it with a one-line factory change.
+- **`GET /v1/models`** let us discover the Nemotron models our key could use and benchmark all four in one script.
+- **Strict `json_schema` on open models** is what makes Nemotron usable for evidence-grade output. Any finding we seal must match the schema exactly.
+- **Cost.** A high-risk analysis is about 1.7k tokens in and 6k out on Ultra. That's roughly $0.02 at listed rates, so the $50 of hackathon credits covers judging.
+
+### Spike results (same prompt, same contracts)
+
+Production analysis prompt on the high-risk SaaS sample contract (`CONTRACT_03`), validated against the production schema:
+
+| Model | Reasoning | Valid | Findings | Risk | Latency |
+|---|---|---|---|---|---|
+| Nemotron 3 Ultra | off | yes | 13 | CRITICAL 92 | 18.3 s |
+| Nemotron 3 Ultra | on (16k budget) | yes | 14 | CRITICAL 95 | 29.3 s |
+| Nemotron 3 Super | off | yes | 5 | CRITICAL 85 | 9.0 s |
+| Nemotron 3 Nano | on (16k budget) | yes | 11 | HIGH 85 | 35.5 s |
+| Gemini 3.1 Flash-Lite (previous provider) | n/a | yes | 4 | CRITICAL 95 | 5.6 s |
+
+On the low-risk NDA sample, Ultra with reasoning off rated it **LOW 35**, which matches the sample's label; Gemini rated it MEDIUM 45. The live deployment produced 12 findings, CRITICAL 92, in about 16 s on the same contract. These are two contracts and single runs, not a benchmark. The benchmark runner against reviewed ground truth (`services/benchmark_runner.py`) is the right next measurement.
+
+### What's new during the hackathon
+
+LexProof was started on 27 August 2026, after the submission window opened on 26 August. The Nemotron work is on branch `feat/nebius-nemotron`:
+
+- `384df79` Nemotron provider on Token Factory, tiered model factory, provenance in the passport hash, UI badges
+- `87bab6c` provider tests: strict schema, reasoning off, truncation retry, repair retry, 429 retry, secrets never logged
+- `b643f81` separate Cloud Run service `lexproof-api-nebius`, `/health` reporting the active model, judge analyze access with limits
+
+Tests: backend 1,206 passed (1 skipped), frontend 248 passed.
+
+### Judge test path (about 5 minutes)
+
+1. Open https://lexproof-git-feat-nebius-nemotron-pgskannans-projects.vercel.app and sign in with **email and password** as `judge@lexproof.demo`. The password is in Devpost's private testing instructions.
+2. **Contracts:** the "Analyze a contract" card says analyses run on NVIDIA Nemotron via Nebius Token Factory. Upload any DOCX, PDF or TXT contract (2 MB max), or a sample from [`sampleContracts/`](sampleContracts/), and click **Upload and analyze**. Expect about 15–20 s.
+3. Open the **Legal Passport**. Look for the badge "Analyzed by NVIDIA Nemotron 3 Ultra · Nebius Token Factory" and the exact model ID next to it. Ask Lexi a question about your contract; it runs on Nemotron 3 Super.
+4. **Public proof (no login):** open the already-anchored passport's verifier at `/public-verify?evidence_id=0a439fb1-5063-4284-a3d7-ac54c5ddfe00`. You'll see VERIFIED, the Nemotron provenance and model ID, and **View Ethereum Proof** (Sepolia tx `0x4dfb64bb…cdfc05`, block 11884654).
+5. **Tamper Test:** `/public-verify/tamper`. Change one character and watch the proof break.
+6. **Health:** `https://lexproof-api-nebius-icsvy7jira-uc.a.run.app/health` reports the active provider and models.
+
+The judge account can upload, analyze, ask and translate on its own contracts only, up to 10 analyses per day and 30 Q&A or translation calls per hour. Everything else stays read-only. Anchoring is done by the owner account, since it spends Sepolia gas.
+
+### Run it with Nemotron locally
+
+In `backend/.env`:
+
+```bash
+LLM_PROVIDER=nebius
+NEBIUS_API_KEY=...                        # Token Factory key
+NEBIUS_MODEL_ANALYSIS=nvidia/Nemotron-3-Ultra-550b-a55b   # optional, default
+NEBIUS_MODEL_FAST=nvidia/nemotron-3-super-120b-a12b       # optional, default
+LLM_FALLBACK_TO_VERTEX=false              # true = fall back to Gemini, recorded as such
+```
+
+To reproduce the model comparison, run `backend\.venv\Scripts\python.exe ForNebius\nebius_spike.py --no-think --with-gemini`. To deploy, see [`docs/deploy-nebius.md`](docs/deploy-nebius.md).
+
+### Nemotron limitations
+
+- Results come from two sample contracts with single runs and an empty playbook. Finding counts vary from run to run.
+- The Vertex fallback is on in the deployed service. If Token Factory errors, the answer comes from Gemini, and the badge and passport say so.
+- The PayPal agent on the PayPal branch still uses Google ADK with Gemini; that integration is a separate entry.
 
 ## Honest limitations
 
