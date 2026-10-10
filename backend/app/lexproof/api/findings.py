@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field
 
 from ..repositories.firestore import FirestoreRepository
 from ..services.pii import detect_pii, mask_pii
-from ..services.auth import get_current_user
+from ..services.auth import get_current_user, read_only_uids
+from ..config import get_settings
+from ..services.paypal.rate_limit import check_judge_interaction_rate
 from ..services.organizations import get_organization_service
 from ..services.translation import (
     SUPPORTED_LANGUAGES,
@@ -227,8 +229,25 @@ async def translate_findings(
     see (belongs to another user) or that does not exist is silently omitted
     from the response rather than erroring the whole batch."""
     uid = str(user["uid"])
+    judge_owned_only = get_settings().judge_can_analyze and uid in read_only_uids()
+    if judge_owned_only:
+        check_judge_interaction_rate(uid)
     try:
-        translations = await get_translation_service().translate_findings(request.finding_ids, request.target_language, uid)
+        translation_service = get_translation_service()
+        if judge_owned_only:
+            owned_contract_ids = {
+                str(contract.get("contract_id") or contract.get("id") or "")
+                for contract in translation_service.contracts.stream()
+                if contract.get("owner_id") == uid
+            }
+            translations = await translation_service.translate_findings(
+                request.finding_ids,
+                request.target_language,
+                uid,
+                owned_contract_ids=owned_contract_ids,
+            )
+        else:
+            translations = await translation_service.translate_findings(request.finding_ids, request.target_language, uid)
     except TranslationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {finding_id: FindingTranslation(**payload) for finding_id, payload in translations.items()}

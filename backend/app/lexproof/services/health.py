@@ -14,7 +14,20 @@ def _status(ready: bool, service: str) -> dict[str, str]:
 async def health() -> dict[str, object]:
     from .paypal.startup import paypal_health
 
-    return {"status": "ok", "service": "lexproof", "paypal": paypal_health(get_settings())}
+    settings = get_settings()
+    is_nebius = settings.llm_provider == "nebius"
+    return {
+        "status": "ok",
+        "service": "lexproof",
+        "paypal": paypal_health(settings),
+        "ai": {
+            "provider": settings.llm_provider,
+            "analysis_model": settings.nebius_model_analysis if is_nebius else settings.gemini_model,
+            "fast_model": settings.nebius_model_fast if is_nebius else settings.gemini_model,
+            "fallback_to_vertex": settings.llm_fallback_to_vertex,
+            "nebius_configured": settings.has_nebius_configuration(),
+        },
+    }
 
 
 @router.get("/health/firebase")

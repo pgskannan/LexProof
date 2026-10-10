@@ -10,6 +10,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from ..config import get_settings
 from .firebase_auth import FirebaseAuthenticationError, verify_firebase_token
 from .roles import has_any_role
 
@@ -46,6 +47,10 @@ JUDGE_APPROVER_UIDS_ENV = "LEXPROOF_JUDGE_APPROVER_UIDS"
 
 def read_only_uids() -> set[str]:
     return {uid.strip() for uid in os.getenv(READ_ONLY_UIDS_ENV, "").split(",") if uid.strip()}
+
+
+def judge_analysis_enabled_for(uid: str) -> bool:
+    return uid in read_only_uids() and get_settings().judge_can_analyze
 
 
 def judge_sandbox_contract_id() -> str:
@@ -89,6 +94,10 @@ def judge_approver_write(uid: str, path: str) -> bool:
 def enforce_read_only(uid: str, method: str, path: str) -> None:
     if method.upper() in _SAFE_METHODS or uid not in read_only_uids():
         return
+    normalized_path = path.rstrip("/")
+    if method.upper() == "POST" and judge_analysis_enabled_for(uid):
+        if normalized_path == "/api/contracts" or re.fullmatch(r"/api/contracts/[^/]+/analyze", normalized_path):
+            return
     if any(pattern.search(path.rstrip("/")) for pattern in _READ_ONLY_ALLOWED_WRITES):
         return
     if judge_may_run_agent(uid, path) or judge_approver_write(uid, path):

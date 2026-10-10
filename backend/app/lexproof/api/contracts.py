@@ -10,7 +10,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
 from pydantic import BaseModel
 
-from ..services.auth import get_current_user, load_org_member
+from ..services.auth import get_current_user, judge_analysis_enabled_for, load_org_member, read_only_uids
 from ..services.organizations import contract_owner_or_org_admin, get_organization_service
 from ..config import get_settings
 from ..domains.passport.api.router import configure_passport_service
@@ -30,6 +30,7 @@ from ..services.contract_versions import (
 from ..services.pii import detect_pii
 from ..services.executive_summary import ExecutiveSummaryError, get_executive_summary_service
 from ..services.published_version_status import project_published_version_status, project_published_version_status_batch
+from ..services.paypal.rate_limit import check_judge_analysis_rate
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -576,6 +577,11 @@ def _validate_upload(filename: str, content_type: str | None) -> None:
         raise HTTPException(status_code=415, detail="Unsupported contract content type")
 
 
+def _validate_judge_upload(filename: str) -> None:
+    if _extension(filename) not in {".docx", ".pdf", ".txt"}:
+        raise HTTPException(status_code=415, detail="Judge demo accepts only DOCX, PDF, and TXT files.")
+
+
 def _persist_upload(
     filename: str,
     content: bytes,
@@ -630,10 +636,16 @@ async def upload_contract(
 ):
     filename = file.filename or ""
     _validate_upload(filename, file.content_type)
-    content = await file.read(MAX_FILE_SIZE + 1)
-    if not content or len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="Contract file must be between 1 byte and 10 MB")
     uid = str(user["uid"])
+    judge_upload = judge_analysis_enabled_for(uid)
+    max_file_size = 2 * 1024 * 1024 if judge_upload else MAX_FILE_SIZE
+    if judge_upload:
+        _validate_judge_upload(filename)
+    content = await file.read(max_file_size + 1)
+    if not content or len(content) > max_file_size:
+        if judge_upload:
+            raise HTTPException(status_code=413, detail="Judge demo uploads are limited to 2 MB.")
+        raise HTTPException(status_code=413, detail="Contract file must be between 1 byte and 10 MB")
     org_id = load_org_member(x_org_id.strip(), user)["org_id"] if x_org_id and x_org_id.strip() else None
     contracts, versions, storage = _repositories()
     return _persist_upload(filename, content, file.content_type, uid, org_id, contracts, versions, storage, actor_email=user.get("email"))
@@ -684,7 +696,13 @@ async def analyze_contract(contract_id: str, user: dict[str, Any] = Depends(get_
     uid = str(user["uid"])
     contracts, versions, _ = _repositories()
     contract = contracts.get(contract_id)
-    if not contract or not contract_owner_or_org_admin(contract, uid):
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    if uid in read_only_uids():
+        if not judge_analysis_enabled_for(uid) or contract.get("owner_id") != uid:
+            raise HTTPException(status_code=404, detail="Contract not found")
+        check_judge_analysis_rate(uid)
+    elif not contract_owner_or_org_admin(contract, uid):
         raise HTTPException(status_code=404, detail="Contract not found")
     result = await _version_analysis_service(contracts, versions).analyze_version(
         contract_id,

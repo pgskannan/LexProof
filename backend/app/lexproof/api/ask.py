@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field
 
 from ..services.ask_contracts import AskContractsService, get_ask_service
 from ..services.auth import get_current_org_member
+from ..config import get_settings
+from ..services.auth import read_only_uids
+from ..services.paypal.rate_limit import check_judge_interaction_rate
 from ..services.llm_base import LLMError
 
 router = APIRouter(prefix="/orgs/{org_id}", tags=["ask"])
@@ -47,9 +50,15 @@ async def ask_contracts(
     body: AskRequest,
     member: dict[str, Any] = Depends(get_current_org_member),
 ):
+    uid = str(member["uid"])
+    if get_settings().judge_can_analyze and uid in read_only_uids():
+        check_judge_interaction_rate(uid)
     history = [turn.model_dump() for turn in body.history]
     try:
-        result = await _service().ask(org_id, body.question, str(member["uid"]), history=history)
+        if get_settings().judge_can_analyze and uid in read_only_uids():
+            result = await _service().ask(org_id, body.question, uid, history=history, owner_only=True)
+        else:
+            result = await _service().ask(org_id, body.question, uid, history=history)
     except LLMError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return result

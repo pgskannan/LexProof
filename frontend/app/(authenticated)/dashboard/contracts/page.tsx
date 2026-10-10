@@ -64,7 +64,7 @@ function relativeDate(value?: string | null) {
 
 export default function AllContracts() {
   const router = useRouter();
-  const { currentOrg, loading: orgLoading } = useOrg();
+  const { currentOrg, loading: orgLoading, me } = useOrg();
   const [files, setFiles] = useState<File[]>([]);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -74,7 +74,26 @@ export default function AllContracts() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [riskFilter, setRiskFilter] = useState('');
-  const canUpload = !orgLoading && Boolean(currentOrg?.org_id);
+  const [apiProvider, setApiProvider] = useState<string | null>(null);
+  const isReadOnly = Boolean(me?.read_only);
+  const judgeCanAnalyze = isReadOnly
+    && me?.user_id === 'demo-judge-1'
+    && (process.env.NEXT_PUBLIC_JUDGE_CAN_ANALYZE === 'true' || apiProvider === 'nebius');
+  const showAnalysisControls = me !== null && (!isReadOnly || judgeCanAnalyze);
+  const canUpload = !orgLoading && showAnalysisControls && (Boolean(currentOrg?.org_id) || judgeCanAnalyze);
+
+  useEffect(() => {
+    let active = true;
+    void apiFetch('/health')
+      .then(async (response) => response.ok ? response.json() : null)
+      .then((health: { ai?: { provider?: string } } | null) => {
+        if (active) setApiProvider(health?.ai?.provider ?? null);
+      })
+      .catch(() => {
+        if (active) setApiProvider(null);
+      });
+    return () => { active = false; };
+  }, []);
 
   async function loadContracts() {
     try {
@@ -223,21 +242,22 @@ export default function AllContracts() {
           </div>
         )}
 
-        <Card>
+        {showAnalysisControls && <Card>
           <CardHeader>
             <CardTitle>Analyze a contract</CardTitle>
             <CardDescription className="mt-1">
-              Upload one or more fictional contracts (PDF, DOCX, TXT, or a scanned image/JPG/PNG/TIFF) to generate
-              findings and a legal passport for each. Scanned documents and images are extracted with OCR automatically.
-              Select more than one file for batch upload and analysis (up to 20 at a time).
+              {judgeCanAnalyze
+                ? 'Upload one DOCX, PDF, or TXT contract to generate findings and a legal passport.'
+                : 'Upload one or more fictional contracts (PDF, DOCX, TXT, or a scanned image/JPG/PNG/TIFF) to generate findings and a legal passport for each. Scanned documents and images are extracted with OCR automatically. Select more than one file for batch upload and analysis (up to 20 at a time).'}
             </CardDescription>
+            {judgeCanAnalyze && <p className="mt-2 text-xs font-medium text-emerald-800 dark:text-emerald-300">Judge demo: analyses run on NVIDIA Nemotron via Nebius Token Factory (limit 10/day)</p>}
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
               <input
                 type="file"
-                multiple
-                accept=".pdf,.docx,.txt,.jpg,.jpeg,.png,.tif,.tiff"
+                multiple={!judgeCanAnalyze}
+                accept={judgeCanAnalyze ? '.pdf,.docx,.txt' : '.pdf,.docx,.txt,.jpg,.jpeg,.png,.tif,.tiff'}
                 onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
                 className="text-sm text-gray-700 dark:text-gray-300"
               />
@@ -269,7 +289,7 @@ export default function AllContracts() {
               </ul>
             )}
           </CardContent>
-        </Card>
+        </Card>}
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0">

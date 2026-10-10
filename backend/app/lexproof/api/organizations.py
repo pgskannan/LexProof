@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from ..repositories.firestore import FirestoreRepository
-from ..services.auth import get_current_org_member, get_current_user, require_roles
+from ..services.auth import get_current_org_member, get_current_user, read_only_uids, require_roles
 from ..services.organizations import (
     InviteError,
     MemberNotFoundError,
@@ -68,12 +68,13 @@ def _handle(error: OrganizationError) -> HTTPException:
 
 @router.get("/me")
 def get_me(user: dict[str, Any] = Depends(get_current_user)):
+    uid = str(user["uid"])
     profile = _orgs().sync_signed_in_user(
-        str(user["uid"]),
+        uid,
         user.get("email"),
         user.get("name") or user.get("display_name"),
     )
-    return profile
+    return {**profile, "read_only": uid in read_only_uids()}
 
 
 @router.get("/orgs/{org_id}")

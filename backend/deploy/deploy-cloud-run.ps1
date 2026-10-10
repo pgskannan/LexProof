@@ -20,7 +20,8 @@ param(
     [string]$CorsOrigins = "https://lexproof-pied.vercel.app,http://localhost:3000",
     [int]$MinInstances = 0,
     [string]$ReadOnlyUids = "demo-judge-1",
-    [switch]$PayPal
+    [switch]$PayPal,
+    [switch]$Nebius
 )
 # "Continue", not "Stop": gcloud writes progress to stderr, which Windows PowerShell 5.1
 # would otherwise turn into a terminating error. Failures are caught via $LASTEXITCODE.
@@ -46,6 +47,10 @@ function Invoke-Gcloud {
 }
 
 if (-not (Test-Path "backend\Dockerfile")) { throw "Run this from the repo root (C:\Projects\LexProof)." }
+if ($Nebius -and $PayPal) { throw "-Nebius and -PayPal cannot be combined." }
+if ($Nebius -and $Service -in @("lexproof-api", "lexproof-api-paypal")) {
+    throw "Refusing to attach Nebius to $Service. Deploy with -Service lexproof-api-nebius."
+}
 if ($PayPal -and $Service -eq "lexproof-api") {
     throw "Refusing to attach PayPal to lexproof-api. Deploy with -Service lexproof-api-paypal."
 }
@@ -69,7 +74,7 @@ Invoke-Gcloud services enable run.googleapis.com cloudbuild.googleapis.com artif
     secretmanager.googleapis.com aiplatform.googleapis.com firestore.googleapis.com identitytoolkit.googleapis.com
 
 Write-Host "== 2/5 Runtime service account" -ForegroundColor Cyan
-$SaName = "lexproof-api"
+$SaName = if ($Nebius) { "lexproof-api-nebius" } else { "lexproof-api" }
 $Sa = "$SaName@$Project.iam.gserviceaccount.com"
 & gcloud iam service-accounts describe $Sa *> $null
 if ($LASTEXITCODE -ne 0) {
@@ -81,9 +86,9 @@ $roles = @(
     "roles/aiplatform.user",             # Gemini on Vertex AI
     "roles/firebaseauth.admin",          # verify tokens, set role claims
     "roles/storage.objectAdmin",         # contract file uploads
-    "roles/secretmanager.secretAccessor",
     "roles/logging.logWriter"
 )
+if (-not $Nebius) { $roles += "roles/secretmanager.secretAccessor" }
 foreach ($role in $roles) {
     Invoke-Gcloud projects add-iam-policy-binding $Project --member "serviceAccount:$Sa" --role $role --condition None --quiet *> $null
     Write-Host "   granted $role"
@@ -113,6 +118,10 @@ foreach ($envName in $secrets.Keys) {
             Invoke-Gcloud secrets versions add $secretName --data-file $tmp *> $null
             Write-Host "   added a new version of $secretName"
         }
+        if ($Nebius) {
+            Invoke-Gcloud secrets add-iam-policy-binding $secretName --member "serviceAccount:$Sa" --role "roles/secretmanager.secretAccessor" --quiet *> $null
+            Write-Host "   granted secretAccessor on $secretName"
+        }
     } finally {
         Remove-Item $tmp -Force
     }
@@ -136,6 +145,10 @@ if ($envValues["SMTP_PASSWORD"] -and $envValues["SMTP_USERNAME"]) {
     } finally {
         Remove-Item $tmp -Force
     }
+    if ($Nebius) {
+        Invoke-Gcloud secrets add-iam-policy-binding $smtpSecret --member "serviceAccount:$Sa" --role "roles/secretmanager.secretAccessor" --quiet *> $null
+        Write-Host "   granted secretAccessor on $smtpSecret"
+    }
 } else {
     Write-Host "   SMTP_USERNAME/SMTP_PASSWORD not in backend\.env: trial/demo request emails stay off"
 }
@@ -158,6 +171,14 @@ $plain = [ordered]@{
     SMTP_HOST                          = $envValues["SMTP_HOST"]
     SMTP_PORT                          = $envValues["SMTP_PORT"]
     TRIAL_NOTIFY_TO                    = $envValues["TRIAL_NOTIFY_TO"]
+}
+if ($Nebius) {
+    $plain["LLM_PROVIDER"] = "nebius"
+    $plain["LLM_FALLBACK_TO_VERTEX"] = "true"
+    $plain["NEBIUS_MODEL_ANALYSIS"] = $(if ($envValues["NEBIUS_MODEL_ANALYSIS"]) { $envValues["NEBIUS_MODEL_ANALYSIS"] } else { "nvidia/Nemotron-3-Ultra-550b-a55b" })
+    $plain["NEBIUS_MODEL_FAST"] = $(if ($envValues["NEBIUS_MODEL_FAST"]) { $envValues["NEBIUS_MODEL_FAST"] } else { "nvidia/nemotron-3-super-120b-a12b" })
+    $plain["LEXPROOF_CORS_ORIGIN_REGEX"] = "https://lexproof-git-feat-nebius-nemotron-pgskannans-projects\.vercel\.app"
+    $plain["LEXPROOF_JUDGE_CAN_ANALYZE"] = "true"
 }
 if ($PayPal) {
     $plain["PAYPAL_ENV"] = "sandbox"
@@ -194,6 +215,24 @@ if ($PayPal) {
         Write-Host "   granted secretAccessor on lexproof-paypal-webhook-id"
     } else {
         Write-Host "   lexproof-paypal-webhook-id does not exist yet; this deploy skips it"
+    }
+}
+if ($Nebius) {
+    $nebiusSecret = "lexproof-nebius-api-key"
+    & gcloud secrets describe $nebiusSecret *> $null
+    if ($LASTEXITCODE -ne 0) { throw "Run backend\deploy\create-nebius-secrets.ps1 first; required secret $nebiusSecret is missing." }
+    Invoke-Gcloud secrets add-iam-policy-binding $nebiusSecret --member "serviceAccount:$Sa" --role "roles/secretmanager.secretAccessor" --quiet *> $null
+    Write-Host "   granted secretAccessor on $nebiusSecret"
+    $secretArg += ",NEBIUS_API_KEY=${nebiusSecret}:latest"
+
+    $tavilySecret = "lexproof-tavily-api-key"
+    & gcloud secrets describe $tavilySecret *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Invoke-Gcloud secrets add-iam-policy-binding $tavilySecret --member "serviceAccount:$Sa" --role "roles/secretmanager.secretAccessor" --quiet *> $null
+        $secretArg += ",TAVILY_API_KEY=${tavilySecret}:latest"
+        Write-Host "   granted secretAccessor on $tavilySecret"
+    } else {
+        Write-Host "   $tavilySecret does not exist; this deploy skips TAVILY_API_KEY"
     }
 }
 

@@ -8,6 +8,7 @@ export type OrgMembership = {
 
 export type MeResponse = {
   user_id: string
+  read_only?: boolean
   email?: string | null
   display_name?: string | null
   orgs: OrgMembership[]

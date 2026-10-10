@@ -147,10 +147,12 @@ class TranslationService:
         *,
         findings: FirestoreRepository | None = None,
         translations: FirestoreRepository | None = None,
+        contracts: FirestoreRepository | None = None,
         provider: TranslationProvider | None = None,
     ) -> None:
         self.findings = findings or FirestoreRepository("risk_findings")
         self.translations = translations or FirestoreRepository(TRANSLATIONS_COLLECTION)
+        self.contracts = contracts or FirestoreRepository("contracts")
         self.provider = provider or get_translation_provider()
 
     @staticmethod
@@ -158,7 +160,12 @@ class TranslationService:
         return f"{finding_id}_{target_language}"
 
     async def translate_findings(
-        self, finding_ids: list[str], target_language: str, user_id: str
+        self,
+        finding_ids: list[str],
+        target_language: str,
+        user_id: str,
+        *,
+        owned_contract_ids: set[str] | None = None,
     ) -> dict[str, dict[str, Any]]:
         if target_language not in SUPPORTED_LANGUAGES:
             raise TranslationError(f"Unsupported target language: {target_language}")
@@ -174,6 +181,8 @@ class TranslationService:
                 continue
             owner_id = finding.get("owner_id")
             if owner_id and owner_id != user_id:
+                continue
+            if owned_contract_ids is not None and str(finding.get("contract_id") or "") not in owned_contract_ids:
                 continue
             cached = self.translations.get(self._cache_id(finding_id, target_language))
             if cached:

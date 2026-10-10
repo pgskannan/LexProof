@@ -44,6 +44,7 @@ class LexProofSettings(BaseSettings):
     nebius_max_tokens_fast: int = Field(default=8192, validation_alias=AliasChoices("NEBIUS_MAX_TOKENS_FAST", "nebius_max_tokens_fast"))
     nebius_timeout_seconds: int = Field(default=180, validation_alias=AliasChoices("NEBIUS_TIMEOUT_SECONDS", "nebius_timeout_seconds"))
     llm_fallback_to_vertex: bool = Field(default=False, validation_alias=AliasChoices("LLM_FALLBACK_TO_VERTEX", "llm_fallback_to_vertex"))
+    judge_can_analyze: bool = Field(default=False, validation_alias=AliasChoices("LEXPROOF_JUDGE_CAN_ANALYZE", "judge_can_analyze"))
     ethereum_rpc_url: str = Field(
         default="",
         validation_alias=AliasChoices("ETHEREUM_RPC_URL", "BLOCKCHAIN_RPC_URL"),

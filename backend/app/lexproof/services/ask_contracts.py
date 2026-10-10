@@ -213,12 +213,16 @@ class AskContractsService:
         self.evidence = evidence or FirestoreRepository("evidence_records")
         self.llm = llm or get_llm_provider("fast")
 
-    def org_contracts(self, org_id: str, actor_id: str) -> list[dict[str, Any]]:
+    def org_contracts(self, org_id: str, actor_id: str, *, owner_only: bool = False) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
         for contract in self.contracts.stream():
             contract_org = contract.get("org_id")
             owner_id = contract.get("owner_id")
-            if contract_org == org_id or (not contract_org and (not owner_id or owner_id == actor_id)):
+            if owner_only:
+                visible = owner_id == actor_id and (contract_org == org_id or not contract_org)
+            else:
+                visible = contract_org == org_id or (not contract_org and (not owner_id or owner_id == actor_id))
+            if visible:
                 records.append(
                     {
                         **contract,
@@ -234,8 +238,10 @@ class AskContractsService:
         question: str,
         actor_id: str,
         history: list[dict[str, Any]] | None = None,
+        *,
+        owner_only: bool = False,
     ) -> list[dict[str, Any]]:
-        contracts = self.org_contracts(org_id, actor_id)
+        contracts = self.org_contracts(org_id, actor_id, owner_only=owner_only)
         if not contracts:
             return []
         contract_ids = {item["contract_id"] for item in contracts if item.get("contract_id")}
@@ -281,8 +287,10 @@ class AskContractsService:
         question: str,
         actor_id: str,
         history: list[dict[str, Any]] | None = None,
+        *,
+        owner_only: bool = False,
     ) -> dict[str, Any]:
-        retrieved = self.retrieve(org_id, question.strip(), actor_id, history)
+        retrieved = self.retrieve(org_id, question.strip(), actor_id, history, owner_only=owner_only)
         if not retrieved:
             return {"answer": UNGROUNDED_MESSAGE, "citations": [], "grounded": False}
 
