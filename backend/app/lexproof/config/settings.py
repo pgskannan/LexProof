@@ -6,6 +6,7 @@ credential values through health responses or frontend-facing settings.
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -32,6 +33,17 @@ class LexProofSettings(BaseSettings):
     gemini_model: str = "gemini-2.0-flash-001"
     gemini_temperature: float = 0.1
     gemini_max_output_tokens: int = 4096
+    llm_provider: Literal["vertex", "nebius"] = Field(default="vertex", validation_alias=AliasChoices("LLM_PROVIDER", "llm_provider"))
+    nebius_api_key: SecretStr = Field(default=SecretStr(""), validation_alias=AliasChoices("NEBIUS_API_KEY", "nebius_api_key"))
+    nebius_base_url: str = Field(default="https://api.tokenfactory.nebius.com/v1", validation_alias=AliasChoices("NEBIUS_BASE_URL", "nebius_base_url"))
+    nebius_model_analysis: str = Field(default="nvidia/Nemotron-3-Ultra-550b-a55b", validation_alias=AliasChoices("NEBIUS_MODEL_ANALYSIS", "nebius_model_analysis"))
+    nebius_model_fast: str = Field(default="nvidia/nemotron-3-super-120b-a12b", validation_alias=AliasChoices("NEBIUS_MODEL_FAST", "nebius_model_fast"))
+    nebius_reasoning: bool = Field(default=False, validation_alias=AliasChoices("NEBIUS_REASONING", "nebius_reasoning"))
+    nebius_temperature: float = Field(default=0.1, validation_alias=AliasChoices("NEBIUS_TEMPERATURE", "nebius_temperature"))
+    nebius_max_tokens_analysis: int = Field(default=16384, validation_alias=AliasChoices("NEBIUS_MAX_TOKENS_ANALYSIS", "nebius_max_tokens_analysis"))
+    nebius_max_tokens_fast: int = Field(default=8192, validation_alias=AliasChoices("NEBIUS_MAX_TOKENS_FAST", "nebius_max_tokens_fast"))
+    nebius_timeout_seconds: int = Field(default=180, validation_alias=AliasChoices("NEBIUS_TIMEOUT_SECONDS", "nebius_timeout_seconds"))
+    llm_fallback_to_vertex: bool = Field(default=False, validation_alias=AliasChoices("LLM_FALLBACK_TO_VERTEX", "llm_fallback_to_vertex"))
     ethereum_rpc_url: str = Field(
         default="",
         validation_alias=AliasChoices("ETHEREUM_RPC_URL", "BLOCKCHAIN_RPC_URL"),
@@ -120,6 +132,9 @@ class LexProofSettings(BaseSettings):
 
     def has_ai_configuration(self) -> bool:
         return bool(self.project_id and self.gemini_model)
+
+    def has_nebius_configuration(self) -> bool:
+        return bool(self.nebius_api_key.get_secret_value().strip() and self.nebius_base_url.strip())
 
     def has_blockchain_configuration(self) -> bool:
         return bool(self.ethereum_rpc_url and self.contract_address and self.blockchain_private_key.get_secret_value())

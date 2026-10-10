@@ -26,7 +26,8 @@ from typing import Any, Protocol
 
 from ..repositories.firestore import FirestoreRepository
 from .organizations import get_organization_service
-from .vertex_ai import VertexAIError, VertexGeminiProvider
+from .llm_base import LLMError
+from .llm_factory import get_llm_provider
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +92,7 @@ class ExecutiveSummaryService:
         self.passports = passports or FirestoreRepository("legal_passports")
         self.findings = findings or FirestoreRepository("risk_findings")
         self.summaries = summaries or FirestoreRepository(SUMMARIES_COLLECTION)
-        self.llm = llm or VertexGeminiProvider()
+        self.llm = llm or get_llm_provider("analysis")
 
     async def get_summary(self, contract_id: str, actor_id: str, *, force: bool = False) -> dict[str, Any]:
         contract = self.contracts.get(contract_id)
@@ -157,10 +158,10 @@ class ExecutiveSummaryService:
 
         try:
             generated = await self.llm.complete_json(prompt, SUMMARY_RESPONSE_SCHEMA, SYSTEM_PROMPT)
-        except VertexAIError:
+        except LLMError:
             raise
         except Exception as exc:
-            raise VertexAIError(f"Executive summary generation failed: {exc}") from exc
+            raise LLMError(f"Executive summary generation failed: {exc}") from exc
 
         summary_text = str(generated.get("summary") or "").strip()
         if not summary_text:

@@ -99,7 +99,7 @@ def parse_structured_analysis(content: str) -> dict[str, Any]:
             continue
         if isinstance(parsed, dict):
             if not isinstance(parsed.get("findings"), list):
-                raise ValueError(f"Vertex AI response omitted findings (preview: {snippet})")
+                raise ValueError(f"AI provider response omitted findings (preview: {snippet})")
             return parsed
 
     decoder = json.JSONDecoder()
@@ -110,9 +110,9 @@ def parse_structured_analysis(content: str) -> dict[str, Any]:
             continue
         if isinstance(parsed, dict):
             if not isinstance(parsed.get("findings"), list):
-                raise ValueError(f"Vertex AI response omitted findings (preview: {snippet})")
+                raise ValueError(f"AI provider response omitted findings (preview: {snippet})")
             return parsed
-    raise ValueError(f"Vertex AI returned invalid structured analysis (preview: {snippet})")
+    raise ValueError(f"AI provider returned invalid structured analysis (preview: {snippet})")
 
 
 # ---------------------------------------------------------------------------

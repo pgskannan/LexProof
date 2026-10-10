@@ -21,6 +21,9 @@ interface EvidenceVerificationResult {
   transaction_hash: string | null;
   block_number: number | null;
   anchored_at: string | null;
+  ai_provider?: string;
+  ai_model?: string | null;
+  ai_provider_label?: string;
   timestamp: string;
 }
 
@@ -249,6 +252,19 @@ export default function PublicVerifyPage() {
                     ? 'Recomputed hash does NOT match the on-chain hash. This evidence has been altered since it was anchored.'
                     : 'No matching evidence and/or Ethereum anchor was found for this ID.'}
                 </p>
+                <div className="mt-5 flex flex-col items-center gap-1">
+                  <span className="inline-flex rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-800">
+                    Analyzed by {result.ai_provider_label || 'Google Gemini · Vertex AI'}
+                  </span>
+                  {result.ai_model && (
+                    <code
+                      className="max-w-full break-all text-xs text-gray-600"
+                      title="Open-weight model. The exact model that produced this analysis is part of the anchored passport hash."
+                    >
+                      {result.ai_model}
+                    </code>
+                  )}
+                </div>
                 {/* Hardening item #7 (Polish public verification -- the
                     VERIFIED/TAMPERED "money shot"): the transaction link
                     previously only appeared buried in the Proof Metadata

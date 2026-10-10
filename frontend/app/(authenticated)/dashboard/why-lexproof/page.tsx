@@ -128,7 +128,7 @@ const VALUE_PROPS = [
   {
     icon: Sparkles,
     title: 'AI-powered contract intelligence',
-    description: 'Gemini-backed risk and compliance analysis flags what matters in a contract, with a measured processing time behind every result.',
+    description: 'AI-provider-backed risk and compliance analysis flags what matters in a contract, with measured processing time behind every result.',
   },
   {
     icon: UserCheck,
@@ -326,7 +326,7 @@ export default function WhyLexProofPage() {
                   </p>
                   <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
                     {metrics.ai_analysis_measurement_count > 0
-                      ? `Measured directly around the Gemini call, averaged across ${metrics.ai_analysis_measurement_count} analys${metrics.ai_analysis_measurement_count === 1 ? 'is' : 'es'}.`
+                      ? `Measured directly around the AI provider call, averaged across ${metrics.ai_analysis_measurement_count} analys${metrics.ai_analysis_measurement_count === 1 ? 'is' : 'es'}.`
                       : 'No passports with real timing instrumentation yet -- analyze a contract to start measuring.'}
                   </p>
                 </CardContent>

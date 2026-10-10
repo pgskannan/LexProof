@@ -94,6 +94,7 @@ def _recompute_analysis_hash(passport_data: Dict[str, Any]) -> Tuple[bool, Optio
     return True, hash_ai_analysis(
         analysis_result=analysis_result,
         analysis_type=snapshot.get("analysis_type", "risk_and_compliance"),
+        model=snapshot.get("ai_model", passport_data.get("ai_model")),
     )
 
 

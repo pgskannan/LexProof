@@ -207,6 +207,7 @@ class PaymentObligations:
         if not isinstance(text, str) or not text.strip():
             raise PaymentError(400, "Contract has no extracted text")
         raw = await llm.complete_json(extraction_user_prompt(text), EXTRACTION_SCHEMA, extraction_system_prompt())
+        model_id = getattr(llm, "last_model", None) or model_id
         items = raw.get("obligations") if isinstance(raw, dict) else None
         if not isinstance(items, list):
             raise PaymentError(502, "Extraction did not return obligations")

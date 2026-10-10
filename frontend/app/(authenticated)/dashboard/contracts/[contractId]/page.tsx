@@ -332,6 +332,12 @@ export default function ContractDetailPage() {
 
         <Card>
           <CardContent>
+            {currentPassport && (
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <Badge variant="secondary">Analyzed by {currentPassport.ai_provider_label || 'Google Gemini · Vertex AI'}</Badge>
+                {currentPassport.ai_model && <code className="break-all text-xs text-gray-500 dark:text-gray-400">{currentPassport.ai_model}</code>}
+              </div>
+            )}
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-bold uppercase tracking-wide text-[var(--brand-primary,#2563eb)]">Executive summary</p>

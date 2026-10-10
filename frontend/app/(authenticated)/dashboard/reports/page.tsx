@@ -65,7 +65,7 @@ type PassportSummary = {
   compliance_score?: number;
   created_at?: string;
   status?: string;
-  // Real, measured wall-clock duration (ms) of the Gemini analysis call that
+  // Real, measured wall-clock duration (ms) of the AI-provider analysis call that
   // produced this passport, timed directly around that call on the backend
   // (hardening item #3). Absent on passports created before this field
   // existed -- see aiAnalysisIsRealMeasurement below for the fallback.
@@ -245,7 +245,7 @@ export default function Reports() {
   );
 
   // 1. Review-time savings ---------------------------------------------------
-  // Prefer the real, measured Gemini call duration (timed directly around the
+  // Prefer the real, measured AI-provider call duration (timed directly around the
   // AI call on the backend) over the old lifecycle-timestamp estimate, which
   // can silently include upload delay, developer debugging/restarts, or a
   // later re-analysis gap between version upload and passport creation --
@@ -447,7 +447,7 @@ export default function Reports() {
                 <p className="mt-1 text-3xl font-bold tabular-nums tracking-tight text-green-900">{measuredAiMinutes !== null ? formatMinutes(measuredAiMinutes) : 'Not available'}</p>
                 <p className="mt-1 text-xs text-green-700">
                   {aiAnalysisIsRealMeasurement
-                    ? 'Real elapsed time of the Gemini analysis call itself, timed directly around it.'
+                    ? 'Real elapsed time of the AI-provider analysis call itself, timed directly around it.'
                     : measuredAiMinutes !== null
                       ? 'This passport predates real AI-timing instrumentation, so this is elapsed time from version upload to Legal Passport creation instead, which can include non-AI delay.'
                       : 'Needs both a version timestamp and a Legal Passport for the current version.'}

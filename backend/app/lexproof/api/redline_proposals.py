@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from ..services.auth import get_current_user
 from ..services.redline_proposals import FinalDecisionError, ProposalNotFoundError, ProposalService, PublicationError, RedlineProposalError
 from ..services.redline_suggestions import RedlineSuggestionError, RedlineSuggestionService, get_redline_suggestion_service
-from ..services.vertex_ai import VertexAIError
+from ..services.llm_base import LLMError
 from ..repositories.firestore import FirestoreRepository
 from ..services.version_analysis import VersionAnalysisService
 from ..services.audit import record_audit_event
@@ -152,7 +152,7 @@ async def suggest_redline_language(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except RedlineSuggestionError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-    except VertexAIError as error:
+    except LLMError as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
 
 

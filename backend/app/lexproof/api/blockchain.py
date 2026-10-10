@@ -16,6 +16,7 @@ from ..services.ethereum_anchor_service import get_ethereum_anchor_service
 from ..repositories.firestore import EvidenceAnchorRepository, EvidenceRecordRepository, FirestoreRepository
 from ..services.version_comparison import VersionComparisonEngine
 from ..config import get_settings
+from ..services.llm_base import ai_provider_label
 
 router = APIRouter(tags=["blockchain"])
 # No prefix here -- this router is mounted as its own wildcard-CORS
@@ -214,6 +215,9 @@ class EvidencePublicVerificationResult(BaseModel):
     transaction_hash: Optional[str] = None
     block_number: Optional[int] = None
     anchored_at: Optional[str] = None
+    ai_provider: str = "vertex_ai"
+    ai_model: Optional[str] = None
+    ai_provider_label: str = "Google Gemini · Vertex AI"
     timestamp: datetime
 
 
@@ -471,6 +475,11 @@ async def public_verify_evidence(evidence_id: str) -> EvidencePublicVerification
         )
 
         result = await anchor_service.verify_evidence(evidence_id)
+        evidence_record = evidence_records_repository.get(evidence_id) or {}
+        passport_id = evidence_record.get("passport_id")
+        passport = FirestoreRepository("legal_passports", settings=settings).get(str(passport_id)) if passport_id else None
+        ai_provider = str((passport or {}).get("ai_provider") or "vertex_ai")
+        ai_model = (passport or {}).get("ai_model")
 
         return EvidencePublicVerificationResult(
             evidence_id=evidence_id,
@@ -483,6 +492,9 @@ async def public_verify_evidence(evidence_id: str) -> EvidencePublicVerification
             transaction_hash=result.get("transaction_hash"),
             block_number=result.get("block_number"),
             anchored_at=result.get("anchored_at"),
+            ai_provider=ai_provider,
+            ai_model=ai_model,
+            ai_provider_label=ai_provider_label(ai_provider, ai_model),
             timestamp=datetime.now(),
         )
 

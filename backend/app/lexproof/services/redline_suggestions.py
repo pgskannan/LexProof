@@ -16,7 +16,8 @@ from typing import Any, Protocol
 
 from ..repositories.firestore import FirestoreRepository
 from .organizations import DEFAULT_PLAYBOOK_CLAUSES, OrganizationError, OrganizationService, get_organization_service
-from .vertex_ai import VertexAIError, VertexGeminiProvider
+from .llm_base import LLMError
+from .llm_factory import get_llm_provider
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ class RedlineSuggestionService:
         self.contracts = contracts or FirestoreRepository("contracts")
         self.findings = findings or FirestoreRepository("risk_findings")
         self.organizations = organizations or get_organization_service()
-        self.llm = llm or VertexGeminiProvider()
+        self.llm = llm or get_llm_provider("analysis")
 
     def _playbook_standard_position(self, org_id: str | None, clause_type: str | None) -> str | None:
         if not clause_type:
@@ -138,10 +139,10 @@ class RedlineSuggestionService:
 
         try:
             generated = await self.llm.complete_json(prompt, SUGGESTION_RESPONSE_SCHEMA, SYSTEM_PROMPT)
-        except VertexAIError:
+        except LLMError:
             raise
         except Exception as exc:
-            raise VertexAIError(f"Redline suggestion generation failed: {exc}") from exc
+            raise LLMError(f"Redline suggestion generation failed: {exc}") from exc
 
         suggested_text = str(generated.get("suggested_text") or "").strip()
         rationale = str(generated.get("rationale") or "").strip()

@@ -26,7 +26,8 @@ import httpx
 
 from ..config import LexProofSettings, get_settings
 from ..repositories.firestore import FirestoreRepository
-from .vertex_ai import VertexAIError, VertexGeminiProvider
+from .llm_base import LLMError
+from .llm_factory import get_llm_provider
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class GeminiTranslationProvider:
     }
 
     def __init__(self, *, llm: Any = None) -> None:
-        self.llm = llm or VertexGeminiProvider()
+        self.llm = llm or get_llm_provider("fast")
 
     async def translate_texts(self, texts: list[str], target_language: str) -> list[str]:
         language_name = SUPPORTED_LANGUAGES.get(target_language, target_language)
@@ -90,10 +91,10 @@ class GeminiTranslationProvider:
             result = await self.llm.complete_json(
                 prompt, self.SCHEMA, system_prompt="You are a precise legal-document translator."
             )
-        except VertexAIError:
+        except LLMError:
             raise
         except Exception as exc:
-            raise TranslationError(f"Translation failed: {exc}") from exc
+            raise LLMError(f"Translation failed: {exc}") from exc
         translations = result.get("translations")
         if not isinstance(translations, list) or len(translations) != len(texts):
             raise TranslationError("Translation provider returned a mismatched number of results")

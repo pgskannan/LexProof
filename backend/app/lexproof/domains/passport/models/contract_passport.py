@@ -10,7 +10,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
+
+from ....services.llm_base import ai_provider_label
 
 
 class PassportStatus(str, Enum):
@@ -71,6 +73,8 @@ class ContractPassport(BaseModel):
         default=None,
         description="Measured wall-clock duration (ms) of the actual Gemini analysis call",
     )
+    ai_provider: str = "vertex_ai"
+    ai_model: Optional[str] = None
 
     # Audit trail
     audit_events: List[Dict[str, Any]] = Field(
@@ -154,6 +158,8 @@ class ContractPassportResponse(BaseModel):
     created_by: str
     status: PassportStatus
     ai_analysis_duration_ms: Optional[float] = None
+    ai_provider: str = "vertex_ai"
+    ai_model: Optional[str] = None
     audit_events: List[Dict[str, Any]]
     metadata: Dict[str, Any]
 
@@ -165,6 +171,11 @@ class ContractPassportResponse(BaseModel):
             datetime: lambda v: v.isoformat(),
             PassportStatus: lambda v: v.value,
         }
+
+    @computed_field
+    @property
+    def ai_provider_label(self) -> str:
+        return ai_provider_label(self.ai_provider, self.ai_model)
 
 
 class ContractPassportSummary(BaseModel):
@@ -180,6 +191,8 @@ class ContractPassportSummary(BaseModel):
     created_at: datetime
     status: PassportStatus
     ai_analysis_duration_ms: Optional[float] = None
+    ai_provider: str = "vertex_ai"
+    ai_model: Optional[str] = None
 
     class Config:
         """Pydantic configuration for serialization."""
@@ -189,3 +202,8 @@ class ContractPassportSummary(BaseModel):
             datetime: lambda v: v.isoformat(),
             PassportStatus: lambda v: v.value,
         }
+
+    @computed_field
+    @property
+    def ai_provider_label(self) -> str:
+        return ai_provider_label(self.ai_provider, self.ai_model)

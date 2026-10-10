@@ -44,7 +44,7 @@ const SECTIONS: Section[] = [
     title: 'The verifiable chain (core claim)',
     intro: 'Contract → AI finds risk → human reviews → new version published → Legal Passport created → evidence fingerprinted → Ethereum anchored → anyone can verify → tamper → verification fails.',
     rows: [
-      { name: 'AI risk & compliance analysis', status: 'built', detail: 'Gemini-backed analysis with a real, measured processing-time instrumentation (not a lifecycle-timestamp guess).' },
+      { name: 'AI risk & compliance analysis', status: 'built', detail: 'Provider-backed analysis with real, measured processing time (not a lifecycle-timestamp guess).' },
       { name: 'Human review & redline workflow', status: 'built', detail: 'Server-enforced approve/reject/publish workflow with separation-of-duties (a creator cannot approve or publish their own proposal).' },
       { name: 'Contract versioning', status: 'built', detail: 'Every publish creates a new, immutable version; prior versions are preserved, never overwritten.' },
       { name: 'Evidence hashing (SHA-256)', status: 'built', detail: 'Deterministic, canonical hashing of every evidence item, policy version, and the full passport.' },
@@ -61,7 +61,7 @@ const SECTIONS: Section[] = [
       { name: 'Separation of duties', status: 'built', detail: 'Automated adversarial tests prove a reviewer cannot approve their own submission and a read-only role cannot review or publish -- not just asserted, tested.' },
       { name: 'Audit trail', status: 'built', detail: 'Every workflow transition and publication is recorded with actor, role, and timestamp.' },
       { name: 'Security response headers', status: 'built', detail: 'X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, and HSTS are implemented and tested; live as of the most recent backend restart.' },
-      { name: 'PII detection & masking', status: 'built', detail: 'Detects and masks PII types in the UI (does not affect what is sent to Gemini or used for redlines). Live-tested post-restart: an uploaded contract containing a plain-text SSN, bank account number, email, and phone number was correctly flagged as a CRITICAL "Unprotected Sensitive Personal Information" finding with GDPR and CCPA citations attached.' },
+      { name: 'PII detection & masking', status: 'built', detail: 'Detects and masks PII types in the UI (does not affect what is sent to the AI provider or used for redlines). Live-tested post-restart: an uploaded contract containing a plain-text SSN, bank account number, email, and phone number was correctly flagged as a CRITICAL "Unprotected Sensitive Personal Information" finding with GDPR and CCPA citations attached.' },
       { name: 'OCR / scanned-document ingestion', status: 'built', detail: 'The Python OCR pipeline (Pillow, pytesseract, PyMuPDF) runs cleanly against scanned-image uploads. The Tesseract OCR binary is now installed and wired via an explicit TESSERACT_CMD path (bypassing Windows PATH, which the installer did not update) -- confirmed live by loading the real server settings and calling the engine directly: reachable at version 5.5.3. Scanned documents now extract text through the same pipeline as digital ones.' },
     ],
   },

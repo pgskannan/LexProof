@@ -6,7 +6,8 @@ import logging
 import re
 from typing import Any, Protocol
 
-from .vertex_ai import VertexAIError, VertexGeminiProvider
+from .llm_base import LLMError
+from .llm_factory import get_llm_provider
 from ..repositories.firestore import FirestoreRepository
 
 logger = logging.getLogger(__name__)
@@ -210,7 +211,7 @@ class AskContractsService:
         self.contracts = contracts or FirestoreRepository("contracts")
         self.findings = findings or FirestoreRepository("risk_findings")
         self.evidence = evidence or FirestoreRepository("evidence_records")
-        self.llm = llm or VertexGeminiProvider()
+        self.llm = llm or get_llm_provider("fast")
 
     def org_contracts(self, org_id: str, actor_id: str) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
@@ -322,10 +323,10 @@ class AskContractsService:
         )
         try:
             generated = await self.llm.complete_json(prompt, ASK_RESPONSE_SCHEMA, SYSTEM_PROMPT)
-        except VertexAIError:
+        except LLMError:
             raise
         except Exception as exc:
-            raise VertexAIError(f"Ask generation failed: {exc}") from exc
+            raise LLMError(f"Ask generation failed: {exc}") from exc
 
         citations = validate_citations(list(generated.get("citations") or []), retrieved)
         answer = str(generated.get("answer") or "").strip()

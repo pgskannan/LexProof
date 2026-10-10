@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from ..services.ask_contracts import AskContractsService, get_ask_service
 from ..services.auth import get_current_org_member
-from ..services.vertex_ai import VertexAIError
+from ..services.llm_base import LLMError
 
 router = APIRouter(prefix="/orgs/{org_id}", tags=["ask"])
 
@@ -50,6 +50,6 @@ async def ask_contracts(
     history = [turn.model_dump() for turn in body.history]
     try:
         result = await _service().ask(org_id, body.question, str(member["uid"]), history=history)
-    except VertexAIError as exc:
+    except LLMError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return result

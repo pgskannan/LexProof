@@ -113,6 +113,8 @@ class PassportService:
         normalized_document: str = "",
         metadata: Optional[Dict[str, Any]] = None,
         ai_analysis_duration_ms: Optional[float] = None,
+        ai_provider: str = "vertex_ai",
+        ai_model: Optional[str] = None,
     ) -> ContractPassportResponse:
         """Create a new contract passport.
 
@@ -157,6 +159,7 @@ class PassportService:
             analysis_hash = hash_ai_analysis(
                 analysis_result=analysis_result,
                 analysis_type="risk_and_compliance",
+                model=ai_model,
             )
 
             # Step 3: Create evidence items from analysis results
@@ -194,6 +197,8 @@ class PassportService:
             created_by=self.user_id,
             status=PassportStatus.CREATED,
             ai_analysis_duration_ms=ai_analysis_duration_ms,
+                ai_provider=ai_provider,
+                ai_model=ai_model,
             audit_events=[],
             metadata={
                 **(metadata or {}),
@@ -208,6 +213,8 @@ class PassportService:
                     "policy_version": policy_version,
                     "analysis_result": analysis_result,
                     "analysis_type": "risk_and_compliance",
+                    "ai_provider": ai_provider,
+                    "ai_model": ai_model,
                     # Evidence captured at publish time so the integrity check
                     # (backend/app/lexproof/domains/passport/integrity.py) can
                     # recompute the evidence hash from a stable snapshot instead

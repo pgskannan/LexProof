@@ -28,7 +28,9 @@ from .analysis_safety import sanitize_analysis_error as _sanitize_analysis_error
 from .notification_prefs import get_notification_preferences
 from .ethereum_anchor_service import get_ethereum_anchor_service
 from .organizations import DEFAULT_PLAYBOOK_CLAUSES, contract_owner_or_org_admin
-from .vertex_ai import VertexAIError, VertexGeminiProvider
+from .llm_base import LLMError
+from .llm_base import ai_provider_label
+from .llm_factory import get_llm_provider
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +83,7 @@ class VersionAnalysisService:
         versions: FirestoreRepository,
         repository_factory: Callable[[str], FirestoreRepository] = FirestoreRepository,
         anchor_repository_factory: Callable[[str], FirestoreRepository] = EvidenceAnchorRepository,
-        provider_factory: Callable[[], VertexGeminiProvider] = VertexGeminiProvider,
+        provider_factory: Callable[[], Any] = lambda: get_llm_provider("analysis"),
         anchor_service_factory: Callable[..., Any] = get_ethereum_anchor_service,
         passport_service_factory: Callable[..., PassportService] = PassportService,
         passport_configurator: Callable[[PassportService], None] = configure_passport_service,
@@ -193,7 +195,18 @@ class VersionAnalysisService:
             # for a real, existing, correctly-owned passport until some other
             # request happens to take the full analysis path first.
             self.passport_configurator(self.passport_service_factory(None, user_id=user_id, tenant_id=user_id, repository=passports))
-            return {"passport": existing_passport, "passport_id": existing_passport.get("passport_id"), "analysis_status": "complete", "finding_count": findings_count, "evidence_count": evidence_count}
+            ai_provider = str(existing_passport.get("ai_provider") or "vertex_ai")
+            ai_model = str(existing_passport.get("ai_model") or "")
+            return {
+                "passport": existing_passport,
+                "passport_id": existing_passport.get("passport_id"),
+                "analysis_status": "complete",
+                "finding_count": findings_count,
+                "evidence_count": evidence_count,
+                "ai_provider": ai_provider,
+                "ai_model": ai_model or None,
+                "ai_provider_label": ai_provider_label(ai_provider, ai_model),
+            }
         if version.get("analysis_status") == "processing":
             raise HTTPException(status_code=409, detail="Contract version analysis is already in progress")
 
@@ -222,19 +235,27 @@ class VersionAnalysisService:
         # snapshot persisted by a prior attempt that didn't finish creating a
         # passport) -- there is no new measurement to report in that case.
         ai_analysis_duration_ms: float | None = None
+        ai_provider = version.get("ai_provider") or "vertex_ai"
+        ai_model = version.get("ai_model") or ""
         try:
             analysis = version.get("analysis_snapshot")
             if not isinstance(analysis, dict):
                 provider = self.provider_factory()
                 gemini_call_started = time.monotonic()
                 response = await provider.complete(Request())
+                ai_provider = getattr(response, "provider", "vertex_ai")
+                ai_model = getattr(response, "model", "") or ""
                 ai_analysis_duration_ms = (time.monotonic() - gemini_call_started) * 1000
                 try:
                     analysis = parse_structured_analysis(response.content)
                 except ValueError:
-                    logger.warning("Vertex AI structured analysis parse failed (length=%d, preview=%r)", len(response.content), " ".join(response.content[:500].split()))
+                    logger.warning("AI provider structured analysis parse failed (length=%d, preview=%r)", len(response.content), " ".join(response.content[:500].split()))
                     raise
-                self.versions.set(version_id, {"analysis_snapshot": analysis}, merge=True)
+                self.versions.set(version_id, {
+                    "analysis_snapshot": analysis,
+                    "ai_provider": ai_provider,
+                    "ai_model": ai_model,
+                }, merge=True)
             findings = analysis["findings"]
 
             async def engine(document: str, policy: str) -> dict[str, Any]:
@@ -249,11 +270,13 @@ class VersionAnalysisService:
                     document_content=document_text,
                     metadata={"owner_id": user_id, "version_id": version_id, "risk_level": analysis.get("risk_level"), "key_clauses": analysis.get("key_clauses", []), "clauses": _structured_clauses(analysis), "compliance_items": analysis.get("compliance_items", []), "content_hash": version.get("content_hash")},
                     ai_analysis_duration_ms=ai_analysis_duration_ms,
+                    ai_provider=ai_provider,
+                    ai_model=ai_model,
                 )
                 existing_passport = {**passport.model_dump(mode="json"), "id": passport.passport_id, "owner_id": user_id, "version_id": version_id}
             passport_id = existing_passport.get("passport_id")
             now = datetime.now(timezone.utc).isoformat()
-            passports.set(passport_id, {**existing_passport, "id": passport_id, "owner_id": user_id, "version_id": version_id, "risk_level": analysis.get("risk_level"), "findings_count": len(findings), "content_hash": version.get("content_hash"), "blockchain_status": "not_anchored", "analysis_timestamp": now})
+            passports.set(passport_id, {**existing_passport, "id": passport_id, "owner_id": user_id, "version_id": version_id, "risk_level": analysis.get("risk_level"), "findings_count": len(findings), "content_hash": version.get("content_hash"), "ai_provider": ai_provider, "ai_model": ai_model, "blockchain_status": "not_anchored", "analysis_timestamp": now})
             findings_repository = self.repository_factory("risk_findings")
             persisted_findings = list(findings_repository.stream())
             matched_finding_indexes: set[int] = set()
@@ -382,20 +405,29 @@ class VersionAnalysisService:
                 summary=f"AI analysis complete for \"{contract_name}\" (v{version['version_number']}) -- {len(findings)} finding(s)",
                 org_id=contract.get("org_id"),
             )
-            return {"passport": existing_passport, "passport_id": passport_id, "analysis_status": "complete", "finding_count": len(findings), "evidence_count": count_legal_evidence_findings(evidence_items)}
+            return {
+                "passport": existing_passport,
+                "passport_id": passport_id,
+                "analysis_status": "complete",
+                "finding_count": len(findings),
+                "evidence_count": count_legal_evidence_findings(evidence_items),
+                "ai_provider": ai_provider,
+                "ai_model": ai_model or None,
+                "ai_provider_label": ai_provider_label(ai_provider, ai_model),
+            }
         except HTTPException as exc:
             self._mark_analysis_failed(version_id, exc)
             if exc.status_code >= 500:
                 self._notify_analysis_failed(user_id, contract_id, version_id)
             raise
-        except VertexAIError as exc:
+        except LLMError as exc:
             self._mark_analysis_failed(version_id, exc)
             self._notify_analysis_failed(user_id, contract_id, version_id)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             self._mark_analysis_failed(version_id, exc)
             self._notify_analysis_failed(user_id, contract_id, version_id)
-            raise HTTPException(status_code=502, detail="Vertex AI returned invalid structured analysis") from exc
+            raise HTTPException(status_code=502, detail="AI provider returned invalid structured analysis") from exc
         except Exception as exc:
             self._mark_analysis_failed(version_id, exc)
             self._notify_analysis_failed(user_id, contract_id, version_id)

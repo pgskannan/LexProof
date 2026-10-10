@@ -31,6 +31,9 @@ interface ContractPassport {
   policy_hash: string
   analysis_hash: string
   evidence_hash: string
+  ai_provider?: string
+  ai_model?: string | null
+  ai_provider_label?: string
   metadata?: {
     passport_hash?: string
     risk_level?: string
@@ -644,6 +647,12 @@ export default function LegalPassportPage() {
       <p className="mt-2 max-w-3xl text-xs text-gray-400 dark:text-gray-500">
         One record tying together AI risk analysis, human-reviewed findings, regulatory citations, a SHA-256 fingerprint, and an independently verifiable Ethereum anchor.
       </p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="inline-flex rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
+          Analyzed by {passport.ai_provider_label || 'Google Gemini · Vertex AI'}
+        </span>
+        {passport.ai_model && <code className="break-all text-xs text-gray-500 dark:text-gray-400">{passport.ai_model}</code>}
+      </div>
 
       <div className="mt-6 space-y-6">
         {/* Score Cards -- risk, compliance, evidence, and on-chain anchor

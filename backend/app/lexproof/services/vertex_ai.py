@@ -3,97 +3,20 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from dataclasses import dataclass
 from typing import Any
 from ..config import LexProofSettings, get_settings
+from .llm_base import (
+    ANALYSIS_RESPONSE_SCHEMA,
+    LLMError,
+    LLMResponse,
+    _RATE_LIMIT_BACKOFF_SECONDS,
+    _is_rate_limited,
+    strip_json_fences,
+)
 
 
-class VertexAIError(Exception):
+class VertexAIError(LLMError):
     """Raised when Vertex AI cannot complete a request."""
-
-
-_RATE_LIMIT_MARKERS = ("429", "Resource exhausted", "RESOURCE_EXHAUSTED", "Too Many Requests")
-_RATE_LIMIT_BACKOFF_SECONDS = (2, 6, 15)
-
-
-def _is_rate_limited(exc: BaseException) -> bool:
-    text = str(exc)
-    return any(marker in text for marker in _RATE_LIMIT_MARKERS)
-
-
-ANALYSIS_RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "risk_score": {"type": "number"},
-        "compliance_score": {"type": "number"},
-        "risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
-        "detected_language": {"type": "string"},
-        "detected_language_name": {"type": "string"},
-        "findings": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "severity": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
-                    "description": {"type": "string"},
-                    "evidence": {"type": "string"},
-                    "recommendation": {"type": "string"},
-                    "risk_impact": {"type": "number"},
-                    "compliance_impact": {"type": "number"},
-                    "source_section": {"type": "string"},
-                    "evidence_quote": {"type": "string"},
-                    "reasoning": {"type": "string"},
-                    "confidence": {"type": "number"},
-                    "clause_type": {"type": "string"},
-                    "playbook_alignment": {"type": "string", "enum": ["ALIGNED", "DEVIATION", "NOT_COVERED"]},
-                    "playbook_notes": {"type": "string"},
-                    "regulatory_citations": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": [
-                    "title",
-                    "severity",
-                    "description",
-                    "evidence",
-                    "recommendation",
-                    "risk_impact",
-                    "compliance_impact",
-                    "source_section",
-                    "evidence_quote",
-                    "reasoning",
-                    "confidence",
-                    "clause_type",
-                    "playbook_alignment",
-                    "playbook_notes",
-                    "regulatory_citations",
-                ],
-            },
-        },
-        "key_clauses": {"type": "array", "items": {"type": "string"}},
-        "compliance_items": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": [
-        "risk_score",
-        "compliance_score",
-        "risk_level",
-        "detected_language",
-        "detected_language_name",
-        "findings",
-        "key_clauses",
-        "compliance_items",
-    ],
-}
-
-
-@dataclass
-class LLMResponse:
-    content: str
-    model: str
-    provider: str
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    latency_ms: int = 0
 
 
 class VertexGeminiProvider:
@@ -147,9 +70,9 @@ class VertexGeminiProvider:
             except Exception as exc:
                 last_exc = exc
                 if not _is_rate_limited(exc) or delay is None:
-                    raise VertexAIError(f"Vertex AI request failed: {exc}") from exc
+                    raise VertexAIError(f"AI provider request failed: {exc}") from exc
                 await asyncio.sleep(delay)
-        raise VertexAIError(f"Vertex AI request failed: {last_exc}") from last_exc
+        raise VertexAIError(f"AI provider request failed: {last_exc}") from last_exc
 
     async def complete(self, request: Any) -> Any:
         start = time.monotonic()
@@ -171,10 +94,13 @@ class VertexGeminiProvider:
         except VertexAIError:
             raise
         except Exception as exc:
-            raise VertexAIError(f"Vertex AI request failed: {exc}") from exc
+            raise VertexAIError(f"AI provider request failed: {exc}") from exc
         content = getattr(response, "text", "")
         latency_ms = int((time.monotonic() - start) * 1000)
-        return LLMResponse(content=content, model=model_name, provider=self.provider_name, latency_ms=latency_ms)
+        result = LLMResponse(content=content, model=model_name, provider=self.provider_name, latency_ms=latency_ms)
+        self.last_provider, self.last_model = result.provider, result.model
+        self.last_response = result
+        return result
 
     async def complete_json(
         self,
@@ -205,25 +131,22 @@ class VertexGeminiProvider:
         except VertexAIError:
             raise
         except Exception as exc:
-            raise VertexAIError(f"Vertex AI request failed: {exc}") from exc
+            raise VertexAIError(f"AI provider request failed: {exc}") from exc
         content = getattr(response, "text", "") or ""
-        stripped = content.strip()
-        if stripped.startswith("```"):
-            stripped = stripped.split("\n", 1)[-1]
-            if stripped.endswith("```"):
-                stripped = stripped[: stripped.rfind("```")]
-            stripped = stripped.strip()
+        stripped = strip_json_fences(content)
         try:
             parsed = json.loads(stripped)
         except json.JSONDecodeError as exc:
-            raise VertexAIError(f"Vertex AI returned invalid JSON: {exc}") from exc
+            raise VertexAIError(f"AI provider returned invalid JSON: {exc}") from exc
         if not isinstance(parsed, dict):
-            raise VertexAIError("Vertex AI returned JSON that is not an object")
+            raise VertexAIError("AI provider returned JSON that is not an object")
+        self.last_provider, self.last_model = self.provider_name, model_name
+        self.last_response = LLMResponse(content=content, model=model_name, provider=self.provider_name)
         return parsed
 
     def _create_model(self, model_name: str) -> Any:
         if not self.settings.has_ai_configuration():
-            raise VertexAIError("Google Cloud project is not configured")
+            raise VertexAIError("AI provider configuration is not complete")
         try:
             import vertexai
             from vertexai.generative_models import GenerativeModel

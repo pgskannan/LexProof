@@ -60,10 +60,16 @@ async def extract_obligations(
     user: dict[str, Any] = Depends(get_current_user),
     book: PaymentBook = Depends(get_payment_book),
 ):
-    from ..services.vertex_ai import VertexGeminiProvider
+    from ..services.llm_factory import get_llm_provider
 
     async def work() -> Any:
-        return await book.obligations.extract(contract_id, user, VertexGeminiProvider(book.settings), book.settings.gemini_model)
+        provider = get_llm_provider("analysis", book.settings)
+        return await book.obligations.extract(
+            contract_id,
+            user,
+            provider,
+            book.settings.nebius_model_analysis if book.settings.llm_provider == "nebius" else book.settings.gemini_model,
+        )
 
     try:
         return {"obligations": await work()}

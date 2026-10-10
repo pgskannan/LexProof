@@ -17,7 +17,8 @@ from ..domains.passport.api.router import configure_passport_service
 from ..repositories.cloud_storage import CloudStorageRepository
 from ..repositories.firestore import FirestoreRepository
 from ..repositories.firestore import EvidenceAnchorRepository
-from ..services.vertex_ai import VertexAIError, VertexGeminiProvider
+from ..services.llm_base import LLMError
+from ..services.llm_factory import get_llm_provider
 from ..services.ethereum_anchor_service import get_ethereum_anchor_service
 from ..services.version_analysis import VersionAnalysisService, parse_structured_analysis
 from ..services.audit import record_audit_event
@@ -558,7 +559,7 @@ def _version_analysis_service(
         versions=versions,
         repository_factory=FirestoreRepository,
         anchor_repository_factory=EvidenceAnchorRepository,
-        provider_factory=VertexGeminiProvider,
+        provider_factory=lambda: get_llm_provider("analysis"),
         anchor_service_factory=get_ethereum_anchor_service,
         passport_configurator=configure_passport_service,
     )
@@ -712,6 +713,9 @@ async def analyze_explicit_version(contract_id: str, version_id: str, user: dict
         "analysis_status": result["analysis_status"],
         "finding_count": result["finding_count"],
         "evidence_count": result["evidence_count"],
+        "ai_provider": result["ai_provider"],
+        "ai_model": result["ai_model"],
+        "ai_provider_label": result["ai_provider_label"],
     }
 
 
@@ -727,7 +731,7 @@ async def get_executive_summary(contract_id: str, user: dict[str, Any] = Depends
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except ExecutiveSummaryError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-    except VertexAIError as error:
+    except LLMError as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
 
 
@@ -742,5 +746,5 @@ async def regenerate_executive_summary(contract_id: str, user: dict[str, Any] = 
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except ExecutiveSummaryError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-    except VertexAIError as error:
+    except LLMError as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error

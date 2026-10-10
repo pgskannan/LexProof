@@ -111,9 +111,9 @@ export default function AllContracts() {
           'Ask an admin to install Tesseract OCR, then re-run analysis for full results.',
       );
     } else if (created.ocr_status === 'ocr_success') {
-      setMessage('Contract uploaded. Text extracted via OCR. Running Gemini analysis...');
+      setMessage('Contract uploaded. Text extracted via OCR. Running AI analysis...');
     } else {
-      setMessage('Contract uploaded. Running Gemini analysis...');
+      setMessage('Contract uploaded. Running AI analysis...');
     }
     const analysis = await apiFetch(`/api/contracts/${created.contract_id}/analyze`, { method: 'POST' });
     if (!analysis.ok) throw new Error((await analysis.json()).detail || 'Analysis failed');

@@ -44,6 +44,9 @@ export type LifecyclePassport = {
   contract_version: number
   status?: string | null
   evidence_count?: number | null
+  ai_provider?: string | null
+  ai_model?: string | null
+  ai_provider_label?: string | null
 } & PublishedVersionStatus
 
 export type LifecycleAnchor = {
