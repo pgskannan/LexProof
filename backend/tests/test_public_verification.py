@@ -9,6 +9,7 @@ import app.lexproof.services.ethereum_anchor_service as anchor_service_module
 from app.lexproof.domains.passport.utils.hashing import hash_evidence_item
 from app.lexproof.main import app
 from app.lexproof.repositories.firestore import EvidenceAnchorRepository, EvidenceRecordRepository
+from app.lexproof.repositories.firestore import FirestoreRepository
 
 client = TestClient(app)
 
@@ -18,6 +19,7 @@ def patched_public_verifier(monkeypatch):
     """Patch the blockchain client and Firestore repository reads with in-memory fakes."""
     evidence_store: dict[str, dict] = {}
     anchor_store: dict[str, dict] = {}
+    passport_store: dict[str, dict] = {}
 
     class FakeBlockchain:
         contract_address = "0x1111111111111111111111111111111111111111"
@@ -43,11 +45,12 @@ def patched_public_verifier(monkeypatch):
     monkeypatch.setattr(anchor_service_module, "create_blockchain_service", fake_create_blockchain_service)
     monkeypatch.setattr(EvidenceRecordRepository, "get", lambda self, document_id: evidence_store.get(document_id))
     monkeypatch.setattr(EvidenceAnchorRepository, "get", lambda self, document_id: anchor_store.get(document_id))
+    monkeypatch.setattr(FirestoreRepository, "get", lambda self, document_id: passport_store.get(document_id))
 
     original_singleton = anchor_service_module._ethereum_anchor_service
     anchor_service_module._ethereum_anchor_service = None
 
-    yield {"evidence_store": evidence_store, "anchor_store": anchor_store}
+    yield {"evidence_store": evidence_store, "anchor_store": anchor_store, "passport_store": passport_store}
 
     anchor_service_module._ethereum_anchor_service = original_singleton
 
@@ -244,6 +247,38 @@ def test_public_verifier_response_contains_expected_fields(patched_public_verifi
     assert expected_fields.issubset(payload.keys())
     assert payload["status"] == "VERIFIED"
     assert payload["verified"] is True
+
+
+def test_public_verifier_exposes_model_provenance_without_contract_content(patched_public_verifier):
+    evidence = {
+        "evidence_id": "evd-nemotron",
+        "passport_id": "passport-nemotron",
+        "evidence_type": "CLAUSE",
+        "content": "Private contract clause",
+    }
+    computed_hash = hash_evidence_item(evidence)
+    patched_public_verifier["evidence_store"]["evd-nemotron"] = evidence
+    patched_public_verifier["passport_store"]["passport-nemotron"] = {
+        "ai_provider": "nebius_token_factory",
+        "ai_model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    }
+    patched_public_verifier["anchor_store"]["evd-nemotron"] = {
+        "evidence_hash": computed_hash,
+        "blockchain_network": "ethereum-sepolia",
+        "contract_address": "0x1111111111111111111111111111111111111111",
+        "transaction_hash": "0x" + "ee" * 32,
+        "block_number": 246810,
+        "anchored_at": "2025-01-15T12:00:00+00:00",
+    }
+
+    response = client.get("/api/verify/evd-nemotron")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ai_provider"] == "nebius_token_factory"
+    assert payload["ai_model"] == "nvidia/Nemotron-3-Ultra-550b-a55b"
+    assert payload["ai_provider_label"] == "NVIDIA Nemotron 3 Ultra · Nebius Token Factory"
+    assert "content" not in payload
 
 
 def test_public_verifier_does_not_leak_sensitive_evidence_fields(patched_public_verifier):

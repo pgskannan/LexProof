@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.lexproof.api import contracts as contracts_api
+from app.lexproof.domains.passport.utils.hashing import hash_ai_analysis
 from app.lexproof.main import create_app
 from app.lexproof.services.auth import get_current_user
 
@@ -54,7 +55,11 @@ class FakeProvider:
     async def complete(self, request):
         FakeProvider.calls += 1
         assert "Revised clause text" in request.prompt
-        return type("Response", (), {"content": __import__("json").dumps(ANALYSIS)})()
+        return type("Response", (), {
+            "content": __import__("json").dumps(ANALYSIS),
+            "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+            "provider": "nebius_token_factory",
+        })()
 
 
 class FailingProvider:
@@ -153,7 +158,7 @@ def make_client(monkeypatch, provider=FakeProvider, uid="owner-1"):
     seed_data()
     monkeypatch.setattr(contracts_api, "FirestoreRepository", FakeRepository)
     monkeypatch.setattr(contracts_api, "_repositories", lambda: (FakeRepository("contracts"), FakeRepository("contract_versions"), object()))
-    monkeypatch.setattr(contracts_api, "VertexGeminiProvider", provider)
+    monkeypatch.setattr(contracts_api, "get_llm_provider", lambda tier: provider())
     monkeypatch.setattr(contracts_api, "EvidenceAnchorRepository", FakeRepository)
     monkeypatch.setattr(contracts_api, "get_ethereum_anchor_service", lambda **kwargs: FakeAnchorService(kwargs["repository"], kwargs["evidence_repository"]))
     app = create_app()
@@ -166,7 +171,7 @@ def make_retry_client(monkeypatch, failure, anchor_factory=None):
     FailOnceRepository.failure = failure
     monkeypatch.setattr(contracts_api, "FirestoreRepository", FailOnceRepository)
     monkeypatch.setattr(contracts_api, "_repositories", lambda: (FailOnceRepository("contracts"), FailOnceRepository("contract_versions"), object()))
-    monkeypatch.setattr(contracts_api, "VertexGeminiProvider", FakeProvider)
+    monkeypatch.setattr(contracts_api, "get_llm_provider", lambda tier: FakeProvider())
     monkeypatch.setattr(contracts_api, "EvidenceAnchorRepository", FailOnceRepository)
     monkeypatch.setattr(contracts_api, "get_ethereum_anchor_service", anchor_factory or (lambda **kwargs: FakeAnchorService(kwargs["repository"], kwargs["evidence_repository"])))
     app = create_app()
@@ -186,6 +191,8 @@ def test_explicit_v2_analysis_creates_distinct_versioned_artifacts(monkeypatch):
     assert body["analysis_status"] == "complete"
     assert body["finding_count"] == 1
     assert body["evidence_count"] == 1
+    assert body["ai_provider"] == "nebius_token_factory"
+    assert body["ai_model"] == "nvidia/Nemotron-3-Ultra-550b-a55b"
     assert FakeRepository.stores["contract_versions"]["version-2"]["analysis_status"] == "complete"
     assert FakeRepository.stores["contract_versions"]["version-2"]["passport_id"] == body["passport_id"]
     assert len(FakeRepository.stores["legal_passports"]) == 2
@@ -199,6 +206,15 @@ def test_explicit_v2_analysis_creates_distinct_versioned_artifacts(monkeypatch):
     assert FakeRepository.stores["risk_findings"]["finding-v1"]["version_id"] == "version-1"
     assert FakeRepository.stores["evidence_records"]["evidence-v1"]["passport_id"] == "passport-v1"
     assert FakeRepository.stores["legal_passports"][body["passport_id"]]["metadata"]["clauses"]
+    passport = FakeRepository.stores["legal_passports"][body["passport_id"]]
+    snapshot = passport["metadata"]["verification_snapshot"]
+    assert passport["ai_provider"] == "nebius_token_factory"
+    assert passport["ai_model"] == "nvidia/Nemotron-3-Ultra-550b-a55b"
+    assert passport["analysis_hash"] == hash_ai_analysis(
+        snapshot["analysis_result"],
+        analysis_type="risk_and_compliance",
+        model="nvidia/Nemotron-3-Ultra-550b-a55b",
+    )
     # Hardening item #3: real, measured Gemini call duration, timed directly
     # around the call rather than derived from broader lifecycle timestamps.
     # A freshly-created passport (this is a real Gemini call, not the cached-
@@ -256,7 +272,7 @@ def test_invalid_provider_json_persists_safe_diagnostics(monkeypatch):
     response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
 
     assert response.status_code == 502
-    assert response.json()["detail"] == "Vertex AI returned invalid structured analysis"
+    assert response.json()["detail"] == "AI provider returned invalid structured analysis"
     version = FakeRepository.stores["contract_versions"]["version-2"]
     assert version["analysis_status"] == "failed"
     assert version["analysis_error"] == "ValueError"
@@ -479,7 +495,7 @@ def test_finding_evidence_validation_invalid_when_quote_is_empty(monkeypatch):
     response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
 
     assert response.status_code == 502
-    assert response.json()["detail"] == "Vertex AI returned invalid structured analysis"
+    assert response.json()["detail"] == "AI provider returned invalid structured analysis"
 
 
 def test_finding_evidence_validation_invalid_when_quote_field_is_missing(monkeypatch):
@@ -494,4 +510,4 @@ def test_finding_evidence_validation_invalid_when_quote_field_is_missing(monkeyp
     response = client.post("/api/contracts/contract-1/versions/version-2/analyze")
 
     assert response.status_code == 502
-    assert response.json()["detail"] == "Vertex AI returned invalid structured analysis"
+    assert response.json()["detail"] == "AI provider returned invalid structured analysis"

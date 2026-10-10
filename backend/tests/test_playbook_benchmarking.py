@@ -75,7 +75,7 @@ def make_client(monkeypatch, *, org_id: str | None = None, org_playbook: list[di
     seed_data(org_id=org_id, org_playbook=org_playbook)
     monkeypatch.setattr(contracts_api, "FirestoreRepository", FakeRepository)
     monkeypatch.setattr(contracts_api, "_repositories", lambda: (FakeRepository("contracts"), FakeRepository("contract_versions"), object()))
-    monkeypatch.setattr(contracts_api, "VertexGeminiProvider", PromptCapturingProvider)
+    monkeypatch.setattr(contracts_api, "get_llm_provider", lambda tier: PromptCapturingProvider())
     monkeypatch.setattr(findings_api, "FirestoreRepository", FakeRepository)
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: {"uid": "owner-1"}

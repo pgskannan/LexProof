@@ -285,7 +285,7 @@ def make_analysis_client(monkeypatch, uid: str) -> TestClient:
         "_repositories",
         lambda: (FakeRepository("contracts"), FakeRepository("contract_versions"), object()),
     )
-    monkeypatch.setattr(contracts_api, "VertexGeminiProvider", FakeProvider)
+    monkeypatch.setattr(contracts_api, "get_llm_provider", lambda tier: FakeProvider())
     monkeypatch.setattr(contracts_api, "EvidenceAnchorRepository", FakeRepository)
     monkeypatch.setattr(
         contracts_api,
