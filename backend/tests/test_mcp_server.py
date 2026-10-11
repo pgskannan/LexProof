@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 import json
 from typing import Any
@@ -11,6 +12,7 @@ from fastapi import Request
 
 from app.lexproof.api import ask as ask_api
 from app.lexproof.api import contracts as contracts_api
+from app.lexproof.api import payments as payments_api
 from app.lexproof.main import create_app
 import app.lexproof.main as main_module
 from app.lexproof.config import get_settings
@@ -21,6 +23,9 @@ from app.lexproof.services.organizations import OrganizationService
 from tests.fakes import FakeRepository
 
 passport_api = import_module("app.lexproof.domains.passport.api.router")
+workflows_api = import_module("app.lexproof.api.workflows")
+organizations_api = import_module("app.lexproof.api.organizations")
+decisions_module = import_module("app.lexproof.mcp_server.decisions")
 
 ORG_ID = "org-1"
 PASSPORT_ID = "11111111-1111-4111-8111-111111111111"
@@ -60,11 +65,13 @@ def _seed_stores() -> None:
             "user-1": {"user_id": "user-1", "org_memberships": ["org-1"]},
             "user-2": {"user_id": "user-2", "org_memberships": ["org-2"]},
             "judge-1": {"user_id": "judge-1", "org_memberships": ["org-1"]},
+            "reviewer-1": {"user_id": "reviewer-1", "org_memberships": ["org-1"]},
         },
         "organization_invites": {},
         "organizations/org-1/members": {
             "user-1": {"user_id": "user-1", "org_id": "org-1", "roles": ["admin"], "status": "active"},
-            "judge-1": {"user_id": "judge-1", "org_id": "org-1", "roles": ["viewer"], "status": "active"},
+            "judge-1": {"user_id": "judge-1", "org_id": "org-1", "roles": ["approver"], "status": "active"},
+            "reviewer-1": {"user_id": "reviewer-1", "org_id": "org-1", "roles": ["reviewer"], "status": "active"},
         },
         "organizations/org-2/members": {
             "user-2": {"user_id": "user-2", "org_id": "org-2", "roles": ["admin"], "status": "active"},
@@ -102,6 +109,37 @@ def _seed_stores() -> None:
         "evidence_records": {},
         "evidence_anchors": {},
         "risk_findings": {},
+        "payment_obligations": {
+            "obligation-overdue": {
+                "id": "obligation-overdue", "org_id": "org-1", "contract_id": "contract-1",
+                "label": "Annual license", "amount": "12500", "currency": "USD",
+                "due_date": (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat(),
+                "status": "EXTRACTED", "payer_email": "billing@example.com", "edited_by": "editor-1",
+                "updated_at": "2026-10-01T12:00:00+00:00",
+            },
+            "obligation-upcoming": {
+                "id": "obligation-upcoming", "org_id": "org-1", "contract_id": "contract-1",
+                "label": "Support renewal", "amount": "3000", "currency": "USD",
+                "due_date": (datetime.now(timezone.utc).date() + timedelta(days=10)).isoformat(),
+                "status": "EXTRACTED", "payer_email": "billing@example.com", "edited_by": "editor-1",
+                "updated_at": "2026-10-02T12:00:00+00:00",
+            },
+            "obligation-later": {
+                "id": "obligation-later", "org_id": "org-1", "contract_id": "contract-1",
+                "label": "Later support", "amount": "500", "currency": "USD",
+                "due_date": (datetime.now(timezone.utc).date() + timedelta(days=60)).isoformat(),
+                "status": "EXTRACTED", "payer_email": "billing@example.com", "edited_by": "editor-1",
+                "updated_at": "2026-10-03T12:00:00+00:00",
+            },
+        },
+        "payment_settings": {},
+        "payment_invoices": {},
+        "payment_receipts": {},
+        "payment_checkpoints": {},
+        "workflow_definitions": {},
+        "workflow_instances": {},
+        "workflow_instances/workflow-1/history": {},
+        "audit_log": {},
     }
 
 
@@ -130,8 +168,65 @@ def mcp_app(monkeypatch):
     monkeypatch.setattr(contracts_api, "FirestoreRepository", FakeRepository)
     monkeypatch.setattr(contracts_api, "EvidenceAnchorRepository", FakeRepository)
     monkeypatch.setattr(contracts_api, "get_organization_service", lambda: org_service)
+    monkeypatch.setattr(organizations_api, "get_organization_service", lambda: org_service)
     monkeypatch.setattr("app.lexproof.services.organizations.get_organization_service", lambda: org_service)
     monkeypatch.setattr(ask_api, "_service", FakeAskService)
+    from app.lexproof.services.paypal.book import PaymentBook
+    from app.lexproof.services.paypal.actions import PaymentActions
+    from app.lexproof.services.paypal.obligations import PaymentObligations
+    from app.lexproof.services.workflow_engine import WorkflowEngine
+
+    audit_events: list[dict[str, Any]] = []
+    payment_obligations = PaymentObligations(
+        obligations=FakeRepository("payment_obligations"),
+        settings_docs=FakeRepository("payment_settings"),
+        contracts=FakeRepository("contracts"),
+        versions=FakeRepository("contract_versions"),
+        evidence=FakeRepository("evidence_records"),
+        passports=FakeRepository("legal_passports"),
+        members=lambda org_id, uid: org_service.get_active_member(org_id, uid),
+        audit=lambda **event: audit_events.append(event),
+    )
+    payment_actions = PaymentActions(
+        actions=FakeRepository("payment_actions"),
+        invoices=FakeRepository("payment_invoices"),
+        obligations=FakeRepository("payment_obligations"),
+        receipts=FakeRepository("payment_receipts"),
+        evidence=FakeRepository("evidence_records"),
+        passports=FakeRepository("legal_passports"),
+    )
+    payment_book = PaymentBook(
+        obligations=payment_obligations,
+        actions=payment_actions,
+        invoices=FakeRepository("payment_invoices"),
+        receipts=FakeRepository("payment_receipts"),
+        checkpoints=FakeRepository("payment_checkpoints"),
+    )
+    workflow_engine = WorkflowEngine(
+        definitions=FakeRepository("workflow_definitions"),
+        instances=FakeRepository("workflow_instances"),
+        history_factory=lambda instance_id: FakeRepository(f"workflow_instances/{instance_id}/history"),
+    )
+    workflow_engine.create_definition(
+        ORG_ID,
+        "Legal review",
+        [
+            {"id": "review", "name": "Legal review", "is_initial": True},
+            {"id": "approved", "name": "Approved", "is_terminal": True},
+        ],
+        [{"id": "approve-legal", "from_state": "review", "to_state": "approved", "action_name": "Approve legal review", "allowed_roles": ["admin", "approver"], "requires_not_actor": ["created_by"]}],
+        "owner-1",
+        definition_id="definition-1",
+    )
+    workflow_engine.start_instance(
+        ORG_ID,
+        "definition-1",
+        "contract",
+        "contract-1",
+        "originator-1",
+        metadata={"title": "Demo MSA legal review", "contract_name": "Demo MSA"},
+    )
+    monkeypatch.setattr(workflows_api, "get_workflow_engine", lambda: workflow_engine)
 
     async def fake_load_passport(passport_id: str, user: dict[str, Any]):
         return ({"passport_id": passport_id}, [])
@@ -154,8 +249,19 @@ def mcp_app(monkeypatch):
         "get_passport_root_anchor_service",
         lambda repository: FakePassportAnchorService(),
     )
+    monkeypatch.setattr(
+        decisions_module,
+        "get_settings",
+        lambda: type("TestSettings", (), {
+            "mcp_confirm_secret": type("TestSecret", (), {"get_secret_value": lambda self: "unit-test-confirm-key"})()
+        })(),
+    )
     monkeypatch.setenv("LEXPROOF_READ_ONLY_UIDS", "judge-1")
-    return create_app()
+    app = create_app()
+    app.dependency_overrides[payments_api.get_payment_book] = lambda: payment_book
+    app.state.audit_events = audit_events
+    app.state.workflow_engine = workflow_engine
+    return app
 
 
 @asynccontextmanager
@@ -271,12 +377,19 @@ async def test_tools_are_read_only_and_have_speech_output_schemas(mcp_app):
         result = await _rpc(client, 2, "tools/list")
     tools = result["tools"]
     assert {tool["name"] for tool in tools} == {
-        "list_contracts", "ask_contracts", "verify_contract_proof",
+        "list_contracts", "ask_contracts", "verify_contract_proof", "upcoming_obligations",
+        "pending_approvals", "prepare_decision", "confirm_decision",
     }
     for tool in tools:
-        assert tool["annotations"]["readOnlyHint"] is True
         assert "speech" in tool["outputSchema"]["properties"]
         assert "context" not in tool["inputSchema"]["properties"]
+    for name in ("list_contracts", "ask_contracts", "verify_contract_proof", "upcoming_obligations", "pending_approvals", "prepare_decision"):
+        assert next(tool for tool in tools if tool["name"] == name)["annotations"]["readOnlyHint"] is True
+    confirm = next(tool for tool in tools if tool["name"] == "confirm_decision")
+    assert confirm["annotations"]["readOnlyHint"] is False
+    assert confirm["annotations"]["destructiveHint"] is False
+    assert confirm["annotations"]["idempotentHint"] is False
+    assert confirm["annotations"]["openWorldHint"] is False
 
 
 @pytest.mark.asyncio
@@ -375,3 +488,223 @@ async def test_rest_authorization_failure_is_a_sanitized_mcp_tool_error(mcp_app)
     assert result["isError"] is True
     assert "access to this organization" in result["content"][0]["text"]
     assert "Not an active member" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_upcoming_obligations_includes_overdue_sorts_and_scopes_to_org(mcp_app):
+    async with _client(mcp_app, "token-user-1") as client:
+        await _initialize(client)
+        result = await _rpc(
+            client,
+            2,
+            "tools/call",
+            {"name": "upcoming_obligations", "arguments": {"days_ahead": 30}},
+        )
+        client.headers["Authorization"] = "Bearer token-user-2"
+        client.headers["X-Org-Id"] = "org-2"
+        await _initialize(client)
+        other_org = await _rpc(
+            client,
+            3,
+            "tools/call",
+            {"name": "upcoming_obligations", "arguments": {"days_ahead": 30}},
+        )
+    data = result["structuredContent"]
+    assert [item["obligation_id"] for item in data["obligations"]] == ["obligation-overdue", "obligation-upcoming"]
+    assert data["obligations"][0]["due_date"] < data["obligations"][1]["due_date"]
+    assert "1 is overdue" in data["speech"]
+    assert "12,500 dollars" in data["speech"]
+    assert other_org["structuredContent"]["obligations"] == []
+
+
+@pytest.mark.asyncio
+async def test_pending_approvals_only_includes_actions_allowed_by_rest_roles(mcp_app):
+    async with _client(mcp_app, "token-user-1") as client:
+        await _initialize(client)
+        me = (await client.get("/api/me")).json()
+        workflow_rows = (await client.get(f"/api/orgs/{ORG_ID}/workflow-instances", params={"status": "in_progress", "limit": 200})).json()
+        payment_rows = (await client.get("/api/contracts/contract-1/payments")).json()
+        admin_result = await _rpc(client, 2, "tools/call", {"name": "pending_approvals", "arguments": {}})
+        client.headers["Authorization"] = "Bearer token-reviewer-1"
+        await _initialize(client)
+        reviewer_result = await _rpc(client, 3, "tools/call", {"name": "pending_approvals", "arguments": {}})
+    assert any(item.get("org_id") == ORG_ID and item.get("roles") == ["admin"] for item in me.get("orgs", [])), me
+    assert workflow_rows.get("items"), workflow_rows
+    admin_items = admin_result["structuredContent"]["items"]
+    assert {item["kind"] for item in admin_items} == {"workflow", "payment_obligation"}, (admin_result, payment_rows)
+    assert all(item["available_actions"] for item in admin_items)
+    assert reviewer_result["structuredContent"]["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_prepare_confirm_records_workflow_history_and_payment_audit(mcp_app):
+    async with _client(mcp_app, "token-user-1") as client:
+        await _initialize(client)
+        pending = await _rpc(client, 2, "tools/call", {"name": "pending_approvals", "arguments": {}})
+        workflow = next(item for item in pending["structuredContent"]["items"] if item["kind"] == "workflow")
+        workflow_prepared = await _rpc(
+            client,
+            3,
+            "tools/call",
+            {"name": "prepare_decision", "arguments": {
+                "kind": "workflow", "item_id": workflow["id"], "action_id": "approve-legal", "comment": "Reviewed"}},
+        )
+        workflow_confirmation = workflow_prepared["structuredContent"]
+        assert workflow_confirmation["speech"].endswith("Nothing has changed yet.")
+        workflow_result = await _rpc(
+            client,
+            4,
+            "tools/call",
+            {"name": "confirm_decision", "arguments": {"confirmation_code": workflow_confirmation["confirmation_code"]}},
+        )
+        assert workflow_result["structuredContent"]["success"] is True
+        instance_after = mcp_app.state.workflow_engine.get_instance(workflow["id"])
+        assert instance_after["current_state"] == "approved"
+        assert len(mcp_app.state.workflow_engine.get_instance_history(workflow["id"])) == 1
+
+        payment_prepared = await _rpc(
+            client,
+            5,
+            "tools/call",
+            {"name": "prepare_decision", "arguments": {
+                "kind": "payment_obligation", "item_id": "obligation-upcoming", "action_id": "approve"}},
+        )
+        payment_confirmation = payment_prepared["structuredContent"]
+        payment_result = await _rpc(
+            client,
+            6,
+            "tools/call",
+            {"name": "confirm_decision", "arguments": {"confirmation_code": payment_confirmation["confirmation_code"]}},
+        )
+    assert payment_result["structuredContent"]["success"] is True
+    assert FakeRepository.stores["payment_obligations"]["obligation-upcoming"]["status"] == "APPROVED"
+    assert any(event["action"] == "payment_obligation.approved" for event in mcp_app.state.audit_events)
+
+
+@pytest.mark.asyncio
+async def test_confirmation_rejects_tampered_replayed_and_wrong_user_tokens(mcp_app):
+    async with _client(mcp_app, "token-user-1") as client:
+        await _initialize(client)
+        prepared = await _rpc(
+            client,
+            2,
+            "tools/call",
+            {"name": "prepare_decision", "arguments": {
+                "kind": "payment_obligation", "item_id": "obligation-upcoming", "action_id": "approve"}},
+        )
+        confirmation = prepared["structuredContent"]
+        token = confirmation["confirmation_token"]
+        tampered_token = token[:-1] + ("B" if token[-1] != "B" else "C")
+        tampered = await _rpc(
+            client,
+            3,
+            "tools/call",
+            {"name": "confirm_decision", "arguments": {"confirmation_code": tampered_token}},
+        )
+        assert tampered["isError"] is True
+        assert FakeRepository.stores["payment_obligations"]["obligation-upcoming"]["status"] == "EXTRACTED"
+
+        client.headers["Authorization"] = "Bearer token-user-2"
+        client.headers["X-Org-Id"] = "org-2"
+        await _initialize(client)
+        wrong_user = await _rpc(
+            client,
+            4,
+            "tools/call",
+            {"name": "confirm_decision", "arguments": {"confirmation_code": confirmation["confirmation_token"]}},
+        )
+        assert wrong_user["isError"] is True
+
+        client.headers["Authorization"] = "Bearer token-user-1"
+        client.headers["X-Org-Id"] = ORG_ID
+        await _initialize(client)
+        confirmed = await _rpc(
+            client,
+            5,
+            "tools/call",
+            {"name": "confirm_decision", "arguments": {"confirmation_code": confirmation["confirmation_token"]}},
+        )
+        replayed = await _rpc(
+            client,
+            6,
+            "tools/call",
+            {"name": "confirm_decision", "arguments": {"confirmation_code": confirmation["confirmation_token"]}},
+        )
+    assert confirmed["structuredContent"]["success"] is True
+    assert replayed["isError"] is True
+    assert FakeRepository.stores["payment_obligations"]["obligation-upcoming"]["status"] == "APPROVED"
+
+
+@pytest.mark.asyncio
+async def test_confirmation_rejects_expired_and_changed_workflow(mcp_app, monkeypatch):
+    async with _client(mcp_app, "token-user-1") as client:
+        await _initialize(client)
+        pending = await _rpc(client, 2, "tools/call", {"name": "pending_approvals", "arguments": {}})
+        workflow = next(item for item in pending["structuredContent"]["items"] if item["kind"] == "workflow")
+        prepared = await _rpc(
+            client,
+            3,
+            "tools/call",
+            {"name": "prepare_decision", "arguments": {"kind": "workflow", "item_id": workflow["id"], "action_id": "approve-legal"}},
+        )
+        code = prepared["structuredContent"]["confirmation_code"]
+        mcp_app.state.workflow_engine.instances.set(workflow["id"], {"updated_at": "changed-after-prepare"}, merge=True)
+        changed = await _rpc(client, 4, "tools/call", {"name": "confirm_decision", "arguments": {"confirmation_code": code}})
+        assert changed["isError"] is True
+        assert "changed since you asked" in changed["content"][0]["text"]
+        assert mcp_app.state.workflow_engine.get_instance(workflow["id"])["current_state"] == "review"
+
+        second_prepared = await _rpc(
+            client,
+            5,
+            "tools/call",
+            {"name": "prepare_decision", "arguments": {"kind": "payment_obligation", "item_id": "obligation-overdue", "action_id": "reject"}},
+        )
+        expires_at = datetime.fromisoformat(second_prepared["structuredContent"]["expires_at"]).timestamp()
+        monkeypatch.setattr(decisions_module.time, "time", lambda: expires_at + 1)
+        expired = await _rpc(
+            client,
+            6,
+            "tools/call",
+            {"name": "confirm_decision", "arguments": {"confirmation_code": second_prepared["structuredContent"]["confirmation_code"]}},
+        )
+    assert expired["isError"] is True
+    assert "expired" in expired["content"][0]["text"].lower()
+    assert FakeRepository.stores["payment_obligations"]["obligation-overdue"]["status"] == "EXTRACTED"
+
+
+@pytest.mark.asyncio
+async def test_short_code_is_user_bound_and_read_only_judge_cannot_confirm(mcp_app):
+    async with _client(mcp_app, "token-user-1") as client:
+        await _initialize(client)
+        prepared = await _rpc(
+            client,
+            2,
+            "tools/call",
+            {"name": "prepare_decision", "arguments": {"kind": "payment_obligation", "item_id": "obligation-upcoming", "action_id": "reject"}},
+        )
+        code = prepared["structuredContent"]["confirmation_code"]
+        client.headers["Authorization"] = "Bearer token-user-2"
+        client.headers["X-Org-Id"] = "org-2"
+        await _initialize(client)
+        wrong_user_code = await _rpc(client, 3, "tools/call", {"name": "confirm_decision", "arguments": {"confirmation_code": code}})
+
+        client.headers["Authorization"] = "Bearer token-judge-1"
+        client.headers["X-Org-Id"] = ORG_ID
+        await _initialize(client)
+        judge_prepared = await _rpc(
+            client,
+            4,
+            "tools/call",
+            {"name": "prepare_decision", "arguments": {"kind": "payment_obligation", "item_id": "obligation-upcoming", "action_id": "approve"}},
+        )
+        judge_confirmed = await _rpc(
+            client,
+            5,
+            "tools/call",
+            {"name": "confirm_decision", "arguments": {"confirmation_code": judge_prepared["structuredContent"]["confirmation_code"]}},
+        )
+    assert wrong_user_code["isError"] is True
+    assert judge_confirmed["structuredContent"]["success"] is False
+    assert "read-only demo account" in judge_confirmed["structuredContent"]["speech"]
+    assert FakeRepository.stores["payment_obligations"]["obligation-upcoming"]["status"] == "EXTRACTED"

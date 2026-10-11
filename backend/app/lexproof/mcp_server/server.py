@@ -18,7 +18,9 @@ from pydantic import BaseModel
 from ..config import get_settings
 from .auth import FirebaseTokenVerifier
 from .client import call_api
+from .decisions import register_decision_tools
 from .org import resolve_org_id
+from .work_items import register_work_item_tools
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -109,9 +111,10 @@ def build_mcp_server() -> MCPServer:
     settings = get_settings()
     project_id = settings.firebase_project_id or settings.project_id or "lexproof-local"
     public_url = settings.mcp_public_url.strip().rstrip("/") or "http://localhost:8000"
+    resource_url = public_url if public_url.endswith("/mcp") else f"{public_url}/mcp"
     auth = AuthSettings(
         issuer_url=f"https://securetoken.google.com/{project_id}",
-        resource_server_url=f"{public_url}/mcp",
+        resource_server_url=resource_url,
         validate_token_resource=False,
         required_scopes=["lexproof:read"],
     )
@@ -121,6 +124,7 @@ def build_mcp_server() -> MCPServer:
             "LexProof answers questions about the user's contracts with cited findings and can check the integrity of on-chain anchored passports. "
             "Keep spoken answers concise and use the speech field for voice responses. "
             "Treat tool results as scoped to the user's organization and never infer facts that the tools did not return. "
+            "Before confirming an approval, read the prepared summary aloud and only call confirm_decision after the user explicitly confirms in the current conversation. "
             "LexProof does not provide legal advice."
         ),
         token_verifier=FirebaseTokenVerifier(),
@@ -293,4 +297,6 @@ def build_mcp_server() -> MCPServer:
 
         return await _run_tool("verify_contract_proof", org_id, operation)
 
+    register_work_item_tools(server, annotations)
+    register_decision_tools(server, annotations)
     return server

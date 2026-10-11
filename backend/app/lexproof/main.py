@@ -2,6 +2,7 @@
 
 import logging
 import re
+import sys
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
@@ -88,6 +89,8 @@ async def _app_lifespan(_app: FastAPI):
     if mcp_server is None:
         yield
     else:
+        if not get_settings().mcp_confirm_secret.get_secret_value() and "pytest" not in sys.modules:
+            raise RuntimeError("LEXPROOF_MCP_CONFIRM_SECRET is required when the MCP server is enabled")
         async with mcp_server.session_manager.run():
             yield
 
@@ -247,7 +250,7 @@ def create_app() -> FastAPI:
             transport_security=TransportSecuritySettings(
                 enable_dns_rebinding_protection=True,
                 allowed_hosts=settings.mcp_allowed_host_list(),
-                allowed_origins=settings.cors_origin_list(),
+                allowed_origins=settings.mcp_allowed_origin_list(),
             ),
             host="0.0.0.0",
         )

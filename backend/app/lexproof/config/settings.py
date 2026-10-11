@@ -83,6 +83,8 @@ class LexProofSettings(BaseSettings):
         default="localhost:*,127.0.0.1:*,[::1]:*",
         validation_alias="LEXPROOF_MCP_ALLOWED_HOSTS",
     )
+    mcp_allowed_origins: str = Field(default="", validation_alias="LEXPROOF_MCP_ALLOWED_ORIGINS")
+    mcp_confirm_secret: SecretStr = Field(default=SecretStr(""), validation_alias="LEXPROOF_MCP_CONFIRM_SECRET")
     integration_tests: bool = False
     docusign_integration_key: str = Field(default="", validation_alias="DOCUSIGN_INTEGRATION_KEY")
     docusign_user_id: str = Field(default="", validation_alias="DOCUSIGN_USER_ID")
@@ -193,6 +195,10 @@ class LexProofSettings(BaseSettings):
     def mcp_allowed_host_list(self) -> list[str]:
         configured = [host.strip() for host in self.mcp_allowed_hosts.split(",") if host.strip()]
         return list(dict.fromkeys(["localhost:*", "127.0.0.1:*", "[::1]:*", *configured]))
+
+    def mcp_allowed_origin_list(self) -> list[str]:
+        configured = [origin.strip() for origin in self.mcp_allowed_origins.split(",") if origin.strip()]
+        return list(dict.fromkeys([*self.cors_origin_list(), *configured]))
 
 
 @lru_cache
