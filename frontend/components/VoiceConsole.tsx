@@ -21,6 +21,7 @@ import {
   formatTraceArguments,
   mcpHost,
   SPEECH_INPUT_FALLBACK,
+  shouldAutoSend,
   type AwaitingConfirmation,
   type VoiceToolTrace,
   type VoiceTurnResponse,
@@ -64,6 +65,7 @@ export function VoiceConsole() {
   const [error, setError] = useState('')
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
   const finalTranscriptRef = useRef('')
+  const recognitionHadErrorRef = useRef(false)
   const messageIdRef = useRef(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -124,6 +126,7 @@ export function VoiceConsole() {
     recognition.continuous = false
     recognition.interimResults = true
     finalTranscriptRef.current = ''
+    recognitionHadErrorRef.current = false
     setInterim('')
     setError('')
     recognition.onresult = (rawEvent) => {
@@ -147,6 +150,7 @@ export function VoiceConsole() {
       setInterim(interimPart)
     }
     recognition.onerror = (event) => {
+      recognitionHadErrorRef.current = true
       const message = speechErrorMessage(event.error)
       if (message) setError(message)
       setListening(false)
@@ -156,6 +160,12 @@ export function VoiceConsole() {
       setListening(false)
       setInterim('')
       recognitionRef.current = null
+      const finalText = finalTranscriptRef.current
+      if (shouldAutoSend(finalText, recognitionHadErrorRef.current)) {
+        finalTranscriptRef.current = ''
+        setDraft('')
+        void sendTurn(finalText)
+      }
     }
     recognitionRef.current = recognition
     setListening(true)
@@ -233,8 +243,8 @@ export function VoiceConsole() {
                 <Radio aria-hidden="true" className="h-4 w-4" />
               </span>
               <div>
-                <p className="text-sm font-semibold tracking-normal">Lexi</p>
-                <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.09em] text-[#9aaea5]">Private voice session</p>
+                <p className="text-sm font-semibold tracking-normal text-[#f1f5ee]">Ask Lexi</p>
+                <p className="mt-0.5 text-[10px] leading-4 text-[#b8ccc1]">Simulated Alexa+ experience · powered by the LexProof MCP server</p>
               </div>
             </div>
             <button
@@ -342,7 +352,7 @@ export function VoiceConsole() {
                   <ArrowUp aria-hidden="true" className="h-4 w-4" />
                 </button>
               </form>
-              <p className="mt-2 px-1 font-mono text-[9px] text-[#71857a]">ENTER TO SEND · YOUR SIGNED-IN ACCESS CONTROLS EVERY TOOL</p>
+              <p className="mt-2 px-1 font-mono text-[9px] text-[#71857a]">TAP THE MIC AND SPEAK · OR TYPE AND PRESS ENTER</p>
             </div>
           </div>
         </section>

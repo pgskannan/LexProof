@@ -10,6 +10,7 @@ import {
   countdownLabel,
   countdownSeconds,
   formatTraceArguments,
+  shouldAutoSend,
   speechInputFallbackMessage,
 } from '../lib/voiceConsole'
 
@@ -46,5 +47,21 @@ describe('Ask Lexi voice console', () => {
       session_id: 'session-123',
     })
     expect(buildVoiceTurnRequest('hello')).toEqual({ utterance: 'hello' })
+  })
+
+  it('auto-sends only a non-empty final transcript without a recognition error', () => {
+    expect(shouldAutoSend('find my contracts', false)).toBe(true)
+    expect(shouldAutoSend('  find my contracts  ', false)).toBe(true)
+    expect(shouldAutoSend('   ', false)).toBe(false)
+    expect(shouldAutoSend('find my contracts', true)).toBe(false)
+    expect(shouldAutoSend('', true)).toBe(false)
+  })
+
+  it('renders the high-contrast Ask Lexi header and voice input hint', () => {
+    const markup = renderToStaticMarkup(<VoiceConsole />)
+    expect(markup).toContain('text-[#f1f5ee]">Ask Lexi</p>')
+    expect(markup).toContain('Simulated Alexa+ experience · powered by the LexProof MCP server')
+    expect(markup).toContain('TAP THE MIC AND SPEAK · OR TYPE AND PRESS ENTER')
+    expect(markup).not.toContain('PRIVATE VOICE SESSION')
   })
 })

@@ -28,6 +28,10 @@ export type VoiceTurnResponse = {
 
 export const SPEECH_INPUT_FALLBACK = 'Voice input needs Chrome or Edge — type instead'
 
+export function shouldAutoSend(finalText: string, hadError: boolean): boolean {
+  return !hadError && finalText.trim().length > 0
+}
+
 export function speechInputFallbackMessage(win?: unknown): string | null {
   return isSpeechRecognitionSupported(win) ? null : SPEECH_INPUT_FALLBACK
 }
