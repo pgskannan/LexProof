@@ -35,6 +35,7 @@ import {
   TrendingUp,
   Rocket,
   ClipboardCheck,
+  Bot,
 } from 'lucide-react'
 import { useOrg } from './OrgProvider'
 import { useAuth } from './AuthProvider'
@@ -505,6 +506,15 @@ export function Navigation() {
                   >
                     <Bell className="h-4 w-4" />
                     Notification preferences
+                  </div>
+                </Link>
+                <Link href="/connect-assistant" onClick={() => setMenuOpen(false)}>
+                  <div
+                    role="menuitem"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700"
+                  >
+                    <Bot className="h-4 w-4" />
+                    Connect an AI assistant
                   </div>
                 </Link>
                 <button
