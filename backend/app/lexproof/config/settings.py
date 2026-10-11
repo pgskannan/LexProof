@@ -77,6 +77,12 @@ class LexProofSettings(BaseSettings):
     # Optional. The PayPal staging service sets this to the Vercel preview
     # origin for feat/paypal-agentic-payments. Empty leaves CORS unchanged.
     cors_origin_regex: str = Field(default="", validation_alias="LEXPROOF_CORS_ORIGIN_REGEX")
+    mcp_enabled: bool = Field(default=True, validation_alias="LEXPROOF_MCP_ENABLED")
+    mcp_public_url: str = Field(default="http://localhost:8000", validation_alias="LEXPROOF_MCP_PUBLIC_URL")
+    mcp_allowed_hosts: str = Field(
+        default="localhost:*,127.0.0.1:*,[::1]:*",
+        validation_alias="LEXPROOF_MCP_ALLOWED_HOSTS",
+    )
     integration_tests: bool = False
     docusign_integration_key: str = Field(default="", validation_alias="DOCUSIGN_INTEGRATION_KEY")
     docusign_user_id: str = Field(default="", validation_alias="DOCUSIGN_USER_ID")
@@ -183,6 +189,10 @@ class LexProofSettings(BaseSettings):
 
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    def mcp_allowed_host_list(self) -> list[str]:
+        configured = [host.strip() for host in self.mcp_allowed_hosts.split(",") if host.strip()]
+        return list(dict.fromkeys(["localhost:*", "127.0.0.1:*", "[::1]:*", *configured]))
 
 
 @lru_cache

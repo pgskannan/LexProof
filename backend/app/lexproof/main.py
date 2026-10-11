@@ -84,7 +84,12 @@ async def _app_lifespan(_app: FastAPI):
     from .services.paypal.startup import run_paypal_startup
 
     await run_paypal_startup()
-    yield
+    mcp_server = getattr(_app.state, "mcp", None)
+    if mcp_server is None:
+        yield
+    else:
+        async with mcp_server.session_manager.run():
+            yield
 
 
 def create_app() -> FastAPI:
@@ -137,6 +142,9 @@ def create_app() -> FastAPI:
         incoming = str(request.headers.get("x-request-id") or "").strip()
         request_id = incoming[:80] if incoming else str(uuid4())
         request.state.request_id = request_id
+        if request.url.path == "/mcp":
+            request.scope["path"] = "/mcp/"
+            request.scope["raw_path"] = b"/mcp/"
         if (
             request.method == "OPTIONS"
             and request.url.path.startswith("/api/verify/")
@@ -159,6 +167,8 @@ def create_app() -> FastAPI:
         if request.url.path.startswith("/api/verify/"):
             if "Access-Control-Allow-Credentials" in response.headers:
                 del response.headers["Access-Control-Allow-Credentials"]
+        if request.url.path == "/mcp" or request.url.path.startswith("/mcp/"):
+            response.headers["Access-Control-Expose-Headers"] = "Mcp-Session-Id"
         response.headers["X-Request-Id"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -221,6 +231,33 @@ def create_app() -> FastAPI:
     app.include_router(evaluation_router, prefix="/api")
     app.include_router(trial_requests_router, prefix="/api")
     app.include_router(payments_router, prefix="/api", dependencies=private_dependencies)
+
+    if settings.mcp_enabled:
+        from .mcp_server.client import set_app
+        from .mcp_server.server import build_mcp_server
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        mcp_server = build_mcp_server()
+        set_app(app)
+        app.state.mcp = mcp_server
+        mcp_app = mcp_server.streamable_http_app(
+            streamable_http_path="/",
+            stateless_http=True,
+            json_response=True,
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=settings.mcp_allowed_host_list(),
+                allowed_origins=settings.cors_origin_list(),
+            ),
+            host="0.0.0.0",
+        )
+
+        async def mcp_root_path(scope, receive, send):
+            if scope.get("path") == "":
+                scope = {**scope, "path": "/", "raw_path": b"/"}
+            await mcp_app(scope, receive, send)
+
+        app.mount("/mcp", mcp_root_path, name="mcp")
     return app
 
 

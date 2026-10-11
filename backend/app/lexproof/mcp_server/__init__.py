@@ -1,0 +1,1 @@
+"""MCP adapter for LexProof's existing authenticated REST API."""
