@@ -28,6 +28,11 @@ _AGENT_INSTRUCTION = (
 )
 
 
+def _voice_model(settings: Any | None = None) -> str:
+    selected = settings or get_settings()
+    return selected.voice_model or selected.gemini_model
+
+
 class VoiceAssistantFailure(Exception):
     def __init__(
         self,
@@ -317,7 +322,7 @@ async def _run_adk_agent(
     settings = get_settings()
     agent = Agent(
         name=APP_NAME,
-        model=settings.voice_model,
+        model=_voice_model(settings),
         description="LexProof voice assistant for the authenticated user's organization.",
         instruction=_AGENT_INSTRUCTION,
         generate_content_config=GenerateContentConfig(temperature=0),
@@ -419,13 +424,28 @@ class VoiceAssistantService:
             is_connection_failure = _is_mcp_connection_failure(exc)
             status_code = 502 if is_connection_failure else 500
             speech = "I couldn't reach LexProof just now." if is_connection_failure else "I couldn't complete that just now."
+            exception_message = _redact_text(str(exc), guard.bearer_token)
+            if utterance.strip():
+                exception_message = re.sub(
+                    re.escape(utterance.strip()),
+                    "[redacted utterance]",
+                    exception_message,
+                    flags=re.IGNORECASE,
+                )
+            exception_message = exception_message[:300]
             logger.info(
                 "voice turn complete uid=%s latency_ms=%d outcome=%s",
                 uid,
                 int((time.perf_counter() - started_at) * 1000),
                 "mcp_connection_error" if is_connection_failure else "agent_error",
             )
-            logger.warning("voice turn failed uid=%s category=%s", uid, "mcp_connection" if is_connection_failure else "agent")
+            logger.warning(
+                "voice turn failed uid=%s category=%s exception=%s message=%s",
+                uid,
+                "mcp_connection" if is_connection_failure else "agent",
+                type(exc).__name__,
+                exception_message,
+            )
             raise VoiceAssistantFailure(status_code, speech, guard.trace, entry["session_id"]) from None
 
         logger.info(

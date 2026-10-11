@@ -37,6 +37,7 @@ type TranscriptMessage = {
   id: number
   role: 'you' | 'lexi'
   text: string
+  isError?: boolean
 }
 
 const SUGGESTIONS = [
@@ -47,6 +48,26 @@ const SUGGESTIONS = [
 ]
 
 const MCP_HEADER = `MCP 2025-11-25 · Streamable HTTP · ${mcpHost()}`
+
+export function TranscriptBubble({
+  role,
+  text,
+  isError = false,
+}: Pick<TranscriptMessage, 'role' | 'text' | 'isError'>) {
+  const isUser = role === 'you'
+  const className = isUser
+    ? 'rounded-br-md bg-[#d4f2dd] text-[#183329]'
+    : 'rounded-bl-md border border-white/10 bg-[#192723] text-[#f1f5ee]'
+
+  return (
+    <div data-state={isError ? 'error' : 'normal'} className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm leading-6 ${className}`}>
+      <p className={`mb-1 font-mono text-[9px] uppercase tracking-[0.12em] ${isUser ? 'text-[#183329]' : 'text-[#b8ccc1]'}`}>
+        {isUser ? 'You' : 'Lexi'}
+      </p>
+      <p className="whitespace-pre-wrap break-words">{text}</p>
+    </div>
+  )
+}
 
 export function VoiceConsole() {
   const [supported, setSupported] = useState(false)
@@ -102,10 +123,10 @@ export function VoiceConsole() {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel()
   }, [])
 
-  function addMessage(role: TranscriptMessage['role'], text: string) {
+  function addMessage(role: TranscriptMessage['role'], text: string, isError = false) {
     if (!text.trim()) return
     messageIdRef.current += 1
-    const message = { id: messageIdRef.current, role, text: text.trim() }
+    const message = { id: messageIdRef.current, role, text: text.trim(), isError }
     setMessages((current) => [...current, message])
   }
 
@@ -205,12 +226,12 @@ export function VoiceConsole() {
       if (Array.isArray(payload.tool_trace)) setTrace(payload.tool_trace)
       setAwaiting(payload.awaiting_confirmation || null)
       const answer = payload.speech || payload.display_text || 'I could not complete that turn.'
-      addMessage('lexi', answer)
+      addMessage('lexi', answer, !response.ok)
       speak(answer)
       if (!response.ok) setError(answer)
     } catch {
       const message = "I couldn't reach LexProof just now."
-      addMessage('lexi', message)
+      addMessage('lexi', message, true)
       setError(message)
       speak(message)
     } finally {
@@ -294,10 +315,7 @@ export function VoiceConsole() {
                   </li>
                 ) : messages.map((message) => (
                   <li key={message.id} className={`flex ${message.role === 'you' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === 'you' ? 'rounded-br-md bg-[#d4f2dd] text-[#183329]' : 'rounded-bl-md border border-white/10 bg-[#192723] text-[#f1f5ee]'}`}>
-                      <p className={`mb-1 font-mono text-[9px] uppercase tracking-[0.12em] ${message.role === 'you' ? 'text-[#183329]' : 'text-[#b8ccc1]'}`}>{message.role === 'you' ? 'You' : 'Lexi'}</p>
-                      <p className="whitespace-pre-wrap break-words">{message.text}</p>
-                    </div>
+                    <TranscriptBubble role={message.role} text={message.text} isError={message.isError} />
                   </li>
                 ))}
                 <li ref={transcriptBottomRef} aria-hidden="true" className="h-px list-none" />

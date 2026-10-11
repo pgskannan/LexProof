@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('../lib/api', () => ({ apiFetch: vi.fn() }))
 
-import { VoiceConsole } from './VoiceConsole'
+import { TranscriptBubble, VoiceConsole } from './VoiceConsole'
 import {
   buildVoiceTurnRequest,
   countdownLabel,
@@ -71,5 +71,15 @@ describe('Ask Lexi voice console', () => {
     expect(markup).toContain('lg:left-64 lg:top-0')
     expect(markup).toContain('flex min-h-0 flex-1 flex-col space-y-3 overflow-y-auto overscroll-contain')
     expect(markup).toContain('md:overflow-y-auto md:overscroll-contain')
+  })
+
+  it('server-renders error replies with light assistant text on the dark bubble', () => {
+    const markup = renderToStaticMarkup(
+      <TranscriptBubble role="lexi" text="I couldn't complete that just now." isError />,
+    )
+
+    expect(markup).toContain('data-state="error"')
+    expect(markup).toContain('bg-[#192723] text-[#f1f5ee]')
+    expect(markup).not.toContain('text-[#183329]')
   })
 })

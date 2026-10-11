@@ -19,7 +19,7 @@ from app.lexproof.main import create_app
 from app.lexproof.services.auth import get_current_user
 from app.lexproof.services import firebase_auth
 from app.lexproof.config import LexProofSettings
-from app.lexproof.services.voice_assistant import VoiceAssistantService, VoiceSessionStore
+from app.lexproof.services.voice_assistant import VoiceAssistantService, VoiceSessionStore, _voice_model
 
 
 class ScriptedExecutor:
@@ -254,11 +254,45 @@ def test_mcp_connection_failure_returns_sanitized_502(monkeypatch):
     assert "secret token" not in response.text
 
 
-def test_voice_model_setting_defaults_to_fast_flash_and_can_be_overridden(monkeypatch):
-    assert LexProofSettings().voice_model == "gemini-2.0-flash-001"
+def test_agent_failure_warning_includes_class_and_redacts_token_and_utterance(monkeypatch, caplog):
+    utterance = "private utterance phrase"
+    bearer = "test-user-token"
 
-    monkeypatch.setenv("LEXPROOF_VOICE_MODEL", "gemini-fast-custom")
-    assert LexProofSettings().voice_model == "gemini-fast-custom"
+    async def failing_executor(**kwargs):
+        raise RuntimeError(f"failed for {utterance}; bearer {bearer}; " + "x" * 400)
+
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: {"uid": "user-a"}
+    monkeypatch.setattr(voice_api, "_assistant", VoiceAssistantService(agent_executor=failing_executor))
+    caplog.set_level(logging.WARNING, logger="app.lexproof.services.voice_assistant")
+
+    response = _turn(TestClient(app), utterance)
+
+    assert response.status_code == 500
+    assert response.json()["speech"] == "I couldn't complete that just now."
+    warning = next(record for record in caplog.records if record.name == "app.lexproof.services.voice_assistant")
+    assert "exception=RuntimeError" in warning.message
+    assert "[redacted utterance]" in warning.message
+    assert utterance not in warning.message
+    assert bearer not in warning.message
+    assert len(warning.message.rsplit("message=", 1)[1]) <= 300
+
+
+def test_voice_agent_uses_gemini_model_when_voice_override_is_unset(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    monkeypatch.delenv("LEXPROOF_VOICE_MODEL", raising=False)
+
+    settings = LexProofSettings()
+
+    assert settings.voice_model is None
+    assert _voice_model(settings) == "gemini-3.1-flash-lite"
+
+
+def test_voice_agent_uses_explicit_voice_model_override(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    monkeypatch.setenv("LEXPROOF_VOICE_MODEL", "gemini-voice-override")
+
+    assert _voice_model(LexProofSettings()) == "gemini-voice-override"
 
 
 def test_turn_logs_latency_without_logging_utterance(caplog):
