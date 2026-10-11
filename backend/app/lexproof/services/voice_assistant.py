@@ -317,7 +317,7 @@ async def _run_adk_agent(
     settings = get_settings()
     agent = Agent(
         name=APP_NAME,
-        model=settings.gemini_model,
+        model=settings.voice_model,
         description="LexProof voice assistant for the authenticated user's organization.",
         instruction=_AGENT_INSTRUCTION,
         generate_content_config=GenerateContentConfig(temperature=0),
@@ -390,6 +390,7 @@ class VoiceAssistantService:
             bearer_token=authorization.removeprefix("Bearer ").strip(),
             turn_number=turn_number,
         )
+        started_at = time.perf_counter()
         try:
             agent_result = await asyncio.wait_for(
                 self.agent_executor(
@@ -403,6 +404,11 @@ class VoiceAssistantService:
                 timeout=self.timeout_seconds,
             )
         except (asyncio.TimeoutError, TimeoutError):
+            logger.info(
+                "voice turn complete uid=%s latency_ms=%d outcome=timeout",
+                uid,
+                int((time.perf_counter() - started_at) * 1000),
+            )
             raise VoiceAssistantFailure(
                 504,
                 "That took too long. Please try again.",
@@ -413,9 +419,20 @@ class VoiceAssistantService:
             is_connection_failure = _is_mcp_connection_failure(exc)
             status_code = 502 if is_connection_failure else 500
             speech = "I couldn't reach LexProof just now." if is_connection_failure else "I couldn't complete that just now."
+            logger.info(
+                "voice turn complete uid=%s latency_ms=%d outcome=%s",
+                uid,
+                int((time.perf_counter() - started_at) * 1000),
+                "mcp_connection_error" if is_connection_failure else "agent_error",
+            )
             logger.warning("voice turn failed uid=%s category=%s", uid, "mcp_connection" if is_connection_failure else "agent")
             raise VoiceAssistantFailure(status_code, speech, guard.trace, entry["session_id"]) from None
 
+        logger.info(
+            "voice turn complete uid=%s latency_ms=%d outcome=ok",
+            uid,
+            int((time.perf_counter() - started_at) * 1000),
+        )
         self.sessions.finish_turn(entry)
         result = _as_payload(agent_result)
         display_text = _redact_text(str(result.get("display_text") or utterance), guard.bearer_token)

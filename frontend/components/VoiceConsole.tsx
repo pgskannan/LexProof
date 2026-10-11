@@ -68,6 +68,19 @@ export function VoiceConsole() {
   const recognitionHadErrorRef = useRef(false)
   const messageIdRef = useRef(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const transcriptBottomRef = useRef<HTMLLIElement>(null)
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [])
+
+  useEffect(() => {
+    transcriptBottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [messages, awaiting])
 
   useEffect(() => {
     setSupported(Boolean(getSpeechRecognitionConstructor(window)))
@@ -220,8 +233,9 @@ export function VoiceConsole() {
   const ringActive = listening || speaking
 
   return (
-    <main className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-7 sm:py-9 lg:px-10">
-      <header className="mb-6 flex flex-wrap items-end justify-between gap-4 border-b border-gray-200 pb-5 dark:border-gray-700">
+    <main className="fixed inset-x-0 bottom-0 top-14 z-10 flex min-h-0 flex-col overflow-hidden bg-gray-50 px-3 py-3 dark:bg-gray-900 sm:px-5 lg:left-64 lg:top-0 lg:px-7 lg:py-4">
+      <div className="mx-auto flex h-full min-h-0 w-full max-w-[1440px] flex-col">
+      <header className="mb-3 flex flex-none flex-wrap items-end justify-between gap-3 border-b border-gray-200 pb-3 dark:border-gray-700 lg:mb-4 lg:pb-4">
         <div>
           <p className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-emerald-700 dark:text-emerald-300">
             <Radio aria-hidden="true" className="h-4 w-4" /> Voice workspace
@@ -235,9 +249,9 @@ export function VoiceConsole() {
         </div>
       </header>
 
-      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <section aria-label="Ask Lexi voice console" className="min-w-0 overflow-hidden rounded-[28px] border border-[#283c39] bg-[#101b19] text-[#f1f5ee] shadow-[0_24px_70px_-35px_rgba(8,29,25,0.7)]">
-          <div className="flex items-center justify-between border-b border-white/10 px-5 py-4 sm:px-7">
+      <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] items-stretch gap-3 lg:grid-cols-[minmax(0,1fr)_320px] lg:grid-rows-1 lg:gap-4">
+        <section aria-label="Ask Lexi voice console" className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[24px] border border-[#283c39] bg-[#101b19] text-[#f1f5ee] shadow-[0_24px_70px_-35px_rgba(8,29,25,0.7)] lg:rounded-[28px]">
+          <div className="flex flex-none items-center justify-between border-b border-white/10 px-4 py-3 sm:px-6">
             <div className="flex items-center gap-3">
               <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-emerald-300/20 bg-emerald-300/10 text-emerald-200">
                 <Radio aria-hidden="true" className="h-4 w-4" />
@@ -258,58 +272,59 @@ export function VoiceConsole() {
             </button>
           </div>
 
-          <div className="grid gap-5 p-5 sm:p-7 xl:grid-cols-[220px_minmax(0,1fr)]">
-            <div className="flex flex-col items-center justify-center gap-4 py-2 xl:py-7">
-              <div className={`relative flex h-40 w-40 items-center justify-center rounded-full border transition duration-500 sm:h-48 sm:w-48 ${ringActive ? 'border-emerald-200/60 shadow-[0_0_0_10px_rgba(120,235,176,0.06),0_0_55px_rgba(89,223,157,0.35)]' : 'border-white/10 shadow-[0_0_0_10px_rgba(255,255,255,0.02)]'}`}>
+          <div className="grid min-h-0 flex-1 gap-3 p-3 sm:p-4 xl:grid-cols-[190px_minmax(0,1fr)] xl:gap-4">
+            <div className="hidden min-h-0 flex-col items-center justify-center gap-3 xl:flex">
+              <div className={`relative flex h-40 w-40 flex-none items-center justify-center rounded-full border transition duration-500 ${ringActive ? 'border-emerald-200/60 shadow-[0_0_0_10px_rgba(120,235,176,0.06),0_0_55px_rgba(89,223,157,0.35)]' : 'border-white/10 shadow-[0_0_0_10px_rgba(255,255,255,0.02)]'}`}>
                 {ringActive && <span aria-hidden="true" className="absolute inset-2 animate-ping rounded-full border border-emerald-200/25 [animation-duration:2.4s]" />}
                 <div className={`flex h-28 w-28 items-center justify-center rounded-full border transition duration-500 sm:h-36 sm:w-36 ${ringActive ? 'border-emerald-100/50 bg-[#18392e] text-emerald-100' : 'border-white/10 bg-[#172522] text-[#b8ccc1]'}`}>
                   <Radio aria-hidden="true" className={`h-10 w-10 transition ${ringActive ? 'scale-110' : ''}`} strokeWidth={1.3} />
                 </div>
               </div>
               <div className="text-center">
-                <p className="text-sm font-medium text-[#e5eee7]">{listening ? 'Listening' : speaking ? 'Speaking' : sending ? 'Thinking' : 'Ready when you are'}</p>
-                <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#81968c]">{listening ? 'EN-US / LIVE INPUT' : speaking ? 'EN-US / AUDIO OUTPUT' : 'LEXPROOF / MCP'}</p>
+                <p className="text-sm font-medium text-[#f1f5ee]">{listening ? 'Listening' : speaking ? 'Speaking' : sending ? 'Thinking' : 'Ready when you are'}</p>
+                <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#b8ccc1]">{listening ? 'EN-US / LIVE INPUT' : speaking ? 'EN-US / AUDIO OUTPUT' : 'LEXPROOF / MCP'}</p>
               </div>
             </div>
 
-            <div className="flex min-h-[300px] min-w-0 flex-col">
-              <ol aria-live="polite" aria-relevant="additions text" aria-label="Conversation transcript" className="max-h-[360px] min-h-[190px] flex-1 space-y-3 overflow-y-auto pr-1">
+            <div className="flex min-h-0 min-w-0 flex-col">
+              <ol aria-live="polite" aria-relevant="additions text" aria-label="Conversation transcript" className="flex min-h-0 flex-1 flex-col space-y-3 overflow-y-auto overscroll-contain pr-1">
                 {messages.length === 0 ? (
-                  <li className="flex min-h-[190px] items-center justify-center rounded-2xl border border-dashed border-white/10 px-6 text-center text-sm text-[#81968c]">
+                  <li className="flex min-h-0 flex-1 items-center justify-center rounded-2xl border border-dashed border-white/10 px-6 text-center text-sm text-[#b8ccc1]">
                     Ask about a contract, a proof passport, payments, or an approval.
                   </li>
                 ) : messages.map((message) => (
                   <li key={message.id} className={`flex ${message.role === 'you' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === 'you' ? 'rounded-br-md bg-[#d4f2dd] text-[#183329]' : 'rounded-bl-md border border-white/10 bg-[#192723] text-[#e7eee8]'}`}>
-                      <p className="mb-1 font-mono text-[9px] uppercase tracking-[0.12em] opacity-60">{message.role === 'you' ? 'You' : 'Lexi'}</p>
+                    <div className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === 'you' ? 'rounded-br-md bg-[#d4f2dd] text-[#183329]' : 'rounded-bl-md border border-white/10 bg-[#192723] text-[#f1f5ee]'}`}>
+                      <p className={`mb-1 font-mono text-[9px] uppercase tracking-[0.12em] ${message.role === 'you' ? 'text-[#183329]' : 'text-[#b8ccc1]'}`}>{message.role === 'you' ? 'You' : 'Lexi'}</p>
                       <p className="whitespace-pre-wrap break-words">{message.text}</p>
                     </div>
                   </li>
                 ))}
+                <li ref={transcriptBottomRef} aria-hidden="true" className="h-px list-none" />
               </ol>
 
-              {interim && <p aria-live="polite" className="mt-2 min-h-5 truncate px-2 text-xs italic text-white/40">{interim}</p>}
-              {fallbackMessage && <p className="mt-3 text-xs text-amber-200/85">{fallbackMessage}</p>}
+              {interim && <p aria-live="polite" className="mt-1 min-h-5 truncate px-2 text-xs italic text-[#b8ccc1]">{interim}</p>}
+              {fallbackMessage && <p className="mt-2 text-xs text-amber-200">{fallbackMessage}</p>}
               {error && <p role="alert" className="mt-3 text-xs text-rose-200">{error}</p>}
 
               {awaiting && (
-                <section aria-labelledby="confirm-title" className="mt-4 rounded-2xl border border-amber-200/30 bg-[#322a17] p-4 sm:p-5">
+                <section aria-labelledby="confirm-title" className="mt-2 flex-none rounded-2xl border border-amber-200/30 bg-[#322a17] p-3 sm:p-4">
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
                       <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.13em] text-amber-200">Approval prepared · no change yet</p>
-                      <h2 id="confirm-title" className="mt-2 text-sm font-semibold leading-5 text-amber-50">{awaiting.summary}</h2>
+                      <h2 id="confirm-title" className="mt-2 text-sm font-semibold leading-5 text-[#fff7e6]">{awaiting.summary}</h2>
                     </div>
                     <span aria-live="polite" className="flex-shrink-0 rounded-lg border border-amber-100/20 bg-black/20 px-2.5 py-1.5 font-mono text-xs tabular-nums text-amber-100">
                       {secondsLeft > 0 ? countdownLabel(secondsLeft) : 'Expired'}
                     </span>
                   </div>
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                    <p className="text-xs text-amber-100/70">Confirmation code <strong className="ml-1 font-mono text-sm tracking-[0.1em] text-white">{awaiting.short_code}</strong></p>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs text-amber-100">Confirmation code <strong className="ml-1 font-mono text-sm tracking-[0.1em] text-white">{awaiting.short_code}</strong></p>
                     <div className="flex gap-2">
                       <button type="button" onClick={cancelConfirmation} className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-xs font-medium text-[#d8e2db] hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-100">
                         <X aria-hidden="true" className="h-3.5 w-3.5" /> Cancel
                       </button>
-                      <button type="button" onClick={() => void sendTurn('confirm')} disabled={secondsLeft === 0 || sending} className="inline-flex items-center gap-1.5 rounded-lg bg-amber-200 px-3 py-2 text-xs font-semibold text-[#30260f] hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white">
+                      <button type="button" onClick={() => void sendTurn('confirm')} disabled={secondsLeft === 0 || sending} className="inline-flex items-center gap-1.5 rounded-lg bg-amber-200 px-3 py-2 text-xs font-semibold text-[#30260f] hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-[#5b4d2b] disabled:text-[#fff7e6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white">
                         <Check aria-hidden="true" className="h-3.5 w-3.5" /> Confirm
                       </button>
                     </div>
@@ -317,15 +332,15 @@ export function VoiceConsole() {
                 </section>
               )}
 
-              <div className="mt-4 flex flex-wrap gap-2">
+              <div className="mt-2 flex flex-none flex-wrap gap-2">
                 {SUGGESTIONS.map((suggestion) => (
-                  <button key={suggestion} type="button" onClick={() => void sendTurn(suggestion)} disabled={sending} className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 text-left text-[11px] leading-4 text-[#c0cec5] transition hover:border-emerald-200/30 hover:bg-emerald-100/10 hover:text-white disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200">
+                  <button key={suggestion} type="button" onClick={() => void sendTurn(suggestion)} disabled={sending} className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 text-left text-[11px] leading-4 text-[#c0cec5] transition hover:border-emerald-200/30 hover:bg-emerald-100/10 hover:text-white disabled:cursor-wait focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200">
                     {suggestion}
                   </button>
                 ))}
               </div>
 
-              <form onSubmit={submitDraft} className="mt-4 flex items-center gap-2 rounded-2xl border border-white/15 bg-[#0b1311] p-2 focus-within:border-emerald-200/40 focus-within:ring-1 focus-within:ring-emerald-200/20">
+              <form onSubmit={submitDraft} className="mt-2 flex flex-none items-center gap-2 rounded-2xl border border-white/15 bg-[#0b1311] p-2 focus-within:border-emerald-200/40 focus-within:ring-1 focus-within:ring-emerald-200/20">
                 {supported && (
                   <button
                     type="button"
@@ -346,26 +361,26 @@ export function VoiceConsole() {
                   }}
                   placeholder="Ask Lexi anything about your portfolio…"
                   aria-label="Message Ask Lexi"
-                  className="h-10 min-w-0 flex-1 bg-transparent px-1 text-sm text-white placeholder:text-[#72867c] focus:outline-none"
+                  className="h-10 min-w-0 flex-1 bg-transparent px-1 text-sm text-white placeholder:text-[#b8ccc1] focus:outline-none"
                 />
                 <button type="submit" disabled={!draft.trim() || sending} aria-label="Send message" className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-emerald-200 text-[#143026] transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white">
                   <ArrowUp aria-hidden="true" className="h-4 w-4" />
                 </button>
               </form>
-              <p className="mt-2 px-1 font-mono text-[9px] text-[#71857a]">TAP THE MIC AND SPEAK · OR TYPE AND PRESS ENTER</p>
+              <p className="mt-1 px-1 font-mono text-[9px] text-[#b8ccc1]">TAP THE MIC AND SPEAK · OR TYPE AND PRESS ENTER</p>
             </div>
           </div>
         </section>
 
-        <aside aria-label="MCP tool trace" className="min-w-0 overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-          <button type="button" onClick={() => setTraceOpen((open) => !open)} aria-expanded={traceOpen} className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-500 md:cursor-default">
+        <aside aria-label="MCP tool trace" className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+          <button type="button" onClick={() => setTraceOpen((open) => !open)} aria-expanded={traceOpen} className="flex w-full flex-none items-center justify-between gap-3 px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-500 md:cursor-default">
             <span className="min-w-0">
               <span className="block text-sm font-semibold text-gray-950 dark:text-white">MCP trace</span>
               <span className="mt-1 block break-all font-mono text-[10px] leading-4 text-gray-500 dark:text-gray-400">{MCP_HEADER}</span>
             </span>
             <ChevronDown aria-hidden="true" className={`h-4 w-4 flex-shrink-0 text-gray-500 transition md:hidden ${traceOpen ? 'rotate-180' : ''}`} />
           </button>
-          <div className={`${traceOpen ? 'block' : 'hidden'} border-t border-gray-200 dark:border-gray-700 md:block`}>
+          <div className={`${traceOpen ? 'flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain' : 'hidden'} border-t border-gray-200 dark:border-gray-700 md:flex md:min-h-0 md:flex-1 md:flex-col md:overflow-y-auto md:overscroll-contain`}>
             {trace.length === 0 ? (
               <div className="px-4 py-7 text-center">
                 <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-gray-100 text-gray-500 dark:bg-gray-900 dark:text-gray-400">
@@ -388,8 +403,9 @@ export function VoiceConsole() {
               </ol>
             )}
           </div>
-          <p className="border-t border-gray-200 px-4 py-3 text-[10px] leading-4 text-gray-500 dark:border-gray-700 dark:text-gray-400">Calls run as you, under your organization access.</p>
+          <p className="flex-none border-t border-gray-200 px-4 py-2 text-[10px] leading-4 text-gray-600 dark:border-gray-700 dark:text-gray-300">Calls run as you, under your organization access.</p>
         </aside>
+      </div>
       </div>
     </main>
   )

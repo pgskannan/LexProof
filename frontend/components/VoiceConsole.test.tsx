@@ -64,4 +64,12 @@ describe('Ask Lexi voice console', () => {
     expect(markup).toContain('TAP THE MIC AND SPEAK · OR TYPE AND PRESS ENTER')
     expect(markup).not.toContain('PRIVATE VOICE SESSION')
   })
+
+  it('bounds the console to the viewport and gives transcript and trace their own scroll regions', () => {
+    const markup = renderToStaticMarkup(<VoiceConsole />)
+    expect(markup).toContain('fixed inset-x-0 bottom-0 top-14')
+    expect(markup).toContain('lg:left-64 lg:top-0')
+    expect(markup).toContain('flex min-h-0 flex-1 flex-col space-y-3 overflow-y-auto overscroll-contain')
+    expect(markup).toContain('md:overflow-y-auto md:overscroll-contain')
+  })
 })

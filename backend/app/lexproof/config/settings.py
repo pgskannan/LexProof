@@ -31,6 +31,10 @@ class LexProofSettings(BaseSettings):
     google_cloud_project: str = ""
     google_cloud_location: str = "us-central1"
     gemini_model: str = "gemini-2.0-flash-001"
+    voice_model: str = Field(
+        default="gemini-2.0-flash-001",
+        validation_alias="LEXPROOF_VOICE_MODEL",
+    )
     gemini_temperature: float = 0.1
     gemini_max_output_tokens: int = 4096
     llm_provider: Literal["vertex", "nebius"] = Field(default="vertex", validation_alias=AliasChoices("LLM_PROVIDER", "llm_provider"))

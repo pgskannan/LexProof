@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
 import threading
 import time
@@ -17,6 +18,7 @@ from app.lexproof.api import voice as voice_api
 from app.lexproof.main import create_app
 from app.lexproof.services.auth import get_current_user
 from app.lexproof.services import firebase_auth
+from app.lexproof.config import LexProofSettings
 from app.lexproof.services.voice_assistant import VoiceAssistantService, VoiceSessionStore
 
 
@@ -250,6 +252,33 @@ def test_mcp_connection_failure_returns_sanitized_502(monkeypatch):
     assert response.status_code == 502
     assert response.json()["speech"] == "I couldn't reach LexProof just now."
     assert "secret token" not in response.text
+
+
+def test_voice_model_setting_defaults_to_fast_flash_and_can_be_overridden(monkeypatch):
+    assert LexProofSettings().voice_model == "gemini-2.0-flash-001"
+
+    monkeypatch.setenv("LEXPROOF_VOICE_MODEL", "gemini-fast-custom")
+    assert LexProofSettings().voice_model == "gemini-fast-custom"
+
+
+def test_turn_logs_latency_without_logging_utterance(caplog):
+    caplog.set_level(logging.INFO, logger="app.lexproof.services.voice_assistant")
+    utterance = "private utterance text must not enter logs"
+    service = VoiceAssistantService(agent_executor=ScriptedExecutor())
+
+    result = asyncio.run(service.turn(
+        uid="latency-user",
+        utterance=utterance,
+        authorization="Bearer test-user-token",
+        org_id="org-a",
+        session_id=None,
+    ))
+
+    assert result["speech"]
+    assert "latency_ms=" in caplog.text
+    assert "outcome=ok" in caplog.text
+    assert "latency-user" in caplog.text
+    assert utterance not in caplog.text
 
 
 def test_adk_streamable_http_client_negotiates_protocol_with_lexproof(monkeypatch):
