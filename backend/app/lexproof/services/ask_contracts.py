@@ -340,6 +340,9 @@ class AskContractsService:
         answer = str(generated.get("answer") or "").strip()
         if not answer:
             return {"answer": UNGROUNDED_MESSAGE, "citations": [], "grounded": False}
+        grounded = len(citations) > 0
+        if not grounded:
+            return {"answer": answer, "citations": [], "grounded": False}
         return {"answer": answer, "citations": citations, "grounded": True}
 
 

@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from app.lexproof.api import ask as ask_api
 from app.lexproof.api import organizations as org_api
@@ -150,6 +151,30 @@ def test_validate_citations_drops_hallucinated_ids():
     )
     assert [item["finding_id"] for item in validated] == ["finding-gov"]
     assert validated[0]["contract_name"] == "Acme MSA"
+
+
+@pytest.mark.parametrize(
+    "claimed_citations",
+    [
+        [{"finding_id": "invented-finding", "evidence_id": "invented-evidence"}],
+        [],
+    ],
+    ids=["invented-only", "no-citations"],
+)
+def test_ask_is_not_grounded_without_a_validated_citation(claimed_citations):
+    reset_stores()
+    service = make_ask_service(
+        FakeLLM({"answer": "The contract has a liability cap.", "citations": claimed_citations})
+    )
+
+    import asyncio
+
+    result = asyncio.run(
+        service.ask(ORG_ID, "Which governing law issues are in the Acme Master Services Agreement?", "admin-1")
+    )
+
+    assert result["grounded"] is False
+    assert result["citations"] == []
 
 
 def test_named_contracts_matches_by_name():
