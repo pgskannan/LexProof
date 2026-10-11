@@ -12,6 +12,10 @@ export type VoiceToolTrace = {
   latency_ms: number
 }
 
+export type VoiceTraceEntry =
+  | { kind: 'turn'; turn: number }
+  | ({ kind: 'tool'; turn: number } & VoiceToolTrace)
+
 export type AwaitingConfirmation = {
   short_code: string
   summary: string
@@ -30,6 +34,41 @@ export const SPEECH_INPUT_FALLBACK = 'Voice input needs Chrome or Edge — type 
 
 export function shouldAutoSend(finalText: string, hadError: boolean): boolean {
   return !hadError && finalText.trim().length > 0
+}
+
+export function shouldResumeListening({
+  handsFree,
+  muted,
+  hadError,
+  sending,
+}: {
+  handsFree: boolean
+  muted: boolean
+  hadError: boolean
+  sending: boolean
+}): boolean {
+  return handsFree && !muted && !hadError && !sending
+}
+
+export function readHandsFreePreference(storage?: Pick<Storage, 'getItem'>): boolean {
+  try {
+    const localStorageRef = storage ?? (typeof window === 'undefined' ? undefined : window.localStorage)
+    return localStorageRef?.getItem('lexproof-voice-hands-free') !== 'false'
+  } catch {
+    return true
+  }
+}
+
+export function mergeTrace(
+  previous: VoiceTraceEntry[],
+  turnTrace: VoiceToolTrace[],
+  turnNumber: number,
+): VoiceTraceEntry[] {
+  const currentTurn: VoiceTraceEntry[] = [
+    { kind: 'turn', turn: turnNumber },
+    ...turnTrace.map((entry) => ({ kind: 'tool' as const, turn: turnNumber, ...entry })),
+  ]
+  return [...currentTurn, ...previous].slice(0, 50)
 }
 
 export function speechInputFallbackMessage(win?: unknown): string | null {

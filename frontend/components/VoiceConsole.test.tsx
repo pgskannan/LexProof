@@ -10,7 +10,10 @@ import {
   countdownLabel,
   countdownSeconds,
   formatTraceArguments,
+  mergeTrace,
+  readHandsFreePreference,
   shouldAutoSend,
+  shouldResumeListening,
   speechInputFallbackMessage,
 } from '../lib/voiceConsole'
 
@@ -81,5 +84,42 @@ describe('Ask Lexi voice console', () => {
     expect(markup).toContain('data-state="error"')
     expect(markup).toContain('bg-[#192723] text-[#f1f5ee]')
     expect(markup).not.toContain('text-[#183329]')
+    expect(markup).toContain('<p class="whitespace-pre-wrap break-words text-[#f1f5ee]">I couldn&#x27;t complete that just now.</p>')
+  })
+
+  it('merges tool traces newest-first with turn dividers and a 50-entry cap', () => {
+    const old = Array.from({ length: 49 }, (_, index) => ({
+      kind: 'tool' as const,
+      turn: index + 1,
+      tool: 'list_contracts',
+      arguments_summary: '{}',
+      ok: true,
+      latency_ms: 2,
+    }))
+    const merged = mergeTrace(old, [{
+      tool: 'ask_contracts',
+      arguments_summary: '{"question":"risk"}',
+      ok: true,
+      latency_ms: 8,
+    }], 50)
+
+    expect(merged).toHaveLength(50)
+    expect(merged[0]).toEqual({ kind: 'turn', turn: 50 })
+    expect(merged[1]).toMatchObject({ kind: 'tool', turn: 50, tool: 'ask_contracts' })
+    expect(merged[2]).toMatchObject({ kind: 'tool', turn: 1 })
+  })
+
+  it('resumes hands-free listening only after audible, successful replies finish', () => {
+    expect(shouldResumeListening({ handsFree: true, muted: false, hadError: false, sending: false })).toBe(true)
+    expect(shouldResumeListening({ handsFree: false, muted: false, hadError: false, sending: false })).toBe(false)
+    expect(shouldResumeListening({ handsFree: true, muted: true, hadError: false, sending: false })).toBe(false)
+    expect(shouldResumeListening({ handsFree: true, muted: false, hadError: true, sending: false })).toBe(false)
+    expect(shouldResumeListening({ handsFree: true, muted: false, hadError: false, sending: true })).toBe(false)
+  })
+
+  it('defaults hands-free on and tolerates unavailable localStorage', () => {
+    expect(readHandsFreePreference({ getItem: () => null })).toBe(true)
+    expect(readHandsFreePreference({ getItem: () => 'false' })).toBe(false)
+    expect(readHandsFreePreference({ getItem: () => { throw new Error('blocked') } })).toBe(true)
   })
 })

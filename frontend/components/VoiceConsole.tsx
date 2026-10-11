@@ -19,11 +19,14 @@ import {
   countdownLabel,
   countdownSeconds,
   formatTraceArguments,
+  mergeTrace,
   mcpHost,
+  readHandsFreePreference,
   SPEECH_INPUT_FALLBACK,
   shouldAutoSend,
+  shouldResumeListening,
   type AwaitingConfirmation,
-  type VoiceToolTrace,
+  type VoiceTraceEntry,
   type VoiceTurnResponse,
 } from '../lib/voiceConsole'
 import {
@@ -64,7 +67,7 @@ export function TranscriptBubble({
       <p className={`mb-1 font-mono text-[9px] uppercase tracking-[0.12em] ${isUser ? 'text-[#183329]' : 'text-[#b8ccc1]'}`}>
         {isUser ? 'You' : 'Lexi'}
       </p>
-      <p className="whitespace-pre-wrap break-words">{text}</p>
+      <p className={`whitespace-pre-wrap break-words ${isUser ? 'text-[#183329]' : 'text-[#f1f5ee]'}`}>{text}</p>
     </div>
   )
 }
@@ -76,10 +79,11 @@ export function VoiceConsole() {
   const [listening, setListening] = useState(false)
   const [speaking, setSpeaking] = useState(false)
   const [muted, setMuted] = useState(false)
+  const [handsFree, setHandsFree] = useState(readHandsFreePreference)
   const [sending, setSending] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<TranscriptMessage[]>([])
-  const [trace, setTrace] = useState<VoiceToolTrace[]>([])
+  const [trace, setTrace] = useState<VoiceTraceEntry[]>([])
   const [awaiting, setAwaiting] = useState<AwaitingConfirmation | null>(null)
   const [traceOpen, setTraceOpen] = useState(false)
   const [secondsLeft, setSecondsLeft] = useState(0)
@@ -90,6 +94,14 @@ export function VoiceConsole() {
   const messageIdRef = useRef(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const transcriptBottomRef = useRef<HTMLLIElement>(null)
+  const turnNumberRef = useRef(0)
+  const handsFreeRef = useRef(handsFree)
+  const mutedRef = useRef(muted)
+  const sendingRef = useRef(sending)
+
+  handsFreeRef.current = handsFree
+  mutedRef.current = muted
+  sendingRef.current = sending
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
@@ -106,6 +118,15 @@ export function VoiceConsole() {
   useEffect(() => {
     setSupported(Boolean(getSpeechRecognitionConstructor(window)))
   }, [])
+
+  useEffect(() => {
+    handsFreeRef.current = handsFree
+    try {
+      window.localStorage.setItem('lexproof-voice-hands-free', String(handsFree))
+    } catch {
+      // Voice controls remain usable when storage is unavailable.
+    }
+  }, [handsFree])
 
   useEffect(() => {
     if (!awaiting) {
@@ -145,7 +166,17 @@ export function VoiceConsole() {
     if (voice) utterance.voice = voice
     utterance.lang = 'en-US'
     utterance.onstart = () => setSpeaking(true)
-    utterance.onend = () => setSpeaking(false)
+    utterance.onend = () => {
+      setSpeaking(false)
+      if (shouldResumeListening({
+        handsFree: handsFreeRef.current,
+        muted: mutedRef.current,
+        hadError: recognitionHadErrorRef.current,
+        sending: sendingRef.current,
+      })) {
+        startListening()
+      }
+    }
     utterance.onerror = () => setSpeaking(false)
     window.speechSynthesis.speak(utterance)
   }
@@ -185,6 +216,10 @@ export function VoiceConsole() {
     }
     recognition.onerror = (event) => {
       recognitionHadErrorRef.current = true
+      if (event.error === 'no-speech') {
+        handsFreeRef.current = false
+        setHandsFree(false)
+      }
       const message = speechErrorMessage(event.error)
       if (message) setError(message)
       setListening(false)
@@ -195,7 +230,9 @@ export function VoiceConsole() {
       setInterim('')
       recognitionRef.current = null
       const finalText = finalTranscriptRef.current
-      if (shouldAutoSend(finalText, recognitionHadErrorRef.current)) {
+      const hadError = recognitionHadErrorRef.current
+      recognitionHadErrorRef.current = false
+      if (shouldAutoSend(finalText, hadError)) {
         finalTranscriptRef.current = ''
         setDraft('')
         void sendTurn(finalText)
@@ -209,11 +246,13 @@ export function VoiceConsole() {
   async function sendTurn(utterance: string) {
     const clean = utterance.trim()
     if (!clean || sending) return
+    turnNumberRef.current += 1
     stopSpeaking()
     setError('')
     addMessage('you', clean)
     setDraft('')
     setInterim('')
+    sendingRef.current = true
     setSending(true)
     try {
       const response = await apiFetch('/api/voice/turn', {
@@ -223,7 +262,13 @@ export function VoiceConsole() {
       })
       const payload = await response.json() as VoiceTurnResponse
       if (payload.session_id) setSessionId(payload.session_id)
-      if (Array.isArray(payload.tool_trace)) setTrace(payload.tool_trace)
+      if (Array.isArray(payload.tool_trace)) {
+        setTrace((previous) => mergeTrace(previous, payload.tool_trace, turnNumberRef.current))
+      }
+      if (payload.awaiting_confirmation) {
+        handsFreeRef.current = false
+        setHandsFree(false)
+      }
       setAwaiting(payload.awaiting_confirmation || null)
       const answer = payload.speech || payload.display_text || 'I could not complete that turn.'
       addMessage('lexi', answer, !response.ok)
@@ -235,6 +280,7 @@ export function VoiceConsole() {
       setError(message)
       speak(message)
     } finally {
+      sendingRef.current = false
       setSending(false)
       setTraceOpen(true)
     }
@@ -282,15 +328,30 @@ export function VoiceConsole() {
                 <p className="mt-0.5 text-[10px] leading-4 text-[#b8ccc1]">Simulated Alexa+ experience · powered by the LexProof MCP server</p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setMuted((value) => !value)}
-              aria-label={muted ? 'Unmute spoken replies' : 'Mute spoken replies'}
-              aria-pressed={muted}
-              className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 text-[#bbc9c1] transition hover:border-emerald-200/40 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
-            >
-              {muted ? <VolumeX aria-hidden="true" className="h-4 w-4" /> : <Volume2 aria-hidden="true" className="h-4 w-4" />}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const enabled = !handsFreeRef.current
+                  handsFreeRef.current = enabled
+                  setHandsFree(enabled)
+                }}
+                disabled={Boolean(awaiting)}
+                aria-pressed={handsFree}
+                className={`rounded-full border px-3 py-2 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-[#b8ccc1] ${handsFree ? 'border-emerald-200/50 bg-emerald-200/10 text-[#f1f5ee]' : 'border-white/20 text-[#b8ccc1]'}`}
+              >
+                Hands-free {handsFree ? 'On' : 'Off'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setMuted((value) => !value)}
+                aria-label={muted ? 'Unmute spoken replies' : 'Mute spoken replies'}
+                aria-pressed={muted}
+                className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 text-[#bbc9c1] transition hover:border-emerald-200/40 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
+              >
+                {muted ? <VolumeX aria-hidden="true" className="h-4 w-4" /> : <Volume2 aria-hidden="true" className="h-4 w-4" />}
+              </button>
+            </div>
           </div>
 
           <div className="grid min-h-0 flex-1 gap-3 p-3 sm:p-4 xl:grid-cols-[190px_minmax(0,1fr)] xl:gap-4">
@@ -360,9 +421,14 @@ export function VoiceConsole() {
 
               <form onSubmit={submitDraft} className="mt-2 flex flex-none items-center gap-2 rounded-2xl border border-white/15 bg-[#0b1311] p-2 focus-within:border-emerald-200/40 focus-within:ring-1 focus-within:ring-emerald-200/20">
                 {supported && (
-                  <button
+                    <button
                     type="button"
-                    onClick={listening ? () => recognitionRef.current?.stop() : startListening}
+                      onClick={listening ? () => {
+                        handsFreeRef.current = false
+                        setHandsFree(false)
+                        recognitionRef.current?.stop()
+                      } : startListening}
+                      disabled={Boolean(awaiting)}
                     aria-label={listening ? 'Stop listening' : 'Start voice input'}
                     aria-pressed={listening}
                     className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 ${listening ? 'bg-rose-400/15 text-rose-200' : 'text-[#b8ccc1] hover:bg-white/5 hover:text-white'}`}
@@ -408,8 +474,12 @@ export function VoiceConsole() {
               </div>
             ) : (
               <ol className="divide-y divide-gray-100 dark:divide-gray-700">
-                {trace.map((item, index) => (
-                  <li key={`${item.tool}-${index}`} className="px-4 py-3.5">
+                {trace.map((item, index) => item.kind === 'turn' ? (
+                  <li key={`turn-${item.turn}-${index}`} className="bg-gray-50 px-4 py-2 font-mono text-[10px] font-semibold uppercase tracking-wide text-gray-600 dark:bg-gray-900 dark:text-gray-300">
+                    Turn {item.turn}
+                  </li>
+                ) : (
+                  <li key={`${item.turn}-${item.tool}-${index}`} className="px-4 py-3.5">
                     <div className="flex items-center justify-between gap-3">
                       <code className="min-w-0 break-all text-xs font-semibold text-gray-900 dark:text-gray-100">{item.tool}</code>
                       <span className={`flex-shrink-0 rounded-full px-2 py-0.5 font-mono text-[9px] font-bold uppercase ${item.ok ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-rose-50 text-rose-800 dark:bg-rose-950 dark:text-rose-300'}`}>{item.ok ? 'ok' : 'err'}</span>

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
@@ -16,6 +18,9 @@ from pydantic import BaseModel
 
 from .client import call_api
 from .org import resolve_org_id
+
+logger = logging.getLogger(__name__)
+MAX_CONCURRENT_READS = 8
 
 
 class ObligationItem(BaseModel):
@@ -88,20 +93,23 @@ async def _contracts(org_id: str, limit: int) -> list[dict[str, Any]]:
     return rows[:limit]
 
 
-async def _payment_views(contracts: list[dict[str, Any]], org_id: str) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-    result: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for start in range(0, len(contracts), 5):
-        batch = contracts[start:start + 5]
-        views = await asyncio.gather(*(
-            call_api(
+async def _payment_views(
+    contracts: list[dict[str, Any]],
+    org_id: str,
+    semaphore: asyncio.Semaphore | None = None,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    limiter = semaphore or asyncio.Semaphore(MAX_CONCURRENT_READS)
+
+    async def load(contract: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        async with limiter:
+            view = await call_api(
                 "GET",
                 f"/api/contracts/{quote(str(contract.get('contract_id') or ''), safe='')}/payments",
                 org_id=org_id,
             )
-            for contract in batch
-        ))
-        result.extend(zip(batch, views))
-    return result
+        return contract, view
+
+    return list(await asyncio.gather(*(load(contract) for contract in contracts)))
 
 
 def _obligation_row(row: dict[str, Any], contract_name: str) -> ObligationItem:
@@ -156,6 +164,7 @@ def register_work_item_tools(
         org_id: str | None = None,
         context: Context | None = None,
     ) -> ObligationListResult:
+        started = time.perf_counter()
         selected_org = await resolve_org_id(org_id, context)
         if not 0 <= days_ahead <= 365:
             from mcp.server.mcpserver.exceptions import ToolError
@@ -178,6 +187,11 @@ def register_work_item_tools(
                 if due and (due < today or due <= last_day):
                     result.append(_obligation_row(row, name))
         result.sort(key=lambda item: (_parse_due(item.due_date) or date.max, item.contract_name.casefold(), item.obligation_id))
+        logger.info(
+            "MCP work item tool=upcoming_obligations org_id=%s latency_ms=%.1f",
+            selected_org,
+            (time.perf_counter() - started) * 1000,
+        )
         return ObligationListResult(
             obligations=result,
             speech=_speech_for_obligations(result, days_ahead),
@@ -187,27 +201,46 @@ def register_work_item_tools(
         org_id: str | None = None,
         context: Context | None = None,
     ) -> PendingApprovalsResult:
+        started = time.perf_counter()
         selected_org = await resolve_org_id(org_id, context)
-        roles = await _member_roles(selected_org)
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_READS)
+        workflows, roles, contracts = await asyncio.gather(
+            call_api(
+                "GET",
+                f"/api/orgs/{quote(selected_org, safe='')}/workflow-instances",
+                params={"status": "in_progress", "limit": 200},
+                org_id=selected_org,
+            ),
+            _member_roles(selected_org),
+            _contracts(selected_org, 25),
+        )
         role_set = set(roles)
         result: list[PendingItem] = []
-
-        workflows = await call_api(
-            "GET",
-            f"/api/orgs/{quote(selected_org, safe='')}/workflow-instances",
-            params={"status": "in_progress", "limit": 200},
-            org_id=selected_org,
-        )
         access_token = get_access_token()
         caller_uid = (access_token.subject if access_token else None) or str((access_token.claims if access_token else {}).get("uid") or "")
-        for instance in workflows.get("items") or []:
+
+        instances = workflows.get("items") or []
+        definition_ids = list(dict.fromkeys(str(instance.get("definition_id") or "") for instance in instances))
+
+        async def load_definition(definition_id: str) -> tuple[str, dict[str, Any]]:
+            async with semaphore:
+                definition = await call_api(
+                    "GET",
+                    f"/api/orgs/{quote(selected_org, safe='')}/workflow-definitions/{quote(definition_id, safe='')}",
+                    org_id=selected_org,
+                )
+            return definition_id, definition
+
+        definition_pairs, payment_views = await asyncio.gather(
+            asyncio.gather(*(load_definition(definition_id) for definition_id in definition_ids)),
+            _payment_views(contracts, selected_org, semaphore),
+        )
+        definition_cache = dict(definition_pairs)
+
+        for instance in instances:
             current_state = str(instance.get("current_state") or "")
             definition_id = str(instance.get("definition_id") or "")
-            definition = await call_api(
-                "GET",
-                f"/api/orgs/{quote(selected_org, safe='')}/workflow-definitions/{quote(definition_id, safe='')}",
-                org_id=selected_org,
-            )
+            definition = definition_cache.get(definition_id, {})
             transitions = []
             for transition in definition.get("transitions") or []:
                 if transition.get("from_state") != current_state:
@@ -234,8 +267,6 @@ def register_work_item_tools(
                     available_actions=transitions,
                 ))
 
-        contracts = await _contracts(selected_org, 25)
-        payment_views = await _payment_views(contracts, selected_org)
         if role_set.intersection({"approver", "admin"}):
             for contract, view in payment_views:
                 for row in view.get("obligations") or []:
@@ -264,6 +295,11 @@ def register_work_item_tools(
         payments_count = sum(item.kind == "payment_obligation" for item in result)
         total = len(result)
         speech = f"You have {total} item{'s' if total != 1 else ''} waiting: {workflows_count} contract approval{'s' if workflows_count != 1 else ''} and {payments_count} payment{'s' if payments_count != 1 else ''}."
+        logger.info(
+            "MCP work item tool=pending_approvals org_id=%s latency_ms=%.1f",
+            selected_org,
+            (time.perf_counter() - started) * 1000,
+        )
         return PendingApprovalsResult(items=result, speech=speech)
 
     server.add_tool(

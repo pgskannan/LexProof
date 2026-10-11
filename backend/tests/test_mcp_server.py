@@ -28,6 +28,7 @@ passport_api = import_module("app.lexproof.domains.passport.api.router")
 workflows_api = import_module("app.lexproof.api.workflows")
 organizations_api = import_module("app.lexproof.api.organizations")
 decisions_module = import_module("app.lexproof.mcp_server.decisions")
+work_items_module = import_module("app.lexproof.mcp_server.work_items")
 
 ORG_ID = "org-1"
 PASSPORT_ID = "11111111-1111-4111-8111-111111111111"
@@ -226,7 +227,7 @@ def mcp_app(monkeypatch):
         ORG_ID,
         "definition-1",
         "contract",
-        "contract-1",
+        "contract-2",
         "originator-1",
         metadata={"title": "Demo MSA legal review", "contract_name": "Demo MSA"},
     )
@@ -643,6 +644,34 @@ async def test_pending_approvals_only_includes_actions_allowed_by_rest_roles(mcp
     assert {item["kind"] for item in admin_items} == {"workflow", "payment_obligation"}, (admin_result, payment_rows)
     assert all(item["available_actions"] for item in admin_items)
     assert reviewer_result["structuredContent"]["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_pending_approvals_fetches_each_workflow_definition_once(mcp_app, monkeypatch):
+    mcp_app.state.workflow_engine.start_instance(
+        ORG_ID,
+        "definition-1",
+        "contract",
+        "contract-1",
+        "originator-2",
+        metadata={"title": "Second legal review", "contract_name": "Demo MSA"},
+    )
+    original_call_api = work_items_module.call_api
+    definition_reads: list[str] = []
+
+    async def tracking_call_api(method, path, *args, **kwargs):
+        if "/workflow-definitions/" in path:
+            definition_reads.append(path)
+        return await original_call_api(method, path, *args, **kwargs)
+
+    monkeypatch.setattr(work_items_module, "call_api", tracking_call_api)
+    async with _client(mcp_app, "token-user-1") as client:
+        await _initialize(client)
+        result = await _rpc(client, 2, "tools/call", {"name": "pending_approvals", "arguments": {}})
+
+    workflow_items = [item for item in result["structuredContent"]["items"] if item["kind"] == "workflow"]
+    assert len(workflow_items) == 2
+    assert definition_reads == [f"/api/orgs/{ORG_ID}/workflow-definitions/definition-1"]
 
 
 @pytest.mark.asyncio
