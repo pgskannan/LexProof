@@ -21,7 +21,8 @@ param(
     [int]$MinInstances = 0,
     [string]$ReadOnlyUids = "demo-judge-1",
     [switch]$PayPal,
-    [switch]$Nebius
+    [switch]$Nebius,
+    [switch]$Amazon
 )
 # "Continue", not "Stop": gcloud writes progress to stderr, which Windows PowerShell 5.1
 # would otherwise turn into a terminating error. Failures are caught via $LASTEXITCODE.
@@ -47,7 +48,10 @@ function Invoke-Gcloud {
 }
 
 if (-not (Test-Path "backend\Dockerfile")) { throw "Run this from the repo root (C:\Projects\LexProof)." }
-if ($Nebius -and $PayPal) { throw "-Nebius and -PayPal cannot be combined." }
+if (($Nebius -and $PayPal) -or ($Amazon -and ($PayPal -or $Nebius))) { throw "-Amazon, -Nebius, and -PayPal are mutually exclusive." }
+if ($Amazon -and $Service -ne "lexproof-api-amazon") {
+    throw "Refusing Amazon MCP settings on $Service. Deploy with -Service lexproof-api-amazon."
+}
 if ($Nebius -and $Service -in @("lexproof-api", "lexproof-api-paypal")) {
     throw "Refusing to attach Nebius to $Service. Deploy with -Service lexproof-api-nebius."
 }
@@ -74,7 +78,7 @@ Invoke-Gcloud services enable run.googleapis.com cloudbuild.googleapis.com artif
     secretmanager.googleapis.com aiplatform.googleapis.com firestore.googleapis.com identitytoolkit.googleapis.com
 
 Write-Host "== 2/5 Runtime service account" -ForegroundColor Cyan
-$SaName = if ($Nebius) { "lexproof-api-nebius" } else { "lexproof-api" }
+$SaName = if ($Amazon) { "lexproof-api-amazon" } elseif ($Nebius) { "lexproof-api-nebius" } else { "lexproof-api" }
 $Sa = "$SaName@$Project.iam.gserviceaccount.com"
 & gcloud iam service-accounts describe $Sa *> $null
 if ($LASTEXITCODE -ne 0) {
@@ -193,6 +197,15 @@ if ($PayPal) {
         $plain["LEXPROOF_READ_ONLY_UIDS"] = "$ReadOnlyUids,demo-judge-2"
     }
 }
+if ($Amazon) {
+    $previewOrigin = "https://lexproof-git-feat-mcp-server-alexa-pgskannans-projects.vercel.app"
+    $plain["LEXPROOF_MCP_ENABLED"] = "true"
+    $plain["LEXPROOF_MCP_PUBLIC_URL"] = "http://localhost:8000/mcp"
+    $plain["LEXPROOF_MCP_ALLOWED_HOSTS"] = "localhost:*,127.0.0.1:*"
+    $plain["LEXPROOF_MCP_ALLOWED_ORIGINS"] = "$previewOrigin,http://localhost:6274"
+    $plain["LEXPROOF_CORS_ORIGINS"] = "$CorsOrigins,http://localhost:6274"
+    $plain["LEXPROOF_CORS_ORIGIN_REGEX"] = "^(https://lexproof-git-feat-mcp-server-alexa-pgskannans-projects\.vercel\.app|http://localhost:6274)$"
+}
 # Written to a YAML file rather than --set-env-vars: the CORS list contains commas, and
 # gcloud.cmd runs through cmd.exe, which mangles the usual "^|^" delimiter escape.
 $envFile = Join-Path ([System.IO.Path]::GetTempPath()) "lexproof-cloud-run-env.yaml"
@@ -235,14 +248,23 @@ if ($Nebius) {
         Write-Host "   $tavilySecret does not exist; this deploy skips TAVILY_API_KEY"
     }
 }
+if ($Amazon) {
+    $confirmSecret = "lexproof-mcp-confirm-secret"
+    & gcloud secrets describe $confirmSecret *> $null
+    if ($LASTEXITCODE -ne 0) { throw "Run backend\deploy\create-mcp-secrets.ps1 first; required secret $confirmSecret is missing." }
+    Invoke-Gcloud secrets add-iam-policy-binding $confirmSecret --member "serviceAccount:$Sa" --role "roles/secretmanager.secretAccessor" --quiet *> $null
+    Write-Host "   granted secretAccessor on $confirmSecret"
+    $secretArg += ",LEXPROOF_MCP_CONFIRM_SECRET=${confirmSecret}:latest"
+}
 
+$effectiveMinInstances = if ($Amazon) { [Math]::Max(1, $MinInstances) } else { $MinInstances }
 Invoke-Gcloud run deploy $Service `
     --source backend `
     --region $Region `
     --service-account $Sa `
     --allow-unauthenticated `
     --memory 1Gi --cpu 1 --timeout 300 `
-    --min-instances $MinInstances --max-instances 1 `
+    --min-instances $effectiveMinInstances --max-instances 1 `
     --env-vars-file $envFile `
     --set-secrets $secretArg `
     --quiet
@@ -251,6 +273,12 @@ Remove-Item $envFile -Force -ErrorAction SilentlyContinue
 Write-Host "== 5/5 Checking the service" -ForegroundColor Cyan
 $url = (& gcloud run services describe $Service --region $Region --format "value(status.url)").Trim()
 Write-Host "   Service URL: $url" -ForegroundColor Green
+if ($Amazon -and $url) {
+    $serviceHost = ([uri]$url).Authority
+    Invoke-Gcloud run services update $Service --region $Region `
+        --update-env-vars "LEXPROOF_MCP_PUBLIC_URL=$url/mcp,LEXPROOF_MCP_ALLOWED_HOSTS=$serviceHost" --quiet
+    Write-Host "   MCP resource URL and allowed host updated for the assigned Cloud Run service URL"
+}
 try {
     $health = Invoke-RestMethod "$url/health" -TimeoutSec 60
     Write-Host "   /health -> $($health | ConvertTo-Json -Compress)" -ForegroundColor Green
