@@ -64,6 +64,7 @@ from .services.health import router as health_router
 from .api.organizations import router as organizations_router
 from .api.workflows import router as workflows_router
 from .api.ask import router as ask_router
+from .api.voice import router as voice_router
 from .api.counterparty import external_router as counterparty_external_router
 from .api.counterparty import internal_router as counterparty_internal_router
 from .api.portfolio import router as portfolio_router
@@ -227,6 +228,7 @@ def create_app() -> FastAPI:
     app.include_router(organizations_router, prefix="/api")
     app.include_router(workflows_router, prefix="/api")
     app.include_router(ask_router, prefix="/api")
+    app.include_router(voice_router, prefix="/api")
     app.include_router(counterparty_internal_router, prefix="/api")
     app.include_router(counterparty_external_router, prefix="/api")
     app.include_router(portfolio_router, prefix="/api")

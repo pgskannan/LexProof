@@ -29,6 +29,7 @@ _READ_ONLY_ALLOWED_WRITES = tuple(
     re.compile(pattern)
     for pattern in (
         r"/ask$",                                  # Ask Lexi (answers a question)
+        r"/voice/turn$",                           # Ask Lexi voice console turn
         r"/translate$",                            # translate findings for display
         r"/verify$",                               # re-run an integrity check
         r"/verify-version-history/[^/]+$",
