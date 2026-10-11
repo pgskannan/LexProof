@@ -34,6 +34,12 @@ Built on top of that:
 - **Board Report** — portfolio KPIs, risk heatmap, top risks, and how much of the risk picture is provable on chain; print-ready.
 - **Scanned contracts** — OCR (Tesseract) for image and scanned-PDF contracts; PII is flagged.
 
+## Alexa+ / MCP (Amazon Build, Ship, Shape)
+
+Ask Lexi is a simulated Alexa+ voice console backed by LexProof's authenticated MCP server. See [MCP_SERVER.md](docs/MCP_SERVER.md), [VOICE_CONSOLE.md](docs/VOICE_CONSOLE.md), and [deploy-amazon.md](docs/deploy-amazon.md).
+
+**60-second judge path:** log in as judge, open **Ask Lexi (voice)**, try the four suggestion chips, then say or type `approve the legal review`. Review the confirmation card and say `confirm`; the read-only judge receives a no-change response. For an optional protocol inspection, open **Connect an AI assistant** and connect MCP Inspector.
+
 ## Verify it yourself (2 minutes, no account)
 
 1. Open the **[Tamper Test](https://www.lexproofsolutions.com/public-verify/tamper)** and load the demo passport. Your browser recomputes the passport root and reads it from Sepolia: **VERIFIED**.
