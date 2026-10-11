@@ -82,6 +82,7 @@ def seed_list_stores() -> None:
                 "contract_id": "demo-golden-path-master-services-agreement",
             },
         },
+        "passport_anchors": {},
         "redline_proposals": {},
         "evidence_records": {},
         "evidence_anchors": {},
@@ -96,6 +97,7 @@ def make_client(monkeypatch, uid: str = "owner-1"):
     CountingRepository.get_many_collections = []
     monkeypatch.setattr(contracts_api, "FirestoreRepository", CountingRepository)
     monkeypatch.setattr(contracts_api, "EvidenceAnchorRepository", CountingRepository)
+    monkeypatch.setattr(contracts_api, "PassportAnchorRepository", CountingRepository)
     monkeypatch.setattr(contracts_api, "get_organization_service", make_org_service)
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: {"uid": uid}
@@ -158,6 +160,7 @@ def test_unscoped_list_keeps_legacy_owner_visibility(monkeypatch):
     CountingRepository.get_many_collections = []
     monkeypatch.setattr(contracts_api, "FirestoreRepository", CountingRepository)
     monkeypatch.setattr(contracts_api, "EvidenceAnchorRepository", CountingRepository)
+    monkeypatch.setattr(contracts_api, "PassportAnchorRepository", CountingRepository)
     monkeypatch.setattr(contracts_api, "get_organization_service", make_org_service)
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: {"uid": "owner-1"}
@@ -168,6 +171,75 @@ def test_unscoped_list_keeps_legacy_owner_visibility(monkeypatch):
     assert [item["contract_id"] for item in response.json()] == ["legacy-1"]
     assert "contracts" in CountingRepository.stream_collections
     assert "contract_versions" not in CountingRepository.stream_collections
+
+
+def test_org_list_projects_root_anchor_transaction_and_block(monkeypatch):
+    client = make_client(monkeypatch)
+    FakeRepository.stores["passport_anchors"]["passport-1"] = {
+        "passport_id": "passport-1",
+        "transaction_hash": "0xanchor123",
+        "block_number": 456,
+    }
+
+    response = client.get("/api/contracts", headers={"X-Org-Id": "org-1"})
+
+    row = response.json()[0]
+    assert row["root_anchor_status"] == "anchored"
+    assert row["root_anchor_tx"] == "0xanchor123"
+    assert row["root_anchor_block"] == 456
+    assert CountingRepository.get_many_collections.count("passport_anchors") == 1
+
+
+def test_org_list_without_root_anchor_transaction_is_not_anchored(monkeypatch):
+    client = make_client(monkeypatch)
+    FakeRepository.stores["passport_anchors"]["passport-1"] = {
+        "passport_id": "passport-1",
+        "block_number": 456,
+    }
+
+    response = client.get("/api/contracts", headers={"X-Org-Id": "org-1"})
+
+    row = response.json()[0]
+    assert row["root_anchor_status"] == "not_anchored"
+    assert row["root_anchor_tx"] is None
+    assert row["root_anchor_block"] == 456
+
+
+def test_unscoped_list_projects_root_anchor_for_legacy_passport(monkeypatch):
+    FakeRepository.stores = {
+        "contracts": {
+            "legacy-1": {
+                "id": "legacy-1",
+                "owner_id": "owner-1",
+                "current_version_id": "version-1",
+            }
+        },
+        "contract_versions": {"version-1": {"id": "version-1", "passport_id": "passport-1"}},
+        "legal_passports": {"passport-1": {"id": "passport-1", "contract_id": "legacy-1"}},
+        "passport_anchors": {"passport-1": {"transaction_hash": "0xlegacy", "block_number": 789}},
+        "redline_proposals": {},
+        "evidence_records": {},
+        "evidence_anchors": {},
+        "risk_findings": {},
+        "organizations": {},
+        "users": {},
+        "organization_invites": {},
+    }
+    CountingRepository.stream_collections = []
+    CountingRepository.query_equals = []
+    CountingRepository.get_many_collections = []
+    monkeypatch.setattr(contracts_api, "FirestoreRepository", CountingRepository)
+    monkeypatch.setattr(contracts_api, "EvidenceAnchorRepository", CountingRepository)
+    monkeypatch.setattr(contracts_api, "PassportAnchorRepository", CountingRepository)
+    monkeypatch.setattr(contracts_api, "get_organization_service", make_org_service)
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: {"uid": "owner-1"}
+
+    response = TestClient(app).get("/api/contracts")
+
+    assert response.status_code == 200
+    assert response.json()[0]["root_anchor_status"] == "anchored"
+    assert response.json()[0]["root_anchor_tx"] == "0xlegacy"
 
 
 def test_org_list_finds_published_version_passport_without_org_id(monkeypatch):

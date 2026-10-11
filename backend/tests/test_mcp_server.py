@@ -20,6 +20,8 @@ from app.lexproof.services import auth as auth_service
 from app.lexproof.services import firebase_auth
 from app.lexproof.services.ask_contracts import AskContractsService
 from app.lexproof.services.organizations import OrganizationService
+from app.lexproof.mcp_server.server import resolve_contract
+from mcp.server.mcpserver.exceptions import ToolError
 from tests.fakes import FakeRepository
 
 passport_api = import_module("app.lexproof.domains.passport.api.router")
@@ -105,6 +107,7 @@ def _seed_stores() -> None:
         "legal_passports": {
             PASSPORT_ID: {"id": PASSPORT_ID, "passport_id": PASSPORT_ID, "contract_id": "contract-1", "org_id": "org-1"},
         },
+        "passport_anchors": {},
         "redline_proposals": {},
         "evidence_records": {},
         "evidence_anchors": {},
@@ -167,6 +170,7 @@ def mcp_app(monkeypatch):
     monkeypatch.setattr(auth_service, "verify_firebase_token", fake_verify_firebase_token)
     monkeypatch.setattr(contracts_api, "FirestoreRepository", FakeRepository)
     monkeypatch.setattr(contracts_api, "EvidenceAnchorRepository", FakeRepository)
+    monkeypatch.setattr(contracts_api, "PassportAnchorRepository", FakeRepository)
     monkeypatch.setattr(contracts_api, "get_organization_service", lambda: org_service)
     monkeypatch.setattr(organizations_api, "get_organization_service", lambda: org_service)
     monkeypatch.setattr("app.lexproof.services.organizations.get_organization_service", lambda: org_service)
@@ -408,6 +412,55 @@ async def test_list_contracts_is_scoped_by_rest_org_membership(mcp_app):
 
 
 @pytest.mark.asyncio
+async def test_list_contracts_speech_counts_root_anchors(mcp_app):
+    FakeRepository.stores["passport_anchors"][PASSPORT_ID] = {
+        "passport_id": PASSPORT_ID,
+        "transaction_hash": "0xanchor123",
+        "block_number": 12345,
+    }
+    async with _client(mcp_app, "token-user-1") as client:
+        await _initialize(client)
+        anchored = await _rpc(client, 2, "tools/call", {"name": "list_contracts", "arguments": {}})
+        FakeRepository.stores["passport_anchors"] = {}
+        not_anchored = await _rpc(client, 3, "tools/call", {"name": "list_contracts", "arguments": {}})
+
+    assert anchored["structuredContent"]["speech"] == "You have 2 contracts. 1 have anchored proof passports."
+    assert not_anchored["structuredContent"]["speech"] == "You have 2 contracts. None are anchored yet."
+    assert "verified" not in anchored["structuredContent"]["speech"].casefold()
+    assert "verified" not in not_anchored["structuredContent"]["speech"].casefold()
+
+
+def test_resolve_contract_accepts_exact_name_and_name_without_extension():
+    rows = [{"contract_id": "contract-1", "name": "Demo MSA.docx"}]
+
+    assert resolve_contract(rows, contract_name="Demo MSA.docx")["contract_id"] == "contract-1"
+    assert resolve_contract(rows, contract_name="Demo MSA")["contract_id"] == "contract-1"
+
+
+def test_resolve_contract_normalizes_spoken_contract_names():
+    rows = [{"contract_id": "contract-02", "name": "CONTRACT_02_MSA_MediumRisk.docx"}]
+
+    assert resolve_contract(rows, contract_name="contract 02 msa medium risk")["contract_id"] == "contract-02"
+
+
+def test_resolve_contract_expands_msa_and_reports_ambiguity():
+    one_msa = [{"contract_id": "acme-msa", "name": "Acme Master Services Agreement"}]
+    two_msas = [
+        *one_msa,
+        {"contract_id": "beta-msa", "name": "Beta Master Services Agreement"},
+    ]
+
+    assert resolve_contract(one_msa, contract_name="master services agreement")["contract_id"] == "acme-msa"
+    with pytest.raises(ToolError, match="Acme Master Services Agreement.*Beta Master Services Agreement"):
+        resolve_contract(two_msas, contract_name="master services agreement")
+
+
+def test_resolve_contract_no_match_suggests_list_contracts():
+    with pytest.raises(ToolError, match="Try list_contracts"):
+        resolve_contract([], contract_name="missing agreement")
+
+
+@pytest.mark.asyncio
 async def test_ask_contracts_returns_citations_and_ungrounded_speech(mcp_app):
     async with _client(mcp_app, "token-user-1") as client:
         await _initialize(client)
@@ -440,7 +493,7 @@ async def test_verify_contract_proof_reports_verified_and_no_passport(mcp_app):
             client,
             2,
             "tools/call",
-            {"name": "verify_contract_proof", "arguments": {"contract_id": "contract-1"}},
+            {"name": "verify_contract_proof", "arguments": {"contract_name": "Demo MSA.docx"}},
         )
         no_passport = await _rpc(
             client,
@@ -456,6 +509,47 @@ async def test_verify_contract_proof_reports_verified_and_no_passport(mcp_app):
     missing = no_passport["structuredContent"]
     assert missing["verified"] is False
     assert "no proof passport" in missing["speech"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("anchor_status", "expected_speech"),
+    [
+        ("NOT_ANCHORED", "the passport is not anchored yet"),
+        ("INVALID_PROOF", "the fingerprint does not match"),
+        ("NETWORK_ERROR", "the network is unavailable"),
+    ],
+)
+async def test_verify_contract_proof_speaks_plain_anchor_failure(
+    mcp_app, monkeypatch, anchor_status, expected_speech
+):
+    class FailedPassportAnchorService:
+        async def verify_passport_root_status(self, passport_id, integrity):
+            return {
+                **integrity,
+                "passport_id": passport_id,
+                "anchor_status": anchor_status,
+                "blockchain_network": "ethereum-sepolia",
+                "transaction_hash": None,
+                "block_number": None,
+            }
+
+    monkeypatch.setattr(
+        passport_api,
+        "get_passport_root_anchor_service",
+        lambda repository: FailedPassportAnchorService(),
+    )
+    async with _client(mcp_app, "token-user-1") as client:
+        await _initialize(client)
+        result = await _rpc(
+            client,
+            2,
+            "tools/call",
+            {"name": "verify_contract_proof", "arguments": {"contract_id": "contract-1"}},
+        )
+
+    assert result["structuredContent"]["verified"] is False
+    assert expected_speech in result["structuredContent"]["speech"]
 
 
 @pytest.mark.asyncio
@@ -515,6 +609,21 @@ async def test_upcoming_obligations_includes_overdue_sorts_and_scopes_to_org(mcp
     assert "1 is overdue" in data["speech"]
     assert "12,500 dollars" in data["speech"]
     assert other_org["structuredContent"]["obligations"] == []
+
+
+@pytest.mark.asyncio
+async def test_upcoming_obligations_uses_shared_contract_name_resolver(mcp_app):
+    async with _client(mcp_app, "token-user-1") as client:
+        await _initialize(client)
+        result = await _rpc(
+            client,
+            2,
+            "tools/call",
+            {"name": "upcoming_obligations", "arguments": {"contract_name": "Demo MSA.docx", "days_ahead": 30}},
+        )
+
+    obligations = result["structuredContent"]["obligations"]
+    assert [item["obligation_id"] for item in obligations] == ["obligation-overdue", "obligation-upcoming"]
 
 
 @pytest.mark.asyncio

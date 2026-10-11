@@ -15,7 +15,7 @@ from ..services.organizations import contract_owner_or_org_admin, get_organizati
 from ..config import get_settings
 from ..domains.passport.api.router import configure_passport_service
 from ..repositories.cloud_storage import CloudStorageRepository
-from ..repositories.firestore import FirestoreRepository
+from ..repositories.firestore import FirestoreRepository, PassportAnchorRepository
 from ..repositories.firestore import EvidenceAnchorRepository
 from ..services.llm_base import LLMError
 from ..services.llm_factory import get_llm_provider
@@ -246,12 +246,15 @@ def _contract_summary(
     passport: dict[str, Any] | None = None,
     status_projection: dict[str, Any] | None = None,
     version_record: dict[str, Any] | None = None,
+    root_anchor: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the current, owner-scoped contract record used by the dashboard."""
     version_id = contract.get("current_version_id")
     version = version_record if version_record is not None else versions.get(version_id) if version_id else None
     passport_id = (version.get("passport_id") if version else None) or (passport or {}).get("passport_id") or (passport or {}).get("id")
     passport = passport or (passports.get(passport_id) if passport_id else None)
+    anchor_tx = (root_anchor or {}).get("transaction_hash")
+    root_anchor_status = "anchored" if anchor_tx else "not_anchored"
 
     return {
         "contract_id": contract.get("id") or contract.get("contract_id") or (passport or {}).get("contract_id"),
@@ -265,6 +268,9 @@ def _contract_summary(
         "risk_score": passport.get("risk_score") if passport else None,
         "risk_level": passport.get("risk_level") if passport else None,
         "evidence_count": passport.get("evidence_count") if passport else None,
+        "root_anchor_status": root_anchor_status,
+        "root_anchor_tx": anchor_tx,
+        "root_anchor_block": (root_anchor or {}).get("block_number"),
         **(status_projection or {}),
     }
 
@@ -287,6 +293,7 @@ async def list_contracts(
     uid = str(user["uid"])
     contracts, versions, _ = _repositories()
     passports = FirestoreRepository("legal_passports")
+    root_anchor_repo = PassportAnchorRepository("passport_anchors")
     proposals = FirestoreRepository("redline_proposals")
     evidence_records = FirestoreRepository("evidence_records")
     evidence_anchors = EvidenceAnchorRepository("evidence_anchors")
@@ -376,6 +383,15 @@ async def list_contracts(
         evidence_anchor_snapshot,
         finding_snapshot,
     )
+    passport_ids = {
+        str(passport_id)
+        for passport_id in [
+            *(version.get("passport_id") for version in version_records),
+            *(item.get("passport_id") or item.get("id") for item in passport_records),
+        ]
+        if passport_id
+    }
+    root_anchor_by_passport = root_anchor_repo.get_many(sorted(passport_ids)) if passport_ids else {}
     records = [
         _contract_summary(
             contract,
@@ -384,6 +400,7 @@ async def list_contracts(
             passport=passport_by_id.get((version_by_id.get(contract.get("current_version_id")) or {}).get("passport_id")),
             status_projection=status_by_version.get(contract.get("current_version_id")),
             version_record=version_by_id.get(contract.get("current_version_id")),
+            root_anchor=root_anchor_by_passport.get((version_by_id.get(contract.get("current_version_id")) or {}).get("passport_id")),
         )
         for contract in contract_records
     ]
@@ -418,7 +435,7 @@ async def list_contracts(
         if current is None or (passport.get("contract_version") or 0) > (current.get("contract_version") or 0):
             latest_orphan_passport_by_contract[contract_id] = passport
     for passport in latest_orphan_passport_by_contract.values():
-        records.append(_contract_summary({}, versions, passports, passport=passport))
+        records.append(_contract_summary({}, versions, passports, passport=passport, root_anchor=root_anchor_by_passport.get(str(passport.get("id") or passport.get("passport_id") or ""))))
     return sorted(records, key=lambda record: record.get("updated_at") or "", reverse=True)
 
 

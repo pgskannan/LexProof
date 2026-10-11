@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -144,7 +144,11 @@ async def _member_roles(org_id: str) -> list[str]:
     return []
 
 
-def register_work_item_tools(server: MCPServer, annotations: ToolAnnotations) -> None:
+def register_work_item_tools(
+    server: MCPServer,
+    annotations: ToolAnnotations,
+    contract_resolver: Callable[[list[dict[str, Any]], str | None, str | None], dict[str, Any]],
+) -> None:
     async def upcoming_obligations(
         contract_id: str | None = None,
         contract_name: str | None = None,
@@ -160,18 +164,7 @@ def register_work_item_tools(server: MCPServer, annotations: ToolAnnotations) ->
 
         if contract_id or contract_name:
             contracts = await _contracts(selected_org, 100)
-            if contract_id:
-                matches = [item for item in contracts if str(item.get("contract_id")) == contract_id]
-            else:
-                matches = [
-                    item for item in contracts
-                    if str(item.get("name") or "").casefold() == str(contract_name).casefold()
-                ]
-            if len(matches) != 1:
-                from mcp.server.mcpserver.exceptions import ToolError
-
-                raise ToolError("No unique matching contract was found in that organization.")
-            selected_contracts = matches
+            selected_contracts = [contract_resolver(contracts, contract_id, contract_name)]
         else:
             selected_contracts = await _contracts(selected_org, 25)
 

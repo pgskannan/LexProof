@@ -25,6 +25,86 @@ from .work_items import register_work_item_tools
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
+_ALIAS_MAP = {
+    "msa": "master services agreement",
+    "sow": "statement of work",
+    "nda": "non disclosure agreement",
+    "po": "purchase order",
+    "saas": "software as a service",
+}
+_STOPWORDS = {"the", "agreement", "contract", "of", "and", "or", "for", "with", "to", "in", "on"}
+
+
+def _normalize_contract_name(value: str | None) -> str:
+    if value is None:
+        return ""
+    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(value).strip()).casefold()
+    normalized = normalized.rsplit(".", 1)[0] if "." in normalized else normalized
+    normalized = re.sub(r"[_\-\.]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    for alias, expansion in _ALIAS_MAP.items():
+        normalized = re.sub(rf"\b{re.escape(alias)}\b", expansion, normalized)
+    normalized = re.sub(r"\bthe\b", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def _tokenize_contract_name(value: str | None) -> set[str]:
+    return {token for token in _normalize_contract_name(value).split() if token and token not in _STOPWORDS}
+
+
+def resolve_contract(rows: list[dict[str, Any]], contract_id: str | None = None, contract_name: str | None = None) -> dict[str, Any]:
+    if contract_id and str(contract_id).strip():
+        for row in rows:
+            if str(row.get("contract_id") or row.get("id") or "") == str(contract_id).strip():
+                return row
+    if not contract_name or not str(contract_name).strip():
+        raise ToolError("Pass contract_id or contract_name.")
+    target = str(contract_name).strip()
+    normalized_target = _normalize_contract_name(target)
+    best_tier: list[tuple[int, list[dict[str, Any]]]] = []
+    direct_matches: list[dict[str, Any]] = []
+    for row in rows:
+        candidate_name = str(row.get("name") or row.get("contract_name") or row.get("id") or "")
+        normalized_candidate = _normalize_contract_name(candidate_name)
+        if normalized_candidate == normalized_target:
+            direct_matches.append(row)
+        elif normalized_candidate and normalized_target and (
+            normalized_candidate in normalized_target or normalized_target in normalized_candidate
+        ):
+            direct_matches.append(row)
+    if direct_matches:
+        best_tier.append((1, direct_matches))
+    token_matches: list[dict[str, Any]] = []
+    target_tokens = _tokenize_contract_name(normalized_target)
+    for row in rows:
+        candidate_name = str(row.get("name") or row.get("contract_name") or row.get("id") or "")
+        candidate_tokens = _tokenize_contract_name(candidate_name)
+        if not target_tokens or not candidate_tokens:
+            continue
+        shared = target_tokens & candidate_tokens
+        union = target_tokens | candidate_tokens
+        score = len(shared) / len(union) if union else 0.0
+        if score >= 0.6:
+            token_matches.append(row)
+    if token_matches:
+        best_tier.append((2, token_matches))
+    if best_tier:
+        tier, matches = sorted(best_tier, key=lambda item: item[0])[0]
+        unique = []
+        seen = set()
+        for row in matches:
+            key = str(row.get("contract_id") or row.get("id") or "")
+            if key and key not in seen:
+                unique.append(row)
+                seen.add(key)
+        if len(unique) == 1:
+            return unique[0]
+        if len(unique) > 1:
+            candidates = ", ".join(str(row.get("name") or row.get("contract_name") or row.get("contract_id") or row.get("id") or "Untitled contract") for row in unique[:5])
+            raise ToolError(f"Several contracts match: {candidates}. Which one?")
+    raise ToolError(f"No contract named '{target}' in this organization. Try list_contracts.")
+
 
 class ContractItem(BaseModel):
     contract_id: str
@@ -163,12 +243,12 @@ def build_mcp_server() -> MCPServer:
                 )
                 for row in rows[:max(1, min(limit, 100))]
             ]
-            verified_count = sum(item.verified is True for item in items)
+            anchored_count = sum(1 for row in rows[:max(1, min(limit, 100))] if str(row.get("root_anchor_status") or "").casefold() == "anchored")
             speech = f"You have {len(items)} contract{'s' if len(items) != 1 else ''}."
-            if verified_count:
-                speech += f" {verified_count} have verified proof passports."
-            elif items:
-                speech += " No verified proof passports were reported."
+            if anchored_count:
+                speech += f" {anchored_count} have anchored proof passports."
+            else:
+                speech += " None are anchored yet."
             return ContractListResult(contracts=items, speech=speech)
 
         return await _run_tool("list_contracts", org_id, operation)
@@ -228,23 +308,7 @@ def build_mcp_server() -> MCPServer:
         async def operation() -> ProofResult:
             selected_org = await resolve_org_id(org_id, context)
             rows = await call_api("GET", "/api/contracts", org_id=selected_org)
-            if contract_id:
-                matches = [row for row in rows if str(row.get("contract_id")) == contract_id]
-            elif contract_name:
-                matches = [
-                    row for row in rows
-                    if str(row.get("name") or "").casefold() == contract_name.casefold()
-                ]
-            else:
-                raise ToolError("Pass contract_id or contract_name.")
-
-            if not matches:
-                raise ToolError("No matching contract was found in that organization.")
-            if len(matches) > 1:
-                candidates = ", ".join(str(row.get("name") or "Untitled contract") for row in matches[:5])
-                raise ToolError(f"Contract name is ambiguous. Candidates: {candidates}.")
-
-            contract = matches[0]
+            contract = resolve_contract(rows, contract_id, contract_name)
             name = str(contract.get("name") or "Untitled contract")
             passport_id = contract.get("passport_id")
             checked_at = datetime.now(timezone.utc).isoformat()
@@ -273,15 +337,16 @@ def build_mcp_server() -> MCPServer:
                 chain = "Sepolia" if network == "ethereum-sepolia" else (network or "the configured network")
                 speech = f"{name} is verified. Its passport integrity and on-chain root match on {chain}."
             else:
+                status_value = str(result.get("anchor_status") or "")
                 statuses = {
-                    "NOT_ANCHORED": "no on-chain passport root was found",
-                    "NETWORK_ERROR": "the blockchain could not be reached",
-                    "INVALID_PROOF": "the on-chain root does not match the passport",
+                    "NOT_ANCHORED": "the passport is not anchored yet",
+                    "NETWORK_ERROR": "the network is unavailable",
+                    "INVALID_PROOF": "the fingerprint does not match",
                     "CHAIN_MISMATCH": "the configured blockchain does not match the passport network",
                     "FAIL": "the passport integrity check failed",
                     "UNVERIFIABLE": "the passport integrity could not be fully verified",
                 }
-                detail = statuses.get(str(result.get("anchor_status")), "verification did not pass")
+                detail = statuses.get(status_value, "verification did not pass")
                 speech = f"{name} is not verified because {detail}."
             return ProofResult(
                 contract_name=name,
@@ -297,6 +362,6 @@ def build_mcp_server() -> MCPServer:
 
         return await _run_tool("verify_contract_proof", org_id, operation)
 
-    register_work_item_tools(server, annotations)
+    register_work_item_tools(server, annotations, resolve_contract)
     register_decision_tools(server, annotations)
     return server
