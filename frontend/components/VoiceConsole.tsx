@@ -24,6 +24,8 @@ import {
   readHandsFreePreference,
   SPEECH_INPUT_FALLBACK,
   shouldAutoSend,
+  shouldHandleRecognitionEvent,
+  shouldPauseHandsFree,
   shouldResumeListening,
   type AwaitingConfirmation,
   type VoiceTraceEntry,
@@ -80,6 +82,7 @@ export function VoiceConsole() {
   const [speaking, setSpeaking] = useState(false)
   const [muted, setMuted] = useState(false)
   const [handsFree, setHandsFree] = useState(readHandsFreePreference)
+  const [handsFreePaused, setHandsFreePaused] = useState(false)
   const [sending, setSending] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<TranscriptMessage[]>([])
@@ -90,7 +93,6 @@ export function VoiceConsole() {
   const [error, setError] = useState('')
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
   const finalTranscriptRef = useRef('')
-  const recognitionHadErrorRef = useRef(false)
   const messageIdRef = useRef(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const transcriptBottomRef = useRef<HTMLLIElement>(null)
@@ -98,10 +100,16 @@ export function VoiceConsole() {
   const handsFreeRef = useRef(handsFree)
   const mutedRef = useRef(muted)
   const sendingRef = useRef(sending)
+  const handsFreePausedRef = useRef(handsFreePaused)
+  const hasUserTypedRef = useRef(false)
+  const cancelledByUsRef = useRef(false)
+  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const resumeTimeoutRef = useRef<number | null>(null)
 
   handsFreeRef.current = handsFree
   mutedRef.current = muted
   sendingRef.current = sending
+  handsFreePausedRef.current = handsFreePaused
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
@@ -140,7 +148,13 @@ export function VoiceConsole() {
   }, [awaiting])
 
   useEffect(() => () => {
-    recognitionRef.current?.abort()
+    if (resumeTimeoutRef.current !== null) window.clearTimeout(resumeTimeoutRef.current)
+    resumeTimeoutRef.current = null
+    const recognition = recognitionRef.current
+    recognitionRef.current = null
+    recognition?.abort()
+    cancelledByUsRef.current = true
+    currentUtteranceRef.current = null
     if ('speechSynthesis' in window) window.speechSynthesis.cancel()
   }, [])
 
@@ -152,6 +166,12 @@ export function VoiceConsole() {
   }
 
   function stopSpeaking() {
+    cancelledByUsRef.current = true
+    currentUtteranceRef.current = null
+    if (resumeTimeoutRef.current !== null) {
+      window.clearTimeout(resumeTimeoutRef.current)
+      resumeTimeoutRef.current = null
+    }
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel()
     }
@@ -162,39 +182,71 @@ export function VoiceConsole() {
     if (muted || typeof window === 'undefined' || !('speechSynthesis' in window)) return
     stopSpeaking()
     const utterance = new SpeechSynthesisUtterance(text)
+    cancelledByUsRef.current = false
+    currentUtteranceRef.current = utterance
     const voice = window.speechSynthesis.getVoices().find((candidate) => candidate.lang.toLowerCase() === 'en-us')
     if (voice) utterance.voice = voice
     utterance.lang = 'en-US'
-    utterance.onstart = () => setSpeaking(true)
-    utterance.onend = () => {
-      setSpeaking(false)
-      if (shouldResumeListening({
-        handsFree: handsFreeRef.current,
-        muted: mutedRef.current,
-        hadError: recognitionHadErrorRef.current,
-        sending: sendingRef.current,
-      })) {
-        startListening()
-      }
+    utterance.onstart = () => {
+      if (currentUtteranceRef.current === utterance) setSpeaking(true)
     }
-    utterance.onerror = () => setSpeaking(false)
+    utterance.onend = () => {
+      if (currentUtteranceRef.current !== utterance) return
+      const naturalEnd = !cancelledByUsRef.current
+      currentUtteranceRef.current = null
+      setSpeaking(false)
+      if (!shouldResumeListening({
+        handsFree: handsFreeRef.current,
+        paused: handsFreePausedRef.current,
+        muted: mutedRef.current,
+        naturalEnd,
+        sending: sendingRef.current,
+        typing: hasUserTypedRef.current,
+      })) return
+      resumeTimeoutRef.current = window.setTimeout(() => {
+        resumeTimeoutRef.current = null
+        if (shouldResumeListening({
+          handsFree: handsFreeRef.current,
+          paused: handsFreePausedRef.current,
+          muted: mutedRef.current,
+          naturalEnd,
+          sending: sendingRef.current,
+          typing: hasUserTypedRef.current,
+        })) startListening()
+      }, 350)
+    }
+    utterance.onerror = (event) => {
+      if (currentUtteranceRef.current !== utterance) return
+      currentUtteranceRef.current = null
+      setSpeaking(false)
+      if (event.error === 'interrupted' || event.error === 'canceled') return
+    }
     window.speechSynthesis.speak(utterance)
   }
 
   function startListening() {
-    stopSpeaking()
+    if (recognitionRef.current) return
+    if (resumeTimeoutRef.current !== null) {
+      window.clearTimeout(resumeTimeoutRef.current)
+      resumeTimeoutRef.current = null
+    }
+    cancelledByUsRef.current = true
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel()
+    currentUtteranceRef.current = null
+    setSpeaking(false)
     const Recognition = getSpeechRecognitionConstructor(window)
     if (!Recognition) return
-    recognitionRef.current?.abort()
     const recognition = new Recognition()
+    let hadError = false
     recognition.lang = 'en-US'
     recognition.continuous = false
     recognition.interimResults = true
     finalTranscriptRef.current = ''
-    recognitionHadErrorRef.current = false
+    hasUserTypedRef.current = false
     setInterim('')
     setError('')
     recognition.onresult = (rawEvent) => {
+      if (!shouldHandleRecognitionEvent(recognitionRef.current, recognition)) return
       const event = rawEvent as SpeechRecognitionEventLike & {
         results: SpeechRecognitionEventLike['results'] & {
           [index: number]: { isFinal?: boolean; 0?: { transcript: string } }
@@ -215,10 +267,13 @@ export function VoiceConsole() {
       setInterim(interimPart)
     }
     recognition.onerror = (event) => {
-      recognitionHadErrorRef.current = true
-      if (event.error === 'no-speech') {
-        handsFreeRef.current = false
-        setHandsFree(false)
+      if (!shouldHandleRecognitionEvent(recognitionRef.current, recognition)) return
+      if (event.error === 'aborted') return
+      hadError = true
+      recognitionRef.current = null
+      if (shouldPauseHandsFree(event.error)) {
+        handsFreePausedRef.current = true
+        setHandsFreePaused(true)
       }
       const message = speechErrorMessage(event.error)
       if (message) setError(message)
@@ -226,12 +281,11 @@ export function VoiceConsole() {
       setInterim('')
     }
     recognition.onend = () => {
+      if (!shouldHandleRecognitionEvent(recognitionRef.current, recognition)) return
       setListening(false)
       setInterim('')
       recognitionRef.current = null
       const finalText = finalTranscriptRef.current
-      const hadError = recognitionHadErrorRef.current
-      recognitionHadErrorRef.current = false
       if (shouldAutoSend(finalText, hadError)) {
         finalTranscriptRef.current = ''
         setDraft('')
@@ -243,10 +297,24 @@ export function VoiceConsole() {
     recognition.start()
   }
 
+  function toggleMicrophone() {
+    if (recognitionRef.current && listening) {
+      handsFreePausedRef.current = true
+      setHandsFreePaused(true)
+      recognitionRef.current.stop()
+      return
+    }
+    if (recognitionRef.current) return
+    handsFreePausedRef.current = false
+    setHandsFreePaused(false)
+    startListening()
+  }
+
   async function sendTurn(utterance: string) {
     const clean = utterance.trim()
     if (!clean || sending) return
     turnNumberRef.current += 1
+    hasUserTypedRef.current = false
     stopSpeaking()
     setError('')
     addMessage('you', clean)
@@ -363,7 +431,7 @@ export function VoiceConsole() {
                 </div>
               </div>
               <div className="text-center">
-                <p className="text-sm font-medium text-[#f1f5ee]">{listening ? 'Listening' : speaking ? 'Speaking' : sending ? 'Thinking' : 'Ready when you are'}</p>
+                <p className="text-sm font-medium text-[#f1f5ee]">{listening ? 'Listening' : speaking ? 'Speaking' : sending ? 'Thinking' : handsFree && handsFreePaused ? 'Hands-free paused — tap the mic to resume' : 'Ready when you are'}</p>
                 <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#b8ccc1]">{listening ? 'EN-US / LIVE INPUT' : speaking ? 'EN-US / AUDIO OUTPUT' : 'LEXPROOF / MCP'}</p>
               </div>
             </div>
@@ -423,11 +491,7 @@ export function VoiceConsole() {
                 {supported && (
                     <button
                     type="button"
-                      onClick={listening ? () => {
-                        handsFreeRef.current = false
-                        setHandsFree(false)
-                        recognitionRef.current?.stop()
-                      } : startListening}
+                      onClick={toggleMicrophone}
                       disabled={Boolean(awaiting)}
                     aria-label={listening ? 'Stop listening' : 'Start voice input'}
                     aria-pressed={listening}
@@ -440,6 +504,7 @@ export function VoiceConsole() {
                   ref={inputRef}
                   value={draft}
                   onChange={(event) => {
+                    hasUserTypedRef.current = Boolean(event.target.value)
                     stopSpeaking()
                     setDraft(event.target.value)
                   }}

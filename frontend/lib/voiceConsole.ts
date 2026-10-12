@@ -36,18 +36,30 @@ export function shouldAutoSend(finalText: string, hadError: boolean): boolean {
   return !hadError && finalText.trim().length > 0
 }
 
+export function shouldHandleRecognitionEvent<T>(current: T | null, instance: T): boolean {
+  return current === instance
+}
+
+export function shouldPauseHandsFree(error: string): boolean {
+  return error === 'no-speech'
+}
+
 export function shouldResumeListening({
   handsFree,
+  paused,
   muted,
-  hadError,
+  naturalEnd,
   sending,
+  typing,
 }: {
   handsFree: boolean
+  paused: boolean
   muted: boolean
-  hadError: boolean
+  naturalEnd: boolean
   sending: boolean
+  typing: boolean
 }): boolean {
-  return handsFree && !muted && !hadError && !sending
+  return handsFree && !paused && !muted && naturalEnd && !sending && !typing
 }
 
 export function readHandsFreePreference(storage?: Pick<Storage, 'getItem'>): boolean {

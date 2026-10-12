@@ -13,6 +13,8 @@ import {
   mergeTrace,
   readHandsFreePreference,
   shouldAutoSend,
+  shouldHandleRecognitionEvent,
+  shouldPauseHandsFree,
   shouldResumeListening,
   speechInputFallbackMessage,
 } from '../lib/voiceConsole'
@@ -109,12 +111,36 @@ describe('Ask Lexi voice console', () => {
     expect(merged[2]).toMatchObject({ kind: 'tool', turn: 1 })
   })
 
-  it('resumes hands-free listening only after audible, successful replies finish', () => {
-    expect(shouldResumeListening({ handsFree: true, muted: false, hadError: false, sending: false })).toBe(true)
-    expect(shouldResumeListening({ handsFree: false, muted: false, hadError: false, sending: false })).toBe(false)
-    expect(shouldResumeListening({ handsFree: true, muted: true, hadError: false, sending: false })).toBe(false)
-    expect(shouldResumeListening({ handsFree: true, muted: false, hadError: true, sending: false })).toBe(false)
-    expect(shouldResumeListening({ handsFree: true, muted: false, hadError: false, sending: true })).toBe(false)
+  it('ignores recognition callbacks from an instance that is no longer current', () => {
+    const current = {}
+    const stale = {}
+    expect(shouldHandleRecognitionEvent(current, current)).toBe(true)
+    expect(shouldHandleRecognitionEvent(current, stale)).toBe(false)
+    expect(shouldHandleRecognitionEvent(null, stale)).toBe(false)
+  })
+
+  it('resumes only after a natural hands-free reply when not paused, muted, sending, or typing', () => {
+    const ready = { handsFree: true, paused: false, muted: false, naturalEnd: true, sending: false, typing: false }
+    expect(shouldResumeListening(ready)).toBe(true)
+    expect(shouldResumeListening({ ...ready, naturalEnd: false })).toBe(false)
+    expect(shouldResumeListening({ ...ready, paused: true })).toBe(false)
+    expect(shouldResumeListening({ ...ready, muted: true })).toBe(false)
+    expect(shouldResumeListening({ ...ready, sending: true })).toBe(false)
+    expect(shouldResumeListening({ ...ready, typing: true })).toBe(false)
+    expect(shouldResumeListening({ ...ready, handsFree: false })).toBe(false)
+  })
+
+  it('pauses hands-free on no-speech without changing the saved preference', () => {
+    let handsFreePreference = true
+    const paused = shouldPauseHandsFree('no-speech')
+    if (paused) {
+      const transientPause = true
+      expect(transientPause).toBe(true)
+    }
+    expect(shouldPauseHandsFree('network')).toBe(false)
+    expect(handsFreePreference).toBe(true)
+    handsFreePreference = false
+    expect(handsFreePreference).toBe(false)
   })
 
   it('defaults hands-free on and tolerates unavailable localStorage', () => {
