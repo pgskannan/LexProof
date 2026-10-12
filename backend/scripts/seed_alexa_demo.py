@@ -106,13 +106,15 @@ def build_attach_plan(
     judge_uid: str,
     *,
     today: date | None = None,
+    owner_email: str = "",
+    judge_email: str = "",
 ) -> dict[str, Any]:
     today = today or datetime.now(timezone.utc).date()
     if len(analyzed_contracts) < 2:
         raise ValueError("Upload and analyze contracts in LexProof Alexa Demo first")
 
     ordered = sorted(analyzed_contracts, key=lambda item: str(item.get("name") or "").casefold())
-    msa = next((item for item in ordered if re.search(r"\b(master services|\bmsa\b)", str(item.get("name") or ""), re.IGNORECASE)), None)
+    msa = next((item for item in ordered if re.search(r"(master[ _.-]*services|(?<![a-z0-9])msa(?![a-z0-9]))", str(item.get("name") or ""), re.IGNORECASE)), None)
     if msa is None:
         raise ValueError("Upload and analyze a Master Services Agreement in LexProof Alexa Demo first")
     finance = next((item for item in ordered if item.get("id") != msa.get("id")), None)
@@ -170,6 +172,8 @@ def build_attach_plan(
         "org_id": ORG_ID,
         "owner_uid": owner_uid,
         "judge_uid": judge_uid,
+        "owner_email": owner_email,
+        "judge_email": judge_email,
         "analyzed_contracts": candidate_contracts,
         "workflows": workflows,
         "obligations": obligations,
@@ -353,6 +357,9 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--apply", action="store_true", help="Write changes")
     args = parser.parse_args(argv)
     try:
+        from app.lexproof.services.firebase import initialize_firebase
+
+        initialize_firebase()  # removal mode never reaches _resolve_accounts, which used to be the only init
         repositories = _repositories()
         if args.remove_synthetic:
             removal = plan_synthetic_removal(repositories)
