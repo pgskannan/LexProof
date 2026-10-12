@@ -60,6 +60,8 @@ export const navigationItems = [
   { label: 'Contracts', href: '/dashboard/contracts', icon: FileText },
   { label: 'Findings & Redlines', href: '/dashboard/ai-analysis/findings', icon: ListChecks },
   { label: 'Ask Lexi', href: '/dashboard/ask', icon: Sparkles, accent: 'ai' as const },
+  // Amazon Alexa+ track: the voice console (simulated Alexa+ over the LexProof MCP server).
+  { label: 'Lexi Voice (Alexa+)', href: '/voice', icon: Mic2, accent: 'ai' as const },
   { label: 'Contract Reviews', href: '/dashboard/contracts/reviews', icon: GitPullRequest },
   { label: 'AI Evaluation', href: '/dashboard/ai-evaluation/benchmarks', icon: BarChart3, roles: ['admin', 'reviewer', 'auditor'] as const },
   { label: 'Legal Passport', href: '/legal-passport', icon: Shield },
@@ -99,6 +101,7 @@ const NAV_GROUPS: { title: string; hrefs: string[] }[] = [
       '/dashboard/ai-analysis/findings',
       '/dashboard/contracts/reviews',
       '/dashboard/ask',
+      '/voice',
       '/dashboard/search',
       '/dashboard/ai-evaluation/benchmarks',
     ],

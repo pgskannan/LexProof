@@ -53,7 +53,7 @@ def test_attach_plan_picks_msa_by_name_and_quotes_real_document_verbatim():
         })
         assert assessed["needs_review_reason"] is None
     assert plan["obligations"][0]["due_date"] == (today - timedelta(days=2)).isoformat()
-    assert all(workflow["instance"]["created_by"] == "judge" for workflow in plan["workflows"])
+    assert all(workflow["instance"]["created_by"] == "seed:alexa-demo-attach-v1" for workflow in plan["workflows"])
 
 
 def test_attach_fails_clearly_with_fewer_than_two_analyzed_contracts():

@@ -99,6 +99,11 @@ def _analyzed_contracts(contracts_repo: Any, versions_repo: Any, org_id: str = O
     return analyzed, versions
 
 
+# Neither the owner nor the judge: separation-of-duties checks (requires_not_actor /
+# edited_by) would otherwise hide the seeded approvals from whoever "created" them.
+SEED_ACTOR = "seed:alexa-demo-attach-v1"
+
+
 def build_attach_plan(
     analyzed_contracts: list[dict[str, Any]],
     versions_by_id: dict[str, dict[str, Any]],
@@ -157,7 +162,7 @@ def build_attach_plan(
             "contract_hash": str(version.get("content_hash") or ""),
             "status": status,
             "extracted_by": "seed:alexa-demo-attach-v1",
-            "edited_by": judge_uid,
+            "edited_by": SEED_ACTOR,
             "approved_by": None,
             "created_at": stamp,
             "updated_at": stamp,
@@ -165,8 +170,8 @@ def build_attach_plan(
         })
 
     workflows = [
-        _workflow_records("legal-review", "Legal review", msa, judge_uid, stamp),
-        _workflow_records("finance-review", "Finance review", finance, judge_uid, stamp),
+        _workflow_records("legal-review", "Legal review", msa, SEED_ACTOR, stamp),
+        _workflow_records("finance-review", "Finance review", finance, SEED_ACTOR, stamp),
     ]
     return {
         "org_id": ORG_ID,
@@ -180,7 +185,7 @@ def build_attach_plan(
     }
 
 
-def _workflow_records(key: str, workflow_name: str, contract: dict[str, Any], judge_uid: str, stamp: str) -> dict[str, dict[str, Any]]:
+def _workflow_records(key: str, workflow_name: str, contract: dict[str, Any], creator: str, stamp: str) -> dict[str, dict[str, Any]]:
     definition_id = f"alexa-{key}-definition"
     instance_id = str(uuid5(NAMESPACE_URL, f"{SEED_NAMESPACE}workflow-instance/{key}"))
     states = [
@@ -196,7 +201,7 @@ def _workflow_records(key: str, workflow_name: str, contract: dict[str, Any], ju
         "definition": {
             "id": definition_id, "definition_id": definition_id, "org_id": ORG_ID,
             "name": workflow_name, "version": 1, "is_active": True,
-            "states": states, "transitions": transitions, "created_by": judge_uid,
+            "states": states, "transitions": transitions, "created_by": creator,
             "created_at": stamp, "updated_at": stamp,
         },
         "instance": {
@@ -204,7 +209,7 @@ def _workflow_records(key: str, workflow_name: str, contract: dict[str, Any], ju
             "definition_id": definition_id, "definition_version": 1,
             "entity_type": "contract", "entity_id": contract.get("id"),
             "current_state": "pending", "status": "in_progress",
-            "available_roles": ["admin", "approver"], "created_by": judge_uid,
+            "available_roles": ["admin", "approver"], "created_by": creator,
             "created_at": stamp, "updated_at": stamp,
             "metadata": {"workflow_name": workflow_name},
         },
