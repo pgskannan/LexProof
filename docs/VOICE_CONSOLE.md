@@ -75,16 +75,18 @@ Voice turns for configured read-only judge accounts use the judge interaction ra
 
 ## Demo Data
 
-The dedicated `LexProof Alexa Demo` organization is seeded without submitting any blockchain transactions. It contains five completed-analysis contracts, two pending legal/finance workflow approvals, and three payment obligations: one overdue Initech milestone, one Acme monthly fee, and one Globex renewal due within 30 days. The Acme Master Services Agreement passport snapshot is integrity-verifiable and eligible for anchoring from its Legal Passport UI; the UI action is the only step that submits a real Sepolia transaction.
+The Alexa demo seed attaches two pending workflow approvals and three payment obligations to existing analyzed contracts in `LexProof Alexa Demo`. It chooses the analyzed contract whose name matches MSA/master services for legal review, another analyzed contract for finance review, and sources obligation amounts and verbatim quotes from each selected version's real `document_text`. One obligation is overdue and two are due within 30 days. It does not create synthetic contracts, versions, passports, or findings.
 
-Run from `backend/`. Dry-run is the default and performs no Firestore writes; the owner email must already exist in Firebase Auth. When exactly one UID is configured in `LEXPROOF_READ_ONLY_UIDS`, run:
+Run from `backend/`. Dry-run is the default and performs no Firestore writes; the owner email must already exist in Firebase Auth, and the judge UID must be in `LEXPROOF_READ_ONLY_UIDS`. The seed refuses to attach unless at least two analyzed contracts exist.
 
 ```powershell
-python scripts/seed_alexa_demo.py --owner-email pgskannan@gmail.com --dry-run
-python scripts/seed_alexa_demo.py --owner-email pgskannan@gmail.com --apply
+python scripts/seed_alexa_demo.py --owner-email pgskannan@gmail.com --judge-uid <read-only-judge-uid> --dry-run
+python scripts/seed_alexa_demo.py --owner-email pgskannan@gmail.com --judge-uid <read-only-judge-uid> --apply
+python scripts/seed_alexa_demo.py --remove-synthetic --dry-run
+python scripts/seed_alexa_demo.py --remove-synthetic --apply
 ```
 
-If multiple read-only UIDs are configured, pass the selected one with `--judge-uid`. The apply command refreshes only deterministic `lexproof-alexa-demo` records and activates the owner/admin and judge memberships. It never prints auth credentials or anchors a passport.
+Attach mode replaces only its deterministic workflow/payment rows and uses the read-only judge as creator so the owner can approve under separation-of-duties rules. `--remove-synthetic` removes only older deterministic synthetic IDs when their records belong to `lexproof-alexa-demo`; dry-run lists the exact records. Passport anchors are never read or deleted. Neither mode prints credentials or submits an anchor transaction. Use the Acme passport's Legal Passport UI action for the one real Sepolia anchor.
 
 ## Known Limits
 
