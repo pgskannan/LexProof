@@ -19,7 +19,7 @@ from app.lexproof.main import create_app
 from app.lexproof.services.auth import get_current_user
 from app.lexproof.services import firebase_auth
 from app.lexproof.config import LexProofSettings
-from app.lexproof.services.voice_assistant import VoiceAssistantService, VoiceSessionStore, _voice_model
+from app.lexproof.services.voice_assistant import VoiceAssistantService, VoiceSessionStore, _short_speech, _voice_model
 
 
 class ScriptedExecutor:
@@ -293,6 +293,21 @@ def test_voice_agent_uses_explicit_voice_model_override(monkeypatch):
     monkeypatch.setenv("LEXPROOF_VOICE_MODEL", "gemini-voice-override")
 
     assert _voice_model(LexProofSettings()) == "gemini-voice-override"
+
+
+def test_short_speech_keeps_done_workflow_confirmation_intact():
+    speech = (
+        "Done. You approved the legal review for the MSA Medium Risk contract. "
+        "It's recorded in the workflow history."
+    )
+
+    assert _short_speech(speech) == speech
+
+
+def test_short_speech_does_not_split_filename_or_version_periods():
+    speech = "Done. Review file.docx at version v1.2. It's ready."
+
+    assert _short_speech(speech) == speech
 
 
 def test_turn_logs_latency_without_logging_utterance(caplog):

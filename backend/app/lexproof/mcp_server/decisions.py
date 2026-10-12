@@ -13,7 +13,6 @@ import secrets
 import string
 import time
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import quote
 
@@ -28,7 +27,8 @@ from ..config import get_settings
 from ..services.auth import read_only_uids
 from .client import call_api
 from .org import resolve_org_id
-from .workflow_titles import resolve_workflow_contract_name, workflow_subject
+from .workflow_titles import resolve_workflow_contract_name, workflow_structured_subject, workflow_subject
+from .spoken_names import amount_in_words, spoken_contract_name, spoken_payment_contract
 
 logger = logging.getLogger(__name__)
 TOKEN_TTL_SECONDS = 300
@@ -140,18 +140,16 @@ def action_verbs(action_id: str, action_label: str = "") -> tuple[str, str, str 
 
 
 def payment_speech_subject(obligation: dict[str, Any], contract_name: str) -> tuple[str, str]:
-    label = str(obligation.get("label") or obligation.get("trigger_text") or "").strip()
+    name = spoken_payment_contract(obligation, contract_name)
+    return f"{amount_in_words(obligation.get('amount'), obligation.get('currency'))} for the {name} contract", name
+
+
+def payment_structured_summary(action_id: str, obligation: dict[str, Any], contract_name: str) -> str:
+    action = action_id.replace("_", " ").replace("-", " ").capitalize()
+    label = str(obligation.get("label") or obligation.get("trigger_text") or "payment").strip()
     amount = str(obligation.get("amount") or "0").strip()
-    try:
-        decimal_amount = Decimal(amount.replace(",", ""))
-        amount = f"{decimal_amount:,.2f}" if decimal_amount % 1 else f"{decimal_amount:,.0f}"
-    except (InvalidOperation, ValueError):
-        pass
-    counterparty = contract_name.split(maxsplit=1)[0] if contract_name else "contract"
-    description = label or f"{counterparty} payment"
-    if counterparty.casefold() not in description.casefold():
-        description = f"{counterparty} {description}"
-    return f"{amount} dollar {description} payment", description
+    currency = str(obligation.get("currency") or "USD").upper()
+    return f"{action} {amount} {currency} {label} payment for {contract_name}"
 
 
 def payment_decision_phrases(
@@ -161,18 +159,16 @@ def payment_decision_phrases(
 ) -> tuple[str, str, str, str]:
     infinitive, past_tense, _ = action_verbs(action_id, action_id)
     payment_subject, _ = payment_speech_subject(obligation, contract_name)
-    subject = f"the {payment_subject}"
-    summary = f"{infinitive.capitalize()} {subject}"
-    speech = f"Ready to {infinitive} {subject}. Say confirm to proceed. Nothing has changed yet."
+    summary = payment_structured_summary(action_id, obligation, contract_name)
+    speech = f"Ready to {infinitive} {payment_subject}. Say confirm to proceed. Nothing has changed yet."
     return infinitive, past_tense, summary, speech
 
 
 def confirmed_payment_speech(action_id: str, obligation: dict[str, Any], contract_name: str) -> tuple[str, str]:
     _infinitive, past_tense, _ = action_verbs(action_id, action_id)
     payment_subject, _ = payment_speech_subject(obligation, contract_name)
-    subject = f"the {payment_subject}"
-    summary = f"{past_tense.capitalize()} {subject}"
-    speech = f"Done. You {past_tense} {subject}. It's recorded in the audit log."
+    summary = payment_structured_summary(action_id, obligation, contract_name)
+    speech = f"Done. You {past_tense} {payment_subject}. It's recorded in the audit log."
     return summary, speech
 
 
@@ -185,21 +181,24 @@ def workflow_decision_phrases(
 ) -> tuple[str, str, str, str]:
     infinitive, past_tense, action_object = action_verbs(action_id, action_label)
     if action_object:
-        subject = action_object if infinitive == "complete" else f"the {action_object}"
+        spoken_subject = action_object if infinitive == "complete" else f"the {action_object}"
+        subject = spoken_subject
         if contract_name:
             subject += f" for the {contract_name}"
+            spoken_subject += f" for the {spoken_contract_name(contract_name)}"
     else:
-        subject = workflow_subject(instance, definition, contract_name)
+        subject = workflow_structured_subject(instance, definition, contract_name)
+        spoken_subject = workflow_subject(instance, definition, contract_name)
     return (
         infinitive,
         past_tense,
         subject,
-        f"Done. You {past_tense} {subject}. It's recorded in the workflow history.",
+        f"Done. You {past_tense} {spoken_subject}. It's recorded in the workflow history.",
     )
 
 
-def prepared_decision_speech(infinitive: str, subject: str) -> str:
-    return f"Ready to {infinitive} {subject}. Say confirm to proceed. Nothing has changed yet."
+def prepared_decision_speech(infinitive: str, subject: str, speech_subject: str | None = None) -> str:
+    return f"Ready to {infinitive} {speech_subject or subject}. Say confirm to proceed. Nothing has changed yet."
 
 
 async def _roles(org_id: str) -> tuple[str, list[str]]:

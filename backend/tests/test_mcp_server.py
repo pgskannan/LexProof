@@ -426,7 +426,7 @@ async def test_list_contracts_speech_counts_root_anchors(mcp_app):
         FakeRepository.stores["passport_anchors"] = {}
         not_anchored = await _rpc(client, 3, "tools/call", {"name": "list_contracts", "arguments": {}})
 
-    assert anchored["structuredContent"]["speech"] == "You have 2 contracts. 1 have anchored proof passports."
+    assert anchored["structuredContent"]["speech"] == "You have 2 contracts. 1 has an anchored proof passport."
     assert not_anchored["structuredContent"]["speech"] == "You have 2 contracts. None are anchored yet."
     assert "verified" not in anchored["structuredContent"]["speech"].casefold()
     assert "verified" not in not_anchored["structuredContent"]["speech"].casefold()
@@ -608,9 +608,29 @@ async def test_upcoming_obligations_includes_overdue_sorts_and_scopes_to_org(mcp
     data = result["structuredContent"]
     assert [item["obligation_id"] for item in data["obligations"]] == ["obligation-overdue", "obligation-upcoming"]
     assert data["obligations"][0]["due_date"] < data["obligations"][1]["due_date"]
-    assert "1 is overdue" in data["speech"]
+    assert data["speech"].startswith("One payment is overdue:")
+    assert data["speech"].index("overdue") < data["speech"].index("due in the next")
     assert "12,500 dollars" in data["speech"]
     assert other_org["structuredContent"]["obligations"] == []
+
+
+def test_upcoming_obligation_speech_uses_singular_payment_grammar():
+    obligation = work_items_module.ObligationItem(
+        obligation_id="obligation-1",
+        contract_id="contract-1",
+        contract_name="Demo MSA",
+        label="Support renewal",
+        description="Support renewal payment",
+        amount="3000",
+        currency="USD",
+        due_date=(datetime.now(timezone.utc).date() + timedelta(days=2)).isoformat(),
+        status="EXTRACTED",
+        approval_status="EXTRACTED",
+    )
+
+    speech = work_items_module._speech_for_obligations([obligation], 30)
+
+    assert "1 payment is due in the next 30 days" in speech
 
 
 @pytest.mark.asyncio
@@ -783,9 +803,9 @@ def test_payment_decision_speech_uses_amount_and_counterparty():
         "approve", obligation, "Acme Master Services Agreement"
     )
 
-    assert summary == "Approved the 12,500 dollar Acme monthly fee payment"
+    assert summary == "Approve 12500.00 USD monthly fee payment for Acme Master Services Agreement"
     assert speech == (
-        "Done. You approved the 12,500 dollar Acme monthly fee payment. "
+        "Done. You approved 12,500 dollars for the Acme Master Services Agreement contract. "
         "It's recorded in the audit log."
     )
 

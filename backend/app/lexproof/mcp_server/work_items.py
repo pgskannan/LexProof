@@ -14,10 +14,11 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.server import MCPServer
 from mcp_types import ToolAnnotations
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .client import call_api
 from .org import resolve_org_id
+from .spoken_names import amount_in_words, count_phrase, count_word, spoken_payment_contract
 from .workflow_titles import format_workflow_title, resolve_workflow_contract_names
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class ObligationItem(BaseModel):
     due_date: str | None = None
     status: str
     approval_status: str
+    counterparty: str | None = Field(default=None, exclude=True)
 
 
 class ObligationListResult(BaseModel):
@@ -81,14 +83,6 @@ def _amount_decimal(value: Any) -> Decimal:
     return result if result.is_finite() else Decimal(0)
 
 
-def _money(value: Any, currency: str) -> str:
-    amount = _amount_decimal(value)
-    rendered = f"{amount:,.2f}" if amount % 1 else f"{amount:,.0f}"
-    if currency.upper() == "USD":
-        return f"{rendered} dollars"
-    return f"{rendered} {currency.upper()}"
-
-
 async def _contracts(org_id: str, limit: int) -> list[dict[str, Any]]:
     rows = await call_api("GET", "/api/contracts", org_id=org_id)
     return rows[:limit]
@@ -113,7 +107,7 @@ async def _payment_views(
     return list(await asyncio.gather(*(load(contract) for contract in contracts)))
 
 
-def _obligation_row(row: dict[str, Any], contract_name: str) -> ObligationItem:
+def _obligation_row(row: dict[str, Any], contract_name: str, counterparty: str | None = None) -> ObligationItem:
     currency = str(row.get("currency") or "USD").upper()
     return ObligationItem(
         obligation_id=str(row.get("id") or ""),
@@ -124,25 +118,41 @@ def _obligation_row(row: dict[str, Any], contract_name: str) -> ObligationItem:
         due_date=row.get("due_date"),
         status=str(row.get("status") or "UNKNOWN"),
         approval_status=str(row.get("status") or "UNKNOWN"),
+        counterparty=counterparty or row.get("counterparty"),
     )
 
 
 def _speech_for_obligations(rows: list[ObligationItem], days_ahead: int) -> str:
     if not rows:
         return f"No payments are due or overdue in the next {days_ahead} days."
-    count = len(rows)
-    speech = f"{count} payment{'s' if count != 1 else ''} are due in the next {days_ahead} days;"
-    largest = max(rows, key=lambda item: _amount_decimal(item.amount))
-    due = _parse_due(largest.due_date)
-    if due:
-        speech += f" the largest is {_money(largest.amount, largest.currency)} to {largest.contract_name} on {due.strftime('%B')} {due.day}."
-    else:
-        speech += f" the largest is {_money(largest.amount, largest.currency)} for {largest.contract_name}."
     today = datetime.now(timezone.utc).date()
-    overdue_count = sum(bool(_parse_due(item.due_date) and _parse_due(item.due_date) < today) for item in rows)
-    if overdue_count:
-        speech += f" {overdue_count} {'is' if overdue_count == 1 else 'are'} overdue."
-    return speech
+    overdue = [item for item in rows if _parse_due(item.due_date) and _parse_due(item.due_date) < today]
+    due_soon = [item for item in rows if _parse_due(item.due_date) and today <= _parse_due(item.due_date) <= today + timedelta(days=days_ahead)]
+
+    def describe(item: ObligationItem) -> str:
+        contract = spoken_payment_contract({"counterparty": item.counterparty}, item.contract_name)
+        return f"{amount_in_words(item.amount, item.currency)} for the {contract} contract"
+
+    parts: list[str] = []
+    if overdue:
+        largest_overdue = max(overdue, key=lambda item: _amount_decimal(item.amount))
+        if len(overdue) == 1:
+            parts.append(f"One payment is overdue: {describe(largest_overdue)}.")
+        else:
+            parts.append(f"{count_word(len(overdue))} payments are overdue; the largest is {describe(largest_overdue)}.")
+    if due_soon:
+        largest_due = max(due_soon, key=lambda item: _amount_decimal(item.amount))
+        due = _parse_due(largest_due.due_date)
+        due_suffix = f" on {due.strftime('%B')} {due.day}" if due else ""
+        if overdue:
+            more_count = len(due_soon)
+            if more_count:
+                count = "One more" if more_count == 1 else f"{count_word(more_count)} more"
+                verb = "is" if more_count == 1 else "are"
+                parts.append(f"{count} {verb} due in the next {days_ahead} days; the largest is {describe(largest_due)}{due_suffix}.")
+        else:
+            parts.append(f"{count_phrase(len(due_soon), 'payment')} {'is' if len(due_soon) == 1 else 'are'} due in the next {days_ahead} days; the largest is {describe(largest_due)}{due_suffix}.")
+    return " ".join(parts)
 
 
 async def _member_roles(org_id: str) -> list[str]:
@@ -186,7 +196,7 @@ def register_work_item_tools(
             for row in view.get("obligations") or []:
                 due = _parse_due(row.get("due_date"))
                 if due and (due < today or due <= last_day):
-                    result.append(_obligation_row(row, name))
+                    result.append(_obligation_row(row, name, contract.get("counterparty")))
         result.sort(key=lambda item: (_parse_due(item.due_date) or date.max, item.contract_name.casefold(), item.obligation_id))
         logger.info(
             "MCP work item tool=upcoming_obligations org_id=%s latency_ms=%.1f",
@@ -300,7 +310,11 @@ def register_work_item_tools(
         workflows_count = sum(item.kind == "workflow" for item in result)
         payments_count = sum(item.kind == "payment_obligation" for item in result)
         total = len(result)
-        speech = f"You have {total} item{'s' if total != 1 else ''} waiting: {workflows_count} contract approval{'s' if workflows_count != 1 else ''} and {payments_count} payment{'s' if payments_count != 1 else ''}."
+        speech = (
+            f"You have {count_phrase(total, 'item')} waiting: "
+            f"{count_phrase(workflows_count, 'contract approval')} and "
+            f"{count_phrase(payments_count, 'payment')}."
+        )
         logger.info(
             "MCP work item tool=pending_approvals org_id=%s latency_ms=%.1f",
             selected_org,

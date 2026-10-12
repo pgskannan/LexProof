@@ -20,6 +20,7 @@ from .auth import FirebaseTokenVerifier
 from .client import call_api
 from .decisions import register_decision_tools
 from .org import resolve_org_id
+from .spoken_names import anchored_passport_phrase, count_phrase, spoken_contract_name, spoken_contract_mention
 from .work_items import register_work_item_tools
 
 logger = logging.getLogger(__name__)
@@ -244,9 +245,9 @@ def build_mcp_server() -> MCPServer:
                 for row in rows[:max(1, min(limit, 100))]
             ]
             anchored_count = sum(1 for row in rows[:max(1, min(limit, 100))] if str(row.get("root_anchor_status") or "").casefold() == "anchored")
-            speech = f"You have {len(items)} contract{'s' if len(items) != 1 else ''}."
+            speech = f"You have {count_phrase(len(items), 'contract')}."
             if anchored_count:
-                speech += f" {anchored_count} have anchored proof passports."
+                speech += f" {anchored_passport_phrase(anchored_count)}."
             else:
                 speech += " None are anchored yet."
             return ContractListResult(contracts=items, speech=speech)
@@ -285,10 +286,11 @@ def build_mcp_server() -> MCPServer:
             if not grounded:
                 speech = "This answer is not grounded in your contracts."
             else:
-                spoken = _one_sentence(answer)
+                names = [str(item.get("contract_name") or "") for item in payload.get("citations", [])]
+                spoken = _one_sentence(spoken_contract_mention(answer, names))
                 cited = len(citations)
-                noun = "finding" if cited == 1 else "findings"
-                speech = f"{spoken} Based on {cited} cited {noun}." if spoken else f"Based on {cited} cited {noun}."
+                cited_phrase = count_phrase(cited, "cited finding")
+                speech = f"{spoken} Based on {cited_phrase}." if spoken else f"Based on {cited_phrase}."
             return AskResult(answer=answer, grounded=grounded, citations=citations, speech=speech)
 
         return await _run_tool("ask_contracts", org_id, operation)
@@ -310,6 +312,7 @@ def build_mcp_server() -> MCPServer:
             rows = await call_api("GET", "/api/contracts", org_id=selected_org)
             contract = resolve_contract(rows, contract_id, contract_name)
             name = str(contract.get("name") or "Untitled contract")
+            spoken_name = spoken_contract_name(name)
             passport_id = contract.get("passport_id")
             checked_at = datetime.now(timezone.utc).isoformat()
             if not passport_id:
@@ -317,7 +320,7 @@ def build_mcp_server() -> MCPServer:
                     contract_name=name,
                     verified=False,
                     checked_at=checked_at,
-                    speech=f"{name} has no proof passport to verify.",
+                    speech=f"{spoken_name} has no proof passport to verify.",
                 )
 
             result = await call_api(
@@ -335,7 +338,7 @@ def build_mcp_server() -> MCPServer:
             )
             if verified:
                 chain = "Sepolia" if network == "ethereum-sepolia" else (network or "the configured network")
-                speech = f"{name} is verified. Its passport integrity and on-chain root match on {chain}."
+                speech = f"{spoken_name} is verified. Its passport integrity and on-chain root match on {chain}."
             else:
                 status_value = str(result.get("anchor_status") or "")
                 statuses = {
@@ -347,7 +350,7 @@ def build_mcp_server() -> MCPServer:
                     "UNVERIFIABLE": "the passport integrity could not be fully verified",
                 }
                 detail = statuses.get(status_value, "verification did not pass")
-                speech = f"{name} is not verified because {detail}."
+                speech = f"{spoken_name} is not verified because {detail}."
             return ProofResult(
                 contract_name=name,
                 verified=verified,

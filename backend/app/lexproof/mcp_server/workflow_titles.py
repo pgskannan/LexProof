@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import quote
 
 from .client import call_api
+from .spoken_names import spoken_contract_name
 
 _GENERIC_WORKFLOW_TITLE = "Contract approval"
 
@@ -49,6 +50,13 @@ def format_workflow_title(instance: dict[str, Any], definition: dict[str, Any], 
 
 
 def workflow_subject(instance: dict[str, Any], definition: dict[str, Any], contract_name: str | None) -> str:
+    label, resolved_contract = workflow_title_parts(instance, definition, contract_name)
+    if not resolved_contract:
+        return "the contract approval"
+    return f"the {label.casefold()} for the {spoken_contract_name(resolved_contract)}"
+
+
+def workflow_structured_subject(instance: dict[str, Any], definition: dict[str, Any], contract_name: str | None) -> str:
     label, resolved_contract = workflow_title_parts(instance, definition, contract_name)
     if not resolved_contract:
         return "the contract approval"

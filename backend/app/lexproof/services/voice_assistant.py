@@ -259,15 +259,33 @@ def _redact_text(value: str, bearer_token: str) -> str:
 
 def _short_speech(value: str) -> str:
     clean = " ".join(value.strip().split())
-    sentences = re.findall(r"[^.!?]+[.!?]?(?:\s|$)", clean)
-    concise = []
-    for sentence in sentences[:2]:
-        sentence = sentence.strip()
-        if len(sentence) > 220:
-            sentence = sentence[:217].rsplit(" ", 1)[0].rstrip(".!?") + "..."
-        concise.append(sentence)
-    selected = " ".join(concise).strip()
-    return selected[:480]
+    sentences: list[str] = []
+    start = 0
+    for index, character in enumerate(clean):
+        if character not in ".!?":
+            continue
+        following = index + 1
+        if following < len(clean) and not clean[following].isspace():
+            continue
+        sentences.append(clean[start:following].strip())
+        start = following
+        while start < len(clean) and clean[start].isspace():
+            start += 1
+    if start < len(clean):
+        sentences.append(clean[start:].strip())
+
+    nonempty = [sentence for sentence in sentences if sentence]
+    start_index = 0
+    limit = 2
+    if nonempty and nonempty[0].casefold() == "done.":
+        limit = 3
+    selected = " ".join(nonempty[:limit]).strip()
+    if len(selected) <= 480:
+        return selected
+    shortened = selected[:480]
+    if len(selected) > 480 and not selected[480].isspace():
+        shortened = shortened.rsplit(" ", 1)[0]
+    return shortened.rstrip(".!? ") + "..."
 
 
 def _is_mcp_connection_failure(exc: BaseException) -> bool:
