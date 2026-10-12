@@ -123,3 +123,43 @@ export function mcpHost(apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://loca
     return apiUrl || 'same host'
   }
 }
+
+
+export type VoiceLike = { name: string; lang: string }
+
+export const VOICE_PREFERENCE_KEY = 'lexproof-voice-name'
+
+// Browser neural voices sound far less robotic than the legacy desktop (SAPI)
+// voices that getVoices() often lists first on Windows. Lower score = better.
+const PREFERRED_VOICE_PATTERNS: RegExp[] = [
+  /\b(aria|jenny|ava|emma|michelle)\b.*natural/i,
+  /natural/i,
+  /^google us english$/i,
+  /\b(samantha|ava|allison)\b/i,
+  /online/i,
+  /^google/i,
+]
+
+export function voiceScore(voice: VoiceLike): number {
+  const lang = voice.lang.toLowerCase().replace('_', '-')
+  if (!lang.startsWith('en')) return Number.POSITIVE_INFINITY
+  const index = PREFERRED_VOICE_PATTERNS.findIndex((pattern) => pattern.test(voice.name))
+  let score = index === -1 ? PREFERRED_VOICE_PATTERNS.length : index
+  if (lang !== 'en-us') score += 0.5
+  if (/desktop/i.test(voice.name)) score += 10
+  return score
+}
+
+export function englishVoices<T extends VoiceLike>(voices: readonly T[]): T[] {
+  return voices
+    .filter((voice) => Number.isFinite(voiceScore(voice)))
+    .sort((a, b) => voiceScore(a) - voiceScore(b) || a.name.localeCompare(b.name))
+}
+
+export function pickVoice<T extends VoiceLike>(voices: readonly T[], preferredName?: string | null): T | undefined {
+  if (preferredName) {
+    const chosen = voices.find((voice) => voice.name === preferredName)
+    if (chosen) return chosen
+  }
+  return englishVoices(voices)[0]
+}

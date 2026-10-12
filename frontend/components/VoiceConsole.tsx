@@ -20,9 +20,12 @@ import {
   countdownSeconds,
   formatTraceArguments,
   mergeTrace,
+  englishVoices,
   mcpHost,
+  pickVoice,
   readHandsFreePreference,
   SPEECH_INPUT_FALLBACK,
+  VOICE_PREFERENCE_KEY,
   shouldAutoSend,
   shouldHandleRecognitionEvent,
   shouldPauseHandsFree,
@@ -81,6 +84,8 @@ export function VoiceConsole() {
   const [listening, setListening] = useState(false)
   const [speaking, setSpeaking] = useState(false)
   const [muted, setMuted] = useState(false)
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([])
+  const [voiceName, setVoiceName] = useState('')
   const [handsFree, setHandsFree] = useState(readHandsFreePreference)
   const [handsFreePaused, setHandsFreePaused] = useState(false)
   const [sending, setSending] = useState(false)
@@ -99,6 +104,7 @@ export function VoiceConsole() {
   const turnNumberRef = useRef(0)
   const handsFreeRef = useRef(handsFree)
   const mutedRef = useRef(muted)
+  const voiceNameRef = useRef(voiceName)
   const sendingRef = useRef(sending)
   const handsFreePausedRef = useRef(handsFreePaused)
   const hasUserTypedRef = useRef(false)
@@ -108,6 +114,7 @@ export function VoiceConsole() {
 
   handsFreeRef.current = handsFree
   mutedRef.current = muted
+  voiceNameRef.current = voiceName
   sendingRef.current = sending
   handsFreePausedRef.current = handsFreePaused
 
@@ -126,6 +133,30 @@ export function VoiceConsole() {
   useEffect(() => {
     setSupported(Boolean(getSpeechRecognitionConstructor(window)))
   }, [])
+
+  useEffect(() => {
+    if (!('speechSynthesis' in window)) return
+    try {
+      setVoiceName(window.localStorage.getItem(VOICE_PREFERENCE_KEY) || '')
+    } catch {
+      // No stored preference; the best available voice is used.
+    }
+    const load = () => setVoices(englishVoices(window.speechSynthesis.getVoices()))
+    load()
+    window.speechSynthesis.addEventListener('voiceschanged', load)
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', load)
+  }, [])
+
+  function chooseVoice(name: string) {
+    setVoiceName(name)
+    voiceNameRef.current = name
+    try {
+      if (name) window.localStorage.setItem(VOICE_PREFERENCE_KEY, name)
+      else window.localStorage.removeItem(VOICE_PREFERENCE_KEY)
+    } catch {
+      // Preference just isn't remembered.
+    }
+  }
 
   useEffect(() => {
     handsFreeRef.current = handsFree
@@ -184,7 +215,7 @@ export function VoiceConsole() {
     const utterance = new SpeechSynthesisUtterance(text)
     cancelledByUsRef.current = false
     currentUtteranceRef.current = utterance
-    const voice = window.speechSynthesis.getVoices().find((candidate) => candidate.lang.toLowerCase() === 'en-us')
+    const voice = pickVoice(window.speechSynthesis.getVoices(), voiceNameRef.current)
     if (voice) utterance.voice = voice
     utterance.lang = 'en-US'
     utterance.onstart = () => {
@@ -410,6 +441,21 @@ export function VoiceConsole() {
               >
                 Hands-free {handsFree ? 'On' : 'Off'}
               </button>
+              {voices.length > 1 ? (
+                <label className="hidden sm:block">
+                  <span className="sr-only">Lexi&apos;s voice</span>
+                  <select
+                    value={voiceName}
+                    onChange={(event) => chooseVoice(event.target.value)}
+                    className="max-w-[11rem] truncate rounded-full border border-white/20 bg-transparent px-3 py-2 text-xs text-[#f1f5ee] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 [&>option]:bg-[#101b19]"
+                  >
+                    <option value="">Best voice (auto)</option>
+                    {voices.map((voice) => (
+                      <option key={voice.name} value={voice.name}>{voice.name}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <button
                 type="button"
                 onClick={() => setMuted((value) => !value)}

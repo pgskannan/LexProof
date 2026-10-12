@@ -9,6 +9,8 @@ import {
   buildVoiceTurnRequest,
   countdownLabel,
   countdownSeconds,
+  englishVoices,
+  pickVoice,
   formatTraceArguments,
   mergeTrace,
   readHandsFreePreference,
@@ -147,5 +149,30 @@ describe('Ask Lexi voice console', () => {
     expect(readHandsFreePreference({ getItem: () => null })).toBe(true)
     expect(readHandsFreePreference({ getItem: () => 'false' })).toBe(false)
     expect(readHandsFreePreference({ getItem: () => { throw new Error('blocked') } })).toBe(true)
+  })
+})
+
+
+describe('voice selection', () => {
+  const voices = [
+    { name: 'Microsoft David - English (United States)', lang: 'en-US' },
+    { name: 'Microsoft Zira Desktop - English (United States)', lang: 'en-US' },
+    { name: 'Google US English', lang: 'en-US' },
+    { name: 'Microsoft Aria Online (Natural) - English (United States)', lang: 'en-US' },
+    { name: 'Google français', lang: 'fr-FR' },
+  ]
+
+  it('prefers a natural neural voice over desktop voices', () => {
+    expect(pickVoice(voices)?.name).toContain('Aria Online (Natural)')
+  })
+
+  it('falls back to Google US English when no natural voice exists', () => {
+    expect(pickVoice(voices.filter((voice) => !/natural/i.test(voice.name)))?.name).toBe('Google US English')
+  })
+
+  it('honours a stored choice and ignores non-English voices', () => {
+    expect(pickVoice(voices, 'Microsoft David - English (United States)')?.name).toBe('Microsoft David - English (United States)')
+    expect(englishVoices(voices).map((voice) => voice.lang)).not.toContain('fr-FR')
+    expect(englishVoices(voices).slice(-1)[0]?.name).toContain('Desktop')
   })
 })
