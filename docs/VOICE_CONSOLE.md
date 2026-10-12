@@ -73,6 +73,19 @@ The UI displays the prepared summary, six-character code, and expiry countdown. 
 
 Voice turns for configured read-only judge accounts use the judge interaction rate limiter. The MCP decision tools and REST authorization remain authoritative; the browser cannot elevate the account's permissions.
 
+## Demo Data
+
+The dedicated `LexProof Alexa Demo` organization is seeded without submitting any blockchain transactions. It contains five completed-analysis contracts, two pending legal/finance workflow approvals, and three payment obligations: one overdue Initech milestone, one Acme monthly fee, and one Globex renewal due within 30 days. The Acme Master Services Agreement passport snapshot is integrity-verifiable and eligible for anchoring from its Legal Passport UI; the UI action is the only step that submits a real Sepolia transaction.
+
+Run from `backend/`. Dry-run is the default and performs no Firestore writes; the owner email must already exist in Firebase Auth. When exactly one UID is configured in `LEXPROOF_READ_ONLY_UIDS`, run:
+
+```powershell
+python scripts/seed_alexa_demo.py --owner-email pgskannan@gmail.com --dry-run
+python scripts/seed_alexa_demo.py --owner-email pgskannan@gmail.com --apply
+```
+
+If multiple read-only UIDs are configured, pass the selected one with `--judge-uid`. The apply command refreshes only deterministic `lexproof-alexa-demo` records and activates the owner/admin and judge memberships. It never prints auth credentials or anchors a passport.
+
 ## Known Limits
 
 - Speech recognition is available in supported Chrome and Edge builds. Other browsers keep the text input and show a type-instead notice. Speech synthesis depends on voices installed by the browser or operating system.

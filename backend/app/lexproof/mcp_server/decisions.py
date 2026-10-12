@@ -8,10 +8,12 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import string
 import time
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import quote
 
@@ -26,6 +28,7 @@ from ..config import get_settings
 from ..services.auth import read_only_uids
 from .client import call_api
 from .org import resolve_org_id
+from .workflow_titles import resolve_workflow_contract_name, workflow_subject
 
 logger = logging.getLogger(__name__)
 TOKEN_TTL_SECONDS = 300
@@ -103,6 +106,100 @@ def _state_digest(kind: str, item: dict[str, Any]) -> str:
         }
     canonical = json.dumps(state, sort_keys=True, separators=(",", ":"), default=str).encode()
     return hashlib.sha256(canonical).hexdigest()
+
+
+_ACTION_VERBS = {
+    "approve": ("approve", "approved"),
+    "reject": ("reject", "rejected"),
+    "request_changes": ("request changes", "requested changes"),
+    "submit": ("submit", "submitted"),
+}
+
+
+def action_verbs(action_id: str, action_label: str = "") -> tuple[str, str, str | None]:
+    """Return infinitive, past tense, and any object phrase for an action."""
+    normalized_id = action_id.casefold().replace("-", "_")
+    normalized_label = " ".join(action_label.strip().split())
+    label_words = normalized_label.split()
+    normalized_first = label_words[0].casefold().replace("-", "_") if label_words else ""
+    normalized_first_pair = " ".join(label_words[:2]).casefold().replace("-", " ")
+
+    if normalized_id.startswith("request_changes") or normalized_first_pair == "request changes":
+        return "request changes to", "requested changes to", None
+    for action, verbs in _ACTION_VERBS.items():
+        if action == "request_changes":
+            continue
+        if normalized_id == action or normalized_id.startswith(f"{action}_") or normalized_first == action:
+            remainder = " ".join(label_words[1:]).strip() if normalized_first == action else None
+            if action == "submit" and remainder and remainder.casefold() in {"for review", "for approval"}:
+                remainder = None
+            return (*verbs, remainder or None)
+    fallback_label = normalized_label or action_id.replace("_", " ").replace("-", " ")
+    fallback_label = fallback_label[:1].lower() + fallback_label[1:]
+    return "complete", "completed", fallback_label
+
+
+def payment_speech_subject(obligation: dict[str, Any], contract_name: str) -> tuple[str, str]:
+    label = str(obligation.get("label") or obligation.get("trigger_text") or "").strip()
+    amount = str(obligation.get("amount") or "0").strip()
+    try:
+        decimal_amount = Decimal(amount.replace(",", ""))
+        amount = f"{decimal_amount:,.2f}" if decimal_amount % 1 else f"{decimal_amount:,.0f}"
+    except (InvalidOperation, ValueError):
+        pass
+    counterparty = contract_name.split(maxsplit=1)[0] if contract_name else "contract"
+    description = label or f"{counterparty} payment"
+    if counterparty.casefold() not in description.casefold():
+        description = f"{counterparty} {description}"
+    return f"{amount} dollar {description} payment", description
+
+
+def payment_decision_phrases(
+    action_id: str,
+    obligation: dict[str, Any],
+    contract_name: str,
+) -> tuple[str, str, str, str]:
+    infinitive, past_tense, _ = action_verbs(action_id, action_id)
+    payment_subject, _ = payment_speech_subject(obligation, contract_name)
+    subject = f"the {payment_subject}"
+    summary = f"{infinitive.capitalize()} {subject}"
+    speech = f"Ready to {infinitive} {subject}. Say confirm to proceed. Nothing has changed yet."
+    return infinitive, past_tense, summary, speech
+
+
+def confirmed_payment_speech(action_id: str, obligation: dict[str, Any], contract_name: str) -> tuple[str, str]:
+    _infinitive, past_tense, _ = action_verbs(action_id, action_id)
+    payment_subject, _ = payment_speech_subject(obligation, contract_name)
+    subject = f"the {payment_subject}"
+    summary = f"{past_tense.capitalize()} {subject}"
+    speech = f"Done. You {past_tense} {subject}. It's recorded in the audit log."
+    return summary, speech
+
+
+def workflow_decision_phrases(
+    action_id: str,
+    action_label: str,
+    instance: dict[str, Any],
+    definition: dict[str, Any],
+    contract_name: str | None,
+) -> tuple[str, str, str, str]:
+    infinitive, past_tense, action_object = action_verbs(action_id, action_label)
+    if action_object:
+        subject = action_object if infinitive == "complete" else f"the {action_object}"
+        if contract_name:
+            subject += f" for the {contract_name}"
+    else:
+        subject = workflow_subject(instance, definition, contract_name)
+    return (
+        infinitive,
+        past_tense,
+        subject,
+        f"Done. You {past_tense} {subject}. It's recorded in the workflow history.",
+    )
+
+
+def prepared_decision_speech(infinitive: str, subject: str) -> str:
+    return f"Ready to {infinitive} {subject}. Say confirm to proceed. Nothing has changed yet."
 
 
 async def _roles(org_id: str) -> tuple[str, list[str]]:
@@ -207,8 +304,9 @@ def register_decision_tools(server: MCPServer, read_annotations: ToolAnnotations
         snapshot: dict[str, Any]
         summary: str
         consequences: str
-        spoken_action: str
-        spoken_subject: str
+        infinitive: str
+        past_tense: str
+        subject: str
         if kind == "workflow":
             instance, definition = await _load_workflow(selected_org, item_id)
             if instance.get("status") != "in_progress":
@@ -224,13 +322,13 @@ def register_decision_tools(server: MCPServer, read_annotations: ToolAnnotations
                 raise ToolError("Your organization roles cannot perform that workflow action.")
             if any(instance.get(field) == uid for field in transition.get("requires_not_actor") or []):
                 raise ToolError("You cannot approve an item you created under its separation-of-duties rule.")
-            state_name = str(instance.get("current_state") or "review")
-            title = str((instance.get("metadata") or {}).get("title") or (instance.get("metadata") or {}).get("contract_name") or instance.get("entity_type") or "workflow item")
             action_name = str(transition.get("action_name") or action_id)
+            contract_name = await resolve_workflow_contract_name(instance, selected_org)
+            infinitive, _past_tense, subject, _confirmation_speech = workflow_decision_phrases(
+                action_id, action_name, instance, definition, contract_name
+            )
+            summary = f"{infinitive.capitalize()} {subject}"
             target_state = str(transition.get("to_state") or "the next state")
-            spoken_action = action_name.split()[0].lower()
-            spoken_subject = title
-            summary = f"{action_name} the {title}"
             consequences = f"The workflow will move to {target_state}, and the transition will be recorded in its history."
             snapshot = instance
         elif kind == "payment_obligation":
@@ -247,10 +345,7 @@ def register_decision_tools(server: MCPServer, read_annotations: ToolAnnotations
                 raise ToolError("Approving requires a payer email on the obligation.")
             if action_id == "approve" and obligation.get("needs_review_reason") and not obligation.get("edited_by"):
                 raise ToolError("This obligation needs review before approval.")
-            label = str(obligation.get("label") or obligation.get("trigger_text") or "payment")
-            spoken_action = action_id
-            spoken_subject = f"{label} payment for {contract_name}"
-            summary = f"{action_id.title()} the {label} payment for {contract_name}"
+            infinitive, _past_tense, summary, speech = payment_decision_phrases(action_id, obligation, contract_name)
             consequences = "The payment obligation status and approved mandate will be updated and recorded in the audit log."
             snapshot = obligation
         else:
@@ -279,7 +374,7 @@ def register_decision_tools(server: MCPServer, read_annotations: ToolAnnotations
             confirmation_code=code,
             confirmation_token=signed,
             expires_at=datetime.fromtimestamp(expires_at, timezone.utc).isoformat(),
-            speech=f"Ready to {spoken_action} the {spoken_subject}; say confirm {code} to proceed. Nothing has changed yet.",
+            speech=speech if kind == "payment_obligation" else prepared_decision_speech(infinitive, subject),
         )
 
     async def confirm_decision(
@@ -320,8 +415,9 @@ def register_decision_tools(server: MCPServer, read_annotations: ToolAnnotations
 
         try:
             payment_contract_name = ""
+            workflow_definition: dict[str, Any] = {}
             if kind == "workflow":
-                instance, _ = await _load_workflow(org_id, item_id)
+                instance, workflow_definition = await _load_workflow(org_id, item_id)
                 current = instance
             elif kind == "payment_obligation":
                 current, payment_contract_name = await _load_payment_obligation(org_id, item_id)
@@ -347,17 +443,19 @@ def register_decision_tools(server: MCPServer, read_annotations: ToolAnnotations
                 )
             _consumed_tokens[token_id] = int(payload["exp"])
             if kind == "payment_obligation":
-                item_title = str(current.get("label") or "payment obligation")
-                decision_verb = "approved" if action_id == "approve" else "rejected"
-                summary = f"{item_title} for {payment_contract_name} {decision_verb}"
-                speech = f"Done. The {item_title} payment for {payment_contract_name} is {decision_verb} and recorded in the audit log."
+                summary, speech = confirmed_payment_speech(action_id, current, payment_contract_name)
             else:
-                _, definition = await _load_workflow(org_id, item_id)
-                transition = next((entry for entry in definition.get("transitions", []) if entry.get("id") == action_id), {})
-                item_title = str((current.get("metadata") or {}).get("title") or "Workflow review")
-                action_label = str(transition.get("action_name") or "decision")
-                summary = f"{item_title}: {action_label}"
-                speech = f"Done. The {item_title} {action_label.lower()} is recorded in workflow history."
+                transition = next((entry for entry in workflow_definition.get("transitions", []) if entry.get("id") == action_id), {})
+                action_label = str(transition.get("action_name") or action_id)
+                contract_name = await resolve_workflow_contract_name(current, org_id)
+                _infinitive, decision_verb, subject, speech = workflow_decision_phrases(
+                    action_id,
+                    action_label,
+                    current,
+                    workflow_definition,
+                    contract_name,
+                )
+                summary = f"{decision_verb.capitalize()} {subject}"
             _decision_log("confirm_decision", uid, org_id, kind, item_id, action_id, "confirmed", started)
             return ConfirmedDecision(success=True, summary=summary, speech=speech)
         except ToolError as error:

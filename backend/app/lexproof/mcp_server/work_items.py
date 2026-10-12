@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from .client import call_api
 from .org import resolve_org_id
+from .workflow_titles import format_workflow_title, resolve_workflow_contract_names
 
 logger = logging.getLogger(__name__)
 MAX_CONCURRENT_READS = 8
@@ -231,9 +232,10 @@ def register_work_item_tools(
                 )
             return definition_id, definition
 
-        definition_pairs, payment_views = await asyncio.gather(
+        definition_pairs, payment_views, workflow_contract_names = await asyncio.gather(
             asyncio.gather(*(load_definition(definition_id) for definition_id in definition_ids)),
             _payment_views(contracts, selected_org, semaphore),
+            resolve_workflow_contract_names(instances, selected_org, semaphore),
         )
         definition_cache = dict(definition_pairs)
 
@@ -262,7 +264,11 @@ def register_work_item_tools(
                 result.append(PendingItem(
                     kind="workflow",
                     id=str(instance.get("instance_id") or ""),
-                    title=str(metadata.get("title") or metadata.get("contract_name") or instance.get("entity_type") or "Workflow approval"),
+                    title=format_workflow_title(
+                        instance,
+                        definition,
+                        workflow_contract_names.get(str(instance.get("instance_id") or "")),
+                    ),
                     current_state=current_state,
                     available_actions=transitions,
                 ))

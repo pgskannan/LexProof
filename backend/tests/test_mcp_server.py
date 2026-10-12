@@ -29,6 +29,7 @@ workflows_api = import_module("app.lexproof.api.workflows")
 organizations_api = import_module("app.lexproof.api.organizations")
 decisions_module = import_module("app.lexproof.mcp_server.decisions")
 work_items_module = import_module("app.lexproof.mcp_server.work_items")
+workflow_titles_module = import_module("app.lexproof.mcp_server.workflow_titles")
 
 ORG_ID = "org-1"
 PASSPORT_ID = "11111111-1111-4111-8111-111111111111"
@@ -672,6 +673,121 @@ async def test_pending_approvals_fetches_each_workflow_definition_once(mcp_app, 
     workflow_items = [item for item in result["structuredContent"]["items"] if item["kind"] == "workflow"]
     assert len(workflow_items) == 2
     assert definition_reads == [f"/api/orgs/{ORG_ID}/workflow-definitions/definition-1"]
+
+
+@pytest.mark.asyncio
+async def test_pending_approvals_resolves_missing_workflow_title_from_contract(mcp_app, monkeypatch):
+    instance = next(iter(mcp_app.state.workflow_engine.instances.stream()))
+    instance_id = str(instance.get("instance_id") or instance["id"])
+    mcp_app.state.workflow_engine.instances.set(
+        instance_id,
+        {"entity_type": "contract", "entity_id": "contract-2", "metadata": {}},
+        merge=True,
+    )
+
+    async def fake_contract_lookup(method, path, **kwargs):
+        assert method == "GET"
+        assert path == "/api/contracts/contract-2"
+        return {"contract_id": "contract-2", "name": "No Passport NDA"}
+
+    monkeypatch.setattr(workflow_titles_module, "call_api", fake_contract_lookup)
+    async with _client(mcp_app, "token-user-1") as client:
+        await _initialize(client)
+        result = await _rpc(client, 2, "tools/call", {"name": "pending_approvals", "arguments": {}})
+
+    workflow_items = [item for item in result["structuredContent"]["items"] if item["kind"] == "workflow"]
+    assert any(item["title"] == "Legal review: No Passport NDA" for item in workflow_items), workflow_items
+    assert all("contract" not in item["title"].casefold() or "approval" in item["title"].casefold() or ":" in item["title"] for item in workflow_items)
+
+
+@pytest.mark.asyncio
+async def test_workflow_title_resolution_follows_redline_proposal_to_contract(monkeypatch):
+    async def fake_call_api(method, path, **kwargs):
+        if path == "/api/redline-proposals/proposal-1":
+            return {"proposal_id": "proposal-1", "contract_id": "contract-1"}
+        if path == "/api/contracts/contract-1":
+            return {"contract_id": "contract-1", "name": "Master Services Agreement"}
+        raise AssertionError(f"Unexpected route: {path}")
+
+    monkeypatch.setattr(workflow_titles_module, "call_api", fake_call_api)
+    monkeypatch.setattr(work_items_module, "call_api", fake_call_api)
+    instance = {
+        "instance_id": "workflow-1",
+        "entity_type": "redline_proposal",
+        "entity_id": "proposal-1",
+        "metadata": {},
+    }
+    names = await workflow_titles_module.resolve_workflow_contract_names([instance], ORG_ID)
+    definition = {"name": "Legal review", "states": [{"id": "review", "name": "Legal review"}]}
+
+    assert names["workflow-1"] == "Master Services Agreement"
+    assert workflow_titles_module.format_workflow_title(instance, definition, names["workflow-1"]) == (
+        "Legal review: Master Services Agreement"
+    )
+    generic_title = workflow_titles_module.format_workflow_title(instance, definition, None)
+    generic_speech_subject = workflow_titles_module.workflow_subject(instance, definition, None)
+    assert generic_title == "Contract approval"
+    assert "redline_proposal" not in generic_title
+    assert "redline_proposal" not in generic_speech_subject
+
+
+def test_decision_action_names_map_to_natural_present_and_past_tense():
+    assert decisions_module.action_verbs("approve-legal", "Approve legal review") == (
+        "approve", "approved", "legal review"
+    )
+    assert decisions_module.action_verbs("reject-finance", "Reject finance review") == (
+        "reject", "rejected", "finance review"
+    )
+    assert decisions_module.action_verbs("request_changes", "Request changes") == (
+        "request changes to", "requested changes to", None
+    )
+    assert decisions_module.action_verbs("submit_for_review", "Submit for review") == (
+        "submit", "submitted", None
+    )
+    assert decisions_module.action_verbs("escalate", "Escalate review") == (
+        "complete", "completed", "escalate review"
+    )
+
+
+def test_workflow_decision_speech_is_natural_and_never_exposes_entity_slug():
+    instance = {
+        "instance_id": "workflow-1",
+        "entity_type": "redline_proposal",
+        "entity_id": "proposal-1",
+        "current_state": "review",
+        "metadata": {},
+    }
+    definition = {
+        "name": "Legal review",
+        "states": [{"id": "review", "name": "Legal review"}],
+    }
+    infinitive, _past, subject, confirmation = decisions_module.workflow_decision_phrases(
+        "approve-legal", "Approve legal review", instance, definition, "Master Services Agreement"
+    )
+
+    assert subject == "the legal review for the Master Services Agreement"
+    assert confirmation == (
+        "Done. You approved the legal review for the Master Services Agreement. "
+        "It's recorded in the workflow history."
+    )
+    assert decisions_module.prepared_decision_speech(infinitive, subject) == (
+        "Ready to approve the legal review for the Master Services Agreement. "
+        "Say confirm to proceed. Nothing has changed yet."
+    )
+    assert "redline_proposal" not in confirmation
+
+
+def test_payment_decision_speech_uses_amount_and_counterparty():
+    obligation = {"label": "monthly fee", "amount": "12500.00"}
+    summary, speech = decisions_module.confirmed_payment_speech(
+        "approve", obligation, "Acme Master Services Agreement"
+    )
+
+    assert summary == "Approved the 12,500 dollar Acme monthly fee payment"
+    assert speech == (
+        "Done. You approved the 12,500 dollar Acme monthly fee payment. "
+        "It's recorded in the audit log."
+    )
 
 
 @pytest.mark.asyncio
